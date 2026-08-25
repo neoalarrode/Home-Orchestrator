@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.71.1
+Tuya re-pineado al tag `v0.71.0`. sha256 `09341cf1…7922`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que el backend sirve las ocho versiones y la interfaz las pinta, y — la causa del fallo — que en el HTML ya no queda la lista escrita a mano, solo el `3.3` de respaldo.
+
 ## 0.71.0
 
 **El desplegable de versiones de protocolo se comía la versión detectada.** Los dos síntomas — "lo detecta pero sin versión" y "la lista está incompleta" — eran el mismo fallo.

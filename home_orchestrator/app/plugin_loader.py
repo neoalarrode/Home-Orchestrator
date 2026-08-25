@@ -142,8 +142,8 @@ PLUGIN_CATALOG = {
         "description": "Puente de ingesta para dispositivos Tuya-por-LAN — consumo interno por Climate y/o exposición opcional a HA por MQTT",
         "version": "0.4.7",
         "downloadable": True,
-        "tag": "v0.70.0",
-        "sha256": "536964a95246d563ea7cc35b05a6d7dec0a240db7ded621a98652181f2b6f1d7",  # sha256 real del tarball de v0.70.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: dar de alta un dispositivo no oido ya no le inventa la version -- lo localiza y usa la real -- la lista de la cuenta deja de ser un volcado, y se cubre la ROTACION DE IPs del DHCP: el broadcast ya tiene consumidor y a los que no se anuncian se les vuelve a buscar)
+        "tag": "v0.71.0",
+        "sha256": "09341cf19d4aa0f9af06787f7f5f10e039297e6b69ccea1beeb79b16d0ef7922",  # sha256 real del tarball de v0.71.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: el desplegable de versiones ya no se come la version detectada -- la lista la sirve el backend desde SUPPORTED_VERSIONS en vez de estar escrita a mano en el HTML, donde se habia quedado en 3.1-3.4)
         "files": ["tuya_plugin.py", "tuya", "tuya_templates"],
     },
     "lighting": {
