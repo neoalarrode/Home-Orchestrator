@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.66.1
+Climate re-pineado al tag `v0.66.0`. sha256 `00f53e8e…73c8`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los **nueve** arreglos de clima acumulados (0.62.0, 0.63.0, 0.64.0, 0.65.0 y 0.66.0) están presentes en el código empaquetado.
+
 ## 0.66.0
 
 **Encender una zona que ya está encendida deja de tocar el modo.**

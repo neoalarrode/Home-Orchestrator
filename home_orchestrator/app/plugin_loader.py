@@ -133,8 +133,8 @@ PLUGIN_CATALOG = {
         "description": "Termostatos adaptativos por zona, expuestos como climate.* nativos de HA (HomeKit/Matter) vía MQTT Discovery",
         "version": "0.4.11",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
         "downloadable": True,
-        "tag": "v0.65.0",
-        "sha256": "54d38b5c19c57af507931fa45c6bf2f7dd12ef0cd50c56ee4448af6f7f41551b",  # sha256 real del tarball de v0.65.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: ventilar como RESPALDO dentro de un modo de temperatura se reporta como "en reposo", que es lo que Matter no sabe representar)
+        "tag": "v0.66.0",
+        "sha256": "00f53e8e4a7e05cf8dc0676d30ea8ddf628f72735409f489d5ed799a5d3873c8",  # sha256 real del tarball de v0.66.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: encender una zona que YA esta encendida no reaplica el modo, que era una carrera con el cluster onOff del puente Matter)
         "files": ["climate_plugin.py", "climate", "climate_templates"],
     },
     "tuya": {
