@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.73.1
+Tuya re-pineado al tag `v0.73.0`. sha256 `3698e849…7282`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que la constante de capacidades válidas y su filtro están en el código empaquetado, y que ni `state` ni `battery` siguen colándose en `supported_features`.
+
 ## 0.73.0
 
 **La entidad `vacuum.*` de 0.72.0 no llegaba a existir: el mensaje de descubrimiento era inválido.**
