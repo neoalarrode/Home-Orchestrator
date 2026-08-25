@@ -142,8 +142,8 @@ PLUGIN_CATALOG = {
         "description": "Puente de ingesta para dispositivos Tuya-por-LAN — consumo interno por Climate y/o exposición opcional a HA por MQTT",
         "version": "0.4.7",
         "downloadable": True,
-        "tag": "v0.73.0",
-        "sha256": "3698e84938a3d4152e15cd18d18f8935954a2e911f8ce6d41c4d72d898cb7282",  # sha256 real del tarball de v0.73.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: el discovery del aspirador ya es VALIDO -- llevaba "state" y "battery" en supported_features, y HA valida esa lista con vol.In, asi que un solo valor no reconocido tumbaba el mensaje entero y la entidad no llegaba a existir)
+        "tag": "v0.74.0",
+        "sha256": "4f6abf18cd70c1f1c41cd94d1cc7436207cbd88724a76ca2abd9c7c8dc94c2a0",  # sha256 real del tarball de v0.74.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: log de eventos del dispositivo desde la nube -- la unica forma de ver que DP usa la app, porque un DP de solo escritura no sale ni en el esquema ni al consultar el aparato -- y resolver uno ya dado de alta deja de avisar en falso de que no esta en la red)
         "files": ["tuya_plugin.py", "tuya", "tuya_templates"],
     },
     "lighting": {

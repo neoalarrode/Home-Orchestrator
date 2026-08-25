@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.74.1
+Tuya re-pineado al tag `v0.74.0`. sha256 `4f6abf18…c2a0`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que `get_device_logs` y su ruta están en el código empaquetado con el respaldo a la v2.0 del API, y que sigue el arreglo del aviso falso al resolver un dispositivo ya dado de alta.
+
 ## 0.74.0
 
 **Log de eventos del dispositivo desde la nube**, en `GET /api/cloud/logs/<device_id>`.
