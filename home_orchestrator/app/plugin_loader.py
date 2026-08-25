@@ -200,8 +200,8 @@ PLUGIN_CATALOG = {
         "description": "Baterías, solar y cargas diferibles — carga y descarga adaptativa por precio, sol y consumo real",
         "version": "0.11.93",
         "downloadable": True,
-        "tag": "v0.76.0",
-        "sha256": "65e358cbc2dbf5e555f0c2f5d29ee357e61ace39918d4a321f950e129b1b6179",  # sha256 real del tarball de v0.76.0, verificado contra una descarga real antes de fijarlo aqui (main.py, grid_energy_store.py y el nuevo energy_recovery.py)
+        "tag": "v0.76.2",
+        "sha256": "5b372a6c1dc792dc4c73eb0e3cde693914156e05d2eef2fa2354694a00d66008",  # sha256 real del tarball de v0.76.2, verificado contra una descarga real antes de fijarlo aqui (arregla el TypeError de fechas con y sin huso que abortaba run_cycle en cada ejecucion)
         "files": [
             "main.py", "battery_plugin.py", "battery_exec.py", "anomaly_store.py",
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",
