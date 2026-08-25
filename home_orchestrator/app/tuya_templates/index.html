@@ -149,11 +149,12 @@
         </div>
         <div>
           <label for="df-protocol">Versión de protocolo</label>
+          <!-- Las opciones las rellena renderProtocolVersions() con la lista
+               que sirve el backend. Estas son solo el respaldo por si esa
+               llamada falla: mantener aquí la lista buena a mano fue
+               exactamente lo que la dejó desfasada en 3.1-3.4. -->
           <select id="df-protocol">
-            <option value="3.1">3.1</option>
-            <option value="3.2">3.2</option>
             <option value="3.3" selected>3.3</option>
-            <option value="3.4">3.4</option>
           </select>
         </div>
       </div>
@@ -235,6 +236,7 @@ async function loadStatus() {
     const r = await fetch(`${API}/status`);
     const s = await r.json();
     document.getElementById("conn-mqtt").textContent = "MQTT: " + (s.mqtt_connected ? "conectado" : "desconectado");
+    renderProtocolVersions(s.protocol_versions);
   } catch (e) { /* idem */ }
 }
 
@@ -446,12 +448,35 @@ function readDeviceForm() {
   };
 }
 
+// La lista buena es la del protocolo, y la sirve el backend. Tenerla escrita
+// a mano en el HTML es lo que la dejo en 3.1-3.4, sin 3.5 siquiera.
+function renderProtocolVersions(versions) {
+  if (!versions || !versions.length) return;
+  const sel = document.getElementById("df-protocol");
+  const actual = sel.value;
+  sel.innerHTML = versions.map(v =>
+    `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  sel.value = versions.includes(actual) ? actual : "3.3";
+}
+
+function setProtocolVersion(version) {
+  const sel = document.getElementById("df-protocol");
+  const v = version || "3.3";
+  // Asignar a un <select> un valor que no esta entre sus opciones no da
+  // error: lo deja VACIO. Asi se perdia, en silencio, la version de un
+  // dispositivo detectado correctamente. Si no esta, se añade.
+  if (![...sel.options].some(o => o.value === v)) {
+    sel.insertAdjacentHTML("beforeend", `<option value="${esc(v)}">${esc(v)}</option>`);
+  }
+  sel.value = v;
+}
+
 function fillDeviceForm(cfg) {
   document.getElementById("df-name").value = cfg.name || "";
   document.getElementById("df-device-id").value = cfg.device_id || "";
   document.getElementById("df-address").value = cfg.address || "";
   document.getElementById("df-local-key").value = cfg.local_key || "";
-  document.getElementById("df-protocol").value = cfg.protocol_version || "3.3";
+  setProtocolVersion(cfg.protocol_version);
   document.getElementById("df-profile").value = cfg.profile_yaml || "";
   document.getElementById("df-expose-mqtt").checked = !!cfg.expose_mqtt;
 }

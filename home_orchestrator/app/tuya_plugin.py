@@ -28,6 +28,7 @@ from tuya.device_manager import TuyaDeviceManager
 from tuya.mqtt_tuya import MqttTuyaDevice
 from tuya.profile import profile_to_yaml
 from tuya.tuya_cloud import TuyaCloudApi, TuyaCloudAuthError, TuyaCloudApiError
+from tuya.tuya_lan import SUPPORTED_VERSIONS
 
 log = logging.getLogger("tuya_plugin")
 
@@ -114,6 +115,16 @@ class TuyaPlugin(Plugin):
                 "version": self.version,
                 "devices": len(self._manager._devices),  # noqa: SLF001
                 "mqtt_connected": self._mqtt.connected,
+                # BUG REAL: el desplegable de la interfaz llevaba la lista de
+                # versiones ESCRITA A MANO, y se quedo en 3.1-3.4 -- sin 3.5
+                # siquiera. Asignar a un <select> un valor que no esta entre
+                # sus opciones no da error: lo deja VACIO. Asi que un
+                # dispositivo detectado correctamente como 3.5 llegaba al
+                # formulario y se quedaba sin version, en silencio.
+                #
+                # Se sirve desde aqui para que no puedan volver a
+                # desincronizarse: la lista buena es la del protocolo.
+                "protocol_versions": list(SUPPORTED_VERSIONS),
             })
 
         # ------------------------------------------------ descubrimiento -

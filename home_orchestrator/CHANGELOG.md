@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.71.0
+
+**El desplegable de versiones de protocolo se comía la versión detectada.** Los dos síntomas — "lo detecta pero sin versión" y "la lista está incompleta" — eran el mismo fallo.
+
+La lista del formulario estaba **escrita a mano en el HTML** y se había quedado en `3.1, 3.2, 3.3, 3.4`: sin 3.5 siquiera, y por supuesto sin las tres que añadió la 0.68.0. Y asignar a un `<select>` un valor que no está entre sus opciones **no da error: lo deja vacío**. Así que un dispositivo detectado correctamente como 3.5 llegaba al formulario y se quedaba sin versión, en silencio. Reproducido en un navegador: `select.value = "3.5"` sobre las opciones viejas devuelve `""`.
+
+Arreglado donde estaba la causa, que no es la lista sino que hubiera dos: ahora la sirve el backend desde `SUPPORTED_VERSIONS`, que es la del propio protocolo, y el formulario la pinta al cargar. No pueden volver a desincronizarse. Queda un `3.3` en el HTML solo como respaldo por si esa llamada falla.
+
+Y por si acaso: al rellenar el formulario, una versión que no esté entre las opciones ya no se descarta — se añade. Perder un dato en silencio es peor que enseñar algo inesperado.
+
 ## 0.70.1
 Tuya re-pineado al tag `v0.70.0`. sha256 `536964a9…f1d7`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que el broadcast ya tiene consumidor, que la IP de un dispositivo desconectado no se da por buena, y que el `3.3` por defecto como conjetura ya no está en el código empaquetado.
 
