@@ -142,8 +142,8 @@ PLUGIN_CATALOG = {
         "description": "Puente de ingesta para dispositivos Tuya-por-LAN — consumo interno por Climate y/o exposición opcional a HA por MQTT",
         "version": "0.4.7",
         "downloadable": True,
-        "tag": "v0.61.0",
-        "sha256": "230a3a7304fb275613792e47c5de9a2ab913520cedf00d70fe24aaf91d5e7063",  # sha256 real del tarball de v0.61.0, verificado contra una descarga real antes de fijarlo aqui (version de protocolo vacia ya no impide arrancar, y un dispositivo que no responde al arrancar recibe su entidad en HA igualmente)
+        "tag": "v0.68.0",
+        "sha256": "c874ff9593023430138c92d2af64edd80c2ffbde8975cfe09b202edf95be1488",  # sha256 real del tarball de v0.68.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: las OCHO versiones de protocolo de la referencia -- 3.22/3.42/3.52 incluidas, con despacho por umbral numerico y no por cadena -- barrido ACTIVO de la LAN para lo que no se anuncia por broadcast, y la cuenta de la nube utilizable sin haber oido antes al dispositivo)
         "files": ["tuya_plugin.py", "tuya", "tuya_templates"],
     },
     "lighting": {

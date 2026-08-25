@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.68.1
+Tuya re-pineado al tag `v0.68.0` (venía de `v0.61.0`). sha256 `c874ff95…1488`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que las tres versiones nuevas y el barrido activo están presentes en el código empaquetado, y que el `404` que impedía resolver un dispositivo no oído en la LAN ya no está.
+
 ## 0.68.0
 
 **Tres versiones de protocolo Tuya que faltaban, y el descubrimiento deja de ser solo pasivo.** Comparado con [tuya-local](https://github.com/make-all/tuya-local), que es la referencia de la que viene este puerto.
