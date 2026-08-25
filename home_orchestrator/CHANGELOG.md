@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.62.1
+Climate y TP-Link re-pineados al tag `v0.62.0`. sha256 `527b7b22…bd1b`, calculado sobre el tarball real y verificado antes de fijarlo; comprobado que los elementos de sus listas `files` viajan dentro y que los seis arreglos están presentes en el código empaquetado.
+
+**Y esta vez el re-pineado surte efecto de verdad:** el arreglo de 0.62.0 que hace que `load_all_plugins` ponga al día el tag en disco vive en `plugin_loader.py`/`plugin_downloader.py`, que son del **núcleo** y llegan con la propia actualización del add-on. Al arrancar con esta versión se descargarán, por fin, todos los tags pineados desde la 0.57.0 — Energy, Climate, Tuya, Lighting, TP-Link, Govee y Shelly.
+
+**Solo se re-pinean esos dos:** de los cinco ficheros tocados en 0.62.0, `climate/zone_runner.py` es de Climate y `tplink/device_manager.py`/`tplink_plugin.py` de TP-Link; los otros dos son del núcleo y no se descargan.
+
 ## 0.62.0
 
 ### El re-pineado de plugins no descargaba nada

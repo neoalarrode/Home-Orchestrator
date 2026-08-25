@@ -133,8 +133,8 @@ PLUGIN_CATALOG = {
         "description": "Termostatos adaptativos por zona, expuestos como climate.* nativos de HA (HomeKit/Matter) vía MQTT Discovery",
         "version": "0.4.11",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
         "downloadable": True,
-        "tag": "v0.58.0",
-        "sha256": "2cff537730f18007d10fd1d31255f4fc6c8cc4a322a9bcdee497ded22fa4e1f6",  # sha256 real del tarball de v0.58.0, verificado contra una descarga real antes de fijarlo aqui (zona apagada que se reencendia sola, falsos positivos de ventana abierta, presets anunciados a HA)
+        "tag": "v0.62.0",
+        "sha256": "527b7b2203187610566068593e2b295bdf719811d2ddfcb22bf4bab76c1fbd1b",  # sha256 real del tarball de v0.62.0, verificado contra una descarga real antes de fijarlo aqui (NameError que abortaba el ciclo de la zona, consignas borradas al ventilar por ventana abierta, delegado ilegible tomado como "sin capacidades")
         "files": ["climate_plugin.py", "climate", "climate_templates"],
     },
     "tuya": {
@@ -160,8 +160,8 @@ PLUGIN_CATALOG = {
         "description": "Puente de ingesta para dispositivos TP-Link (Kasa/Tapo) vía python-kasa (misma librería que usa Home Assistant) — consumo interno por Lighting y/o exposición opcional a HA por MQTT",
         "version": "0.1.13",
         "downloadable": True,
-        "tag": "v0.58.0",
-        "sha256": "2cff537730f18007d10fd1d31255f4fc6c8cc4a322a9bcdee497ded22fa4e1f6",  # sha256 real del tarball de v0.58.0, verificado contra una descarga real antes de fijarlo aqui (el bucle de sondeo ya no muere con KeyError de python-kasa; connected refleja el ultimo sondeo real)
+        "tag": "v0.62.0",
+        "sha256": "527b7b2203187610566068593e2b295bdf719811d2ddfcb22bf4bab76c1fbd1b",  # sha256 real del tarball de v0.62.0, verificado contra una descarga real antes de fijarlo aqui (un fallo de descifrado KLAP en la primera lectura ya no pierde el dispositivo hasta reiniciar)
         "files": ["tplink_plugin.py", "tplink", "tplink_templates", "tplink_store.py"],
     },
     "starlink": {
