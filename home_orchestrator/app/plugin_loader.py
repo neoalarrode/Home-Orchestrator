@@ -142,8 +142,8 @@ PLUGIN_CATALOG = {
         "description": "Puente de ingesta para dispositivos Tuya-por-LAN — consumo interno por Climate y/o exposición opcional a HA por MQTT",
         "version": "0.4.7",
         "downloadable": True,
-        "tag": "v0.71.0",
-        "sha256": "09341cf19d4aa0f9af06787f7f5f10e039297e6b69ccea1beeb79b16d0ef7922",  # sha256 real del tarball de v0.71.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: el desplegable de versiones ya no se come la version detectada -- la lista la sirve el backend desde SUPPORTED_VERSIONS en vez de estar escrita a mano en el HTML, donde se habia quedado en 3.1-3.4)
+        "tag": "v0.72.0",
+        "sha256": "c8a34efda86a6cc144bbe4219c1e5e4a9e83ea4073a499977011f54f10ffed31",  # sha256 real del tarball de v0.72.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: el bloque `vacuums:` del perfil ya se PUBLICA -- un robot aspirador se daba de alta bien y no creaba ninguna entidad vacuum.* porque el puente MQTT solo publicaba dps/climates/lights)
         "files": ["tuya_plugin.py", "tuya", "tuya_templates"],
     },
     "lighting": {

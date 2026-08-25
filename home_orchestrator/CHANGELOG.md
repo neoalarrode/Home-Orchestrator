@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.72.1
+Tuya re-pineado al tag `v0.72.0`. sha256 `c8a34efd…ed31`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que los cuatro métodos del aspirador están en el código empaquetado, que los bucles de discovery y de estado recorren `vacuums`, y que el estado sale del traductor y no del DP crudo.
+
 ## 0.72.0
 
 **Un robot aspirador se daba de alta y no aparecía ninguna entidad `vacuum.*`.**
