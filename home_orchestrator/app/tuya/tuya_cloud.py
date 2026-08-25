@@ -63,7 +63,27 @@ class TuyaCloudApi:
             self._access_secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256
         ).hexdigest().upper()
 
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        """Ordena los parametros de consulta alfabeticamente.
+
+        BUG REAL, sintoma `1004: sign invalid`. Tuya firma la URL con los
+        parametros ORDENADOS de forma ascendente, y la firma tiene que cuadrar
+        con lo que se manda. Hasta ahora no se notaba porque ninguna llamada
+        pasaba de UN parametro (`?grant_type=1`) o de ninguno -- con uno solo,
+        ordenar no cambia nada. La primera con varios (el log de eventos:
+        start_time/end_time/type/size) se llevo el rechazo.
+
+        Se hace aqui, en el punto por el que pasan TODAS las peticiones, para
+        que no vuelva a depender de que quien anada una nueva se acuerde.
+        """
+        base, sep, query = path.partition("?")
+        if not sep or not query:
+            return path
+        return base + "?" + "&".join(sorted(query.split("&")))
+
     def _request(self, method: str, path: str, body: dict | None = None, signed_with_token: bool = True) -> dict[str, Any]:
+        path = self._normalize_path(path)
         body_str = "" if body is None else json.dumps(body, separators=(",", ":"))
         t = str(int(time.time() * 1000))
         token = self._get_token() if signed_with_token else None

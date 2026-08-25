@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.75.0
+
+**`1004: sign invalid` en cualquier llamada a la nube de Tuya con más de un parámetro.**
+
+Tuya firma la URL con los parámetros de consulta **ordenados alfabéticamente**, y la firma tiene que cuadrar con lo que se manda. Nosotros los mandábamos en el orden en que estaban escritos.
+
+No se había notado nunca porque ninguna llamada pasaba de **un** parámetro (`?grant_type=1`) o de ninguno — con uno solo, ordenar no cambia nada. La primera con varios, el log de eventos de 0.74.0 (`start_time`/`end_time`/`type`/`size`), se llevó el rechazo.
+
+Arreglado en `_request`, que es el punto por el que pasan todas las peticiones, en vez de en la llamada que falló: así no vuelve a depender de que quien añada una nueva se acuerde.
+
 ## 0.74.1
 Tuya re-pineado al tag `v0.74.0`. sha256 `4f6abf18…c2a0`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que `get_device_logs` y su ruta están en el código empaquetado con el respaldo a la v2.0 del API, y que sigue el arreglo del aviso falso al resolver un dispositivo ya dado de alta.
 
