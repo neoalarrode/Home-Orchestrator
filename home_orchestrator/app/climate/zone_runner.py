@@ -1377,11 +1377,25 @@ class ZoneRunner:
             self._manual_cool = self.target_temperature_high if self.hvac_mode == "heat_cool" \
                 else (self.target_temperature if self.hvac_mode == "cool" else None)
 
+        antes = (self._manual_heat, self._manual_cool)
+
         if self.hvac_mode == "heat_cool":
             if low is not None:
                 self._manual_heat = float(low)
             if high is not None:
                 self._manual_cool = float(high)
+            # BUG REAL, visto con un controlador Matter: al poner "auto" desde
+            # Apple Home llegaban las DOS consignas con el MISMO valor (23/23).
+            # Un rango de calor/frio sin separacion es degenerado: no queda
+            # ninguna banda muerta, asi que la zona siempre esta por encima del
+            # objetivo de frio o por debajo del de calor y nunca puede quedarse
+            # quieta -- justo como acabo la zona, en "Frio" permanente.
+            #
+            # Matter tiene un atributo para esto (`MinSetpointDeadBand`) que el
+            # controlador no siempre respeta. Se separan aqui lo justo, alrededor
+            # del valor pedido, para RESPETAR lo que el usuario pidio (23) sin
+            # dejar el rango invalido.
+            self._enforce_setpoint_deadband()
         elif self.hvac_mode == "heat" and single is not None:
             self._manual_heat = float(single)
         elif self.hvac_mode == "cool" and single is not None:
@@ -1389,14 +1403,61 @@ class ZoneRunner:
         else:
             return
 
-        self._preset_mode = presets_module.PRESET_MANUAL
+        # Pasar a "Manual" es PERSISTENTE (ver presets.py), asi que solo se hace
+        # si las consignas han CAMBIADO de verdad. Un controlador Matter/HomeKit
+        # reescribe las consignas al cambiar de modo, aunque sean las mismas: sin
+        # esta comprobacion, cada vez que se tocaba el modo desde Apple Home la
+        # zona salia de "Automatico" para siempre sin que nadie lo pidiera.
+        if (self._manual_heat, self._manual_cool) != antes:
+            self._preset_mode = presets_module.PRESET_MANUAL
         self.decide_and_act()
+
+    def _enforce_setpoint_deadband(self) -> None:
+        """Garantiza una separacion minima entre la consigna de calor y la de
+        frio. Se conserva el punto medio de lo pedido, asi que un 23/23 se queda
+        centrado en 23 en vez de desplazarse a un lado."""
+        heat, cool = self._manual_heat, self._manual_cool
+        if heat is None or cool is None:
+            return
+        minimo = max(0.2, float(self.zone.get(CONF_DEADBAND, DEFAULT_DEADBAND)) * 2)
+        if cool - heat >= minimo:
+            return
+        centro = (heat + cool) / 2
+        self._manual_heat = round(centro - minimo / 2, 2)
+        self._manual_cool = round(centro + minimo / 2, 2)
+        _LOGGER.info(
+            "Zona climate %s: consignas %.1f/%.1f sin separacion suficiente (un rango sin banda "
+            "muerta no deja a la zona quedarse quieta) -- ajustadas a %.2f/%.2f, centradas en %.1f",
+            self.zone_id, heat, cool, self._manual_heat, self._manual_cool, centro,
+        )
 
     def set_humidity(self, humidity: float) -> None:
         self.target_humidity = float(humidity)
         self.decide_and_act()
 
     def set_hvac_mode(self, hvac_mode: str) -> None:
+        # Este es el UNICO punto por el que un modo entra desde fuera (MQTT/
+        # Matter/HomeKit, la tarjeta del dashboard, una automatizacion). Antes
+        # aceptaba cualquier cadena sin comprobar nada: un payload suelto podia
+        # meter la zona en un modo que no soporta y llevar a `_execute` por la
+        # rama equivocada. Y como desde la v0.58.0 el modo se PERSISTE y se
+        # restaura al arrancar, un modo malo se quedaba pegado.
+        validos = self.hvac_modes or []
+        if validos and hvac_mode not in validos:
+            _LOGGER.warning(
+                "Zona climate %s: modo '%s' rechazado, no esta entre los que ofrece (%s) -- se "
+                "mantiene '%s'", self.zone_id, hvac_mode, ", ".join(validos), self.hvac_mode,
+            )
+            return
+        if hvac_mode != self.hvac_mode:
+            # A nivel INFO y a proposito: sin esto no habia forma de saber si un
+            # cambio de modo venia de fuera (un controlador Matter reescribiendo)
+            # o de la propia reconciliacion de capacidad (`_reconcile_hvac_mode`).
+            # Es la unica pista para distinguirlo en produccion.
+            _LOGGER.info(
+                "Zona climate %s: modo cambiado por orden EXTERNA: '%s' -> '%s'",
+                self.zone_id, self.hvac_mode, hvac_mode,
+            )
         self.hvac_mode = hvac_mode
         if hvac_mode != "off":
             self._last_active_hvac_mode = hvac_mode

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.63.0
+
+Tres arreglos en el trato con controladores Matter/HomeKit, salidos de un caso real.
+
+### Consignas 23/23: un rango sin banda muerta
+
+Al poner "auto" desde un controlador Matter llegaban las **dos consignas con el mismo valor** (23/23). Un rango de calor/frío sin separación es degenerado: no queda ninguna banda muerta, así que la zona siempre está por encima del objetivo de frío o por debajo del de calor, y **nunca puede quedarse quieta** — acababa en "Frío" permanente.
+
+Matter tiene un atributo justo para esto (`MinSetpointDeadBand`) que el controlador no siempre respeta. Ahora se separan lo justo **conservando el punto medio de lo pedido**: un 23/23 queda centrado en 23 en vez de desplazarse a un lado. Un rango invertido (calor por encima del frío) también se corrige, y uno válido no se toca.
+
+### Reescribir las mismas consignas sacaba la zona de "Automático"
+
+Pasar a `Manual` es **persistente** por diseño (ver `presets.py`): se queda fijado hasta que se vuelve a elegir otro preajuste. Pero un controlador Matter/HomeKit **reescribe las consignas al cambiar de modo**, aunque sean exactamente las mismas — así que cada vez que se tocaba el modo desde Apple Home la zona salía de "Automático" para siempre, sin que nadie lo hubiera pedido.
+
+Ahora solo se pasa a `Manual` si las consignas **cambian de verdad**.
+
+### `set_hvac_mode` no validaba nada, y ahora deja rastro
+
+Era el único punto por el que entra un modo desde fuera (MQTT/Matter/HomeKit, la tarjeta del dashboard, una automatización) y aceptaba **cualquier cadena** sin comprobar si la zona la soporta, lo que podía llevar a `_execute` por la rama equivocada. Y como desde 0.58.0 el modo se persiste y se restaura al arrancar, un modo malo se quedaba pegado.
+
+Ahora se valida contra los modos que la zona ofrece y, además, **se registra a nivel INFO cada cambio de modo por orden externa** (`modo cambiado por orden EXTERNA: 'heat_cool' -> 'cool'`). Sin eso no había forma de distinguir en producción si un cambio venía de fuera o de la propia reconciliación de capacidad de la zona.
+
+### Nota sobre Matter y `ControlSequenceOfOperation`
+
+En un caso real, el puente Matter rechazaba el modo frío con `SystemMode Cool is not allowed with ControlSequenceOfOperation HeatingOnly` y **aislaba la entidad** del puente. Esa secuencia la deriva el puente **al crear el endpoint**: si en ese momento la entidad no expone las dos consignas (`target_temp_low`/`target_temp_high`), no ve un termostato de doble consigna y lo modela de un solo sentido — y entonces ni Auto es posible ni el frío se acepta.
+
+Los arreglos de 0.62.0 y 0.63.0 van dirigidos a que esas dos consignas estén siempre presentes en modo `heat_cool`. Pero como la secuencia se decide al crear el endpoint, **tras actualizar hay que recrear el endpoint del puente** (reiniciar el puente Matter, o desemparejar y volver a emparejar la entidad) para que se re-derive con las dos consignas ya visibles.
+
 ## 0.62.1
 Climate y TP-Link re-pineados al tag `v0.62.0`. sha256 `527b7b22…bd1b`, calculado sobre el tarball real y verificado antes de fijarlo; comprobado que los elementos de sus listas `files` viajan dentro y que los seis arreglos están presentes en el código empaquetado.
 
