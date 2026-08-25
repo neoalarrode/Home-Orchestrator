@@ -23,6 +23,7 @@ import time
 from typing import Any, Callable
 
 from .discovery import DiscoveredDevice, PersistentDiscovery
+from .discovery import active_scan as discovery_active_scan
 from .profile import (
     ClimateMapping,
     DeviceProfile,
@@ -102,6 +103,13 @@ class TuyaDeviceManager:
         ver tuya_cloud.py). Puramente informativo: el usuario decide, uno
         a uno, si añade alguno (ver tuya_plugin.py)."""
         return list(self._discovery.devices.values())
+
+    def active_scan(self, timeout: float = 900.0) -> list[str]:
+        """Barrido ACTIVO de la LAN (ver discovery.active_scan): IPs con el
+        puerto de datos de Tuya abierto. Complementa
+        `get_discovered_devices` -- eso solo ve lo que se anuncia por
+        broadcast, y hay dispositivos que no lo hacen nunca."""
+        return self._run_coro(discovery_active_scan(), timeout=timeout)
 
     async def _reconnect_loop(self) -> None:
         """Mismo criterio que el __init__.py original: cualquier

@@ -155,6 +155,75 @@ class TuyaPlugin(Plugin):
             })
             return flask.jsonify({"linked": True})
 
+        @app.get("/api/cloud/devices")
+        def _cloud_devices():
+            """Lista los dispositivos de la cuenta Tuya vinculada.
+
+            GAP CERRADO AQUI: hasta ahora la nube solo se consultaba para
+            resolver un dispositivo que YA se hubiera visto por broadcast en
+            la LAN. Un dispositivo que no se anuncia (aislamiento de
+            clientes en el AP, otra VLAN, un mesh que no reenvia broadcast,
+            o que solo lo emite al arrancar) no habia forma de darlo de alta
+            salvo escribiendo su device_id y su local_key a mano -- datos
+            que la app de Tuya no ensena. La cuenta ya los conoce todos, asi
+            que se listan: `seen_on_lan` dice cuales ademas se estan oyendo,
+            y `already_added` cuales estan ya dados de alta aqui."""
+            account = tuya_store.load_account()
+            if not account["access_id"] or not account["access_secret"] or not account["uid"]:
+                return flask.jsonify({"error": "vincula primero una cuenta Tuya"}), 400
+            try:
+                api = TuyaCloudApi(account["region"], account["access_id"], account["access_secret"])
+                cloud = api.get_user_devices(account["uid"])
+            except (TuyaCloudAuthError, TuyaCloudApiError):
+                log.warning("Tuya: fallo listando los dispositivos de la cuenta", exc_info=True)
+                return flask.jsonify({"error": "fallo consultando la nube de Tuya"}), 502
+
+            seen = {d.device_id: d for d in self._manager.get_discovered_devices()}
+            added = {
+                (d["config"] or {}).get("device_id") for d in tuya_store.load_devices()
+            }
+            return flask.jsonify([
+                {
+                    "device_id": d["device_id"],
+                    "name": d["name"],
+                    "category": d.get("category"),
+                    "product_id": d.get("product_id"),
+                    "online": d.get("online", False),
+                    "already_added": d["device_id"] in added,
+                    "seen_on_lan": d["device_id"] in seen,
+                    "ip": seen[d["device_id"]].ip if d["device_id"] in seen else None,
+                }
+                for d in cloud
+            ])
+
+        @app.get("/api/scan")
+        def _scan():
+            """Barrido ACTIVO de la LAN -- ver discovery.active_scan. Todo el
+            descubrimiento era pasivo hasta ahora; esto encuentra lo que no
+            se anuncia. Devuelve IPs, no dispositivos: un connect al puerto
+            de datos no revela ni device_id ni version, eso hay que cruzarlo
+            con la lista de la cuenta (`/api/cloud/devices`)."""
+            try:
+                ips = self._manager.active_scan()
+            except Exception:
+                log.exception("Tuya: fallo en el barrido activo de la red")
+                return flask.jsonify({"error": "fallo barriendo la red"}), 502
+            seen_ips = {d.ip: d.device_id for d in self._manager.get_discovered_devices()}
+            added_ips = {
+                (d["config"] or {}).get("address") for d in tuya_store.load_devices()
+            }
+            return flask.jsonify([
+                {
+                    "ip": ip,
+                    "device_id": seen_ips.get(ip),
+                    "already_added": ip in added_ips,
+                    # Lo interesante: puerto abierto pero NADIE lo ha oido
+                    # anunciarse y no esta dado de alta.
+                    "unidentified": ip not in seen_ips and ip not in added_ips,
+                }
+                for ip in ips
+            ])
+
         @app.post("/api/discovered/<device_id>/resolve")
         def _resolve_discovered(device_id):
             """NO da de alta nada -- resuelve el local_key + esquema DP
@@ -164,10 +233,15 @@ class TuyaPlugin(Plugin):
             edite antes de guardar. Guardar de verdad sigue pasando
             siempre por POST /api/devices, como cualquier alta manual --
             aqui no se conecta ni se persiste nada todavia."""
+            # No se exige haberlo oido por broadcast. Antes esto devolvia 404
+            # y ahi se acababa el camino: un dispositivo que no se anuncia
+            # (aislamiento en el AP, otra VLAN, un mesh que no reenvia
+            # broadcast) no se podia resolver aunque la cuenta lo conociera
+            # perfectamente. Si se ha oido, se aprovecha su IP y su version;
+            # si no, se resuelve igual y la direccion la pone el usuario --
+            # `/api/scan` le ayuda a encontrarla.
             seen = {d.device_id: d for d in self._manager.get_discovered_devices()}
             discovered = seen.get(device_id)
-            if discovered is None:
-                return flask.jsonify({"error": "dispositivo no visto en la LAN (¿sigue encendido?)"}), 404
 
             account = tuya_store.load_account()
             if not account["access_id"] or not account["access_secret"] or not account["uid"]:
@@ -187,12 +261,20 @@ class TuyaPlugin(Plugin):
             profile, warnings = auto_profile.build_profile_from_schema(
                 cloud_device["name"], cloud_device.get("category"), cloud_device.get("product_id"), schema,
             )
+            if discovered is None:
+                warnings = [
+                    "Este dispositivo no se ha oido anunciarse en la LAN, asi que no se "
+                    "conoce su direccion IP ni su version de protocolo: ponlas a mano. "
+                    "Prueba «buscar en la red» para localizar su IP; si no sabes la "
+                    "version, 3.3 es la mas habitual.",
+                    *warnings,
+                ]
             return flask.jsonify({
                 "name": cloud_device["name"],
                 "device_id": device_id,
-                "address": discovered.ip,
+                "address": discovered.ip if discovered else "",
                 "local_key": cloud_device["local_key"],
-                "protocol_version": discovered.version or "3.3",
+                "protocol_version": (discovered.version if discovered else None) or "3.3",
                 "profile_yaml": profile_to_yaml(profile),
                 "warnings": warnings,
             })

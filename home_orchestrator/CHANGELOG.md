@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.68.0
+
+**Tres versiones de protocolo Tuya que faltaban, y el descubrimiento deja de ser solo pasivo.** Comparado con [tuya-local](https://github.com/make-all/tuya-local), que es la referencia de la que viene este puerto.
+
+**Faltaban 3.22, 3.42 y 3.52.** La referencia soporta ocho versiones (`API_PROTOCOL_VERSIONS`); nosotros cinco. Las variantes `x.y2` las anuncian dispositivos reales en su broadcast, y como el descubrimiento no filtra por versión, uno de esos se podía dar de alta y luego **no conectaba nunca** — el constructor lo rechazaba con un `NotImplementedError`.
+
+Lo importante es *cómo* se soportan. La referencia no compara cadenas: convierte a `float` y ramifica por umbrales (`version >= 3.4` para negociar clave de sesión, `>= 3.5` para el marco GCM), conservando la cadena original en la cabecera de versión que espera el dispositivo. Nuestro despacho comparaba cadenas exactas en **quince** sitios, así que añadirlas a la lista de válidas y nada más habría sido peor que no soportarlas: un `3.42` habría caído en el camino de 3.3 sin negociar clave, y un `3.52` habría usado el marco `0x55AA` en vez de `0x6699`. Ahora se calculan tres banderas de familia en el constructor y los quince puntos las usan. `3.2` sigue siendo el único que arranca en el dialecto `type_0d` — `3.22` no es `3.2`.
+
+**El descubrimiento era 100% pasivo.** Escuchaba broadcasts UDP en los tres puertos y nada más. Eso no encuentra un dispositivo que no los emita, y hay motivos de sobra para que no lleguen: aislamiento de clientes en el punto de acceso, otra VLAN o subred, un sistema mesh que no reenvía broadcast, o un dispositivo que solo se anuncia al arrancar. La referencia sí tiene barrido activo. Añadido `active_scan()`: recorre los `/24` locales probando el puerto de datos, con concurrencia acotada y bajo demanda, nunca en bucle de fondo. Devuelve **IPs, no dispositivos** — un connect TCP no revela ni `device_id` ni versión, y prometer lo contrario sería mentir sobre lo que un barrido de puertos puede saber.
+
+**La nube solo servía para dispositivos ya oídos por broadcast.** `POST /api/discovered/<id>/resolve` devolvía 404 si el dispositivo no se había visto en la LAN, y ahí se acababa el camino: la cuenta vinculada conocía su `device_id`, su nombre y su `local_key`, pero no había forma de usarlos. Un dispositivo que no se anuncia solo se podía dar de alta escribiendo esos datos a mano — datos que la app de Tuya no enseña. Ahora:
+
+- `GET /api/cloud/devices` lista la cuenta entera, marcando cada dispositivo con `already_added`, `seen_on_lan` y su `ip` si se le ha oído.
+- `GET /api/scan` lanza el barrido activo y marca las IPs con el puerto abierto que **nadie ha oído anunciarse y no están dadas de alta** — que son justo las que hay que cruzar con la lista de la cuenta.
+- `resolve` ya no exige haber oído el dispositivo: si se le oyó aprovecha su IP y su versión, y si no, resuelve igual y avisa de que la dirección y la versión hay que ponerlas a mano.
+
 ## 0.67.1
 Climate re-pineado al tag `v0.67.0`. sha256 `40d32c34…5e94`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los **doce** arreglos de clima acumulados (0.62.0, 0.63.0, 0.64.0, 0.65.0, 0.66.0 y 0.67.0) están presentes en el código empaquetado.
 

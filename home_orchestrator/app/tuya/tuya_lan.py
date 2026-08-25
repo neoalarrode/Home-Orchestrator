@@ -85,6 +85,12 @@ _LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Wire constants - names/values match localtuya's pytuya/__init__.py exactly
 # ---------------------------------------------------------------------------
+# Las mismas OCHO que soporta la referencia (`API_PROTOCOL_VERSIONS` en
+# tuya-local). Las variantes "x.y2" no son un protocolo aparte: se comportan
+# como su version base pero anuncian su propia cadena de version -- ver las
+# banderas `_uses_*` del constructor.
+SUPPORTED_VERSIONS = ("3.1", "3.2", "3.3", "3.4", "3.5", "3.22", "3.42", "3.52")
+
 PREFIX = 0x000055AA
 SUFFIX = 0x0000AA55
 PREFIX_BYTES = b"\x00\x00\x55\xaa"  # used to resynchronize a desynced stream
@@ -203,7 +209,7 @@ class TuyaLocalDevice:
         port: int = 6668,
         on_update: Callable[[dict[int, Any]], None] | None = None,
     ) -> None:
-        if protocol_version not in ("3.1", "3.2", "3.3", "3.4", "3.5"):
+        if protocol_version not in SUPPORTED_VERSIONS:
             # El caso VACIO se distingue del invalido: era el que se daba de
             # verdad (un alta manual con el campo en blanco) y el mensaje
             # quedaba como "Tuya protocol  is not implemented", con dos
@@ -211,7 +217,7 @@ class TuyaLocalDevice:
             what = f"'{protocol_version}'" if protocol_version else "vacia (no indicada)"
             raise NotImplementedError(
                 f"Version de protocolo Tuya {what} no soportada "
-                "(validas: 3.1, 3.2, 3.3, 3.4, 3.5). Revisa el campo "
+                f"(validas: {', '.join(SUPPORTED_VERSIONS)}). Revisa el campo "
                 "'protocol_version' de este dispositivo; si no lo sabes, 3.3 es "
                 "lo mas habitual."
             )
@@ -226,6 +232,29 @@ class TuyaLocalDevice:
         self.protocol_version = protocol_version
         self.version_bytes = protocol_version.encode("latin1")
         self.version_header = self.version_bytes + _VERSION_HEADER_TAIL
+        # GAP CERRADO AQUI: la referencia soporta OCHO versiones -- ademas de
+        # 3.1/3.2/3.3/3.4/3.5, las variantes 3.22, 3.42 y 3.52 que algunos
+        # dispositivos anuncian de verdad en su broadcast. Nosotros las
+        # rechazabamos en el constructor, asi que un dispositivo que dijera
+        # "3.22" se podia dar de alta (el descubrimiento no filtra por version)
+        # y luego NO conectaba nunca.
+        #
+        # Lo importante es COMO se soportan. La referencia no compara cadenas:
+        # convierte a float y ramifica por umbrales (`if self.version >= 3.4`,
+        # `>= 3.5`), asi que 3.22 se comporta como 3.3, 3.42 como 3.4 y 3.52
+        # como 3.5 -- pero cada una conserva SU PROPIA cadena en la cabecera de
+        # version (`version_bytes = str(version).encode()`), que es lo que el
+        # dispositivo espera recibir. Anadirlas solo a la lista de validas,
+        # dejando las comparaciones por cadena, habria sido peor que no
+        # soportarlas: un 3.42 caeria en el camino de 3.3 (sin negociar clave de
+        # sesion) y un 3.52 usaria el marco 0x55AA en vez de 0x6699.
+        self._version_num = float(protocol_version)
+        # Negocia clave de sesion al conectar (handshake HMAC-SHA256).
+        self._uses_session_key = self._version_num >= 3.4
+        # Marco 0x6699 con AES-GCM envolviendo la cabecera entera.
+        self._uses_gcm_frame = self._version_num >= 3.5
+        # Marco 0x55AA con HMAC-SHA256 de 32 bytes y cabecera DENTRO del cifrado.
+        self._uses_hmac_frame = 3.4 <= self._version_num < 3.5
         self.port = port
         self._on_update = on_update
         self._seq = 0
@@ -251,7 +280,7 @@ class TuyaLocalDevice:
         # the whole send-then-wait cycle for ordinary (non-handshake)
         # commands on 3.5, one at a time - matches how a real embedded
         # device processes them anyway (synchronously, never pipelined).
-        self._cmd_lock = asyncio.Lock() if protocol_version == "3.5" else None
+        self._cmd_lock = asyncio.Lock() if self._version_num >= 3.5 else None
         # Connection-lifecycle guards, ported from localtuya's
         # `TuyaDevice.async_connect()` (common.py), which refuses to start a
         # second connection with:
@@ -299,7 +328,7 @@ class TuyaLocalDevice:
         # reference supports it in `set_version()`: 3.2 frames exactly like
         # 3.3 but starts in the type_0d dialect rather than type_0a
         # ("3.2 behaves like 3.3 with type_0d" - its own comment).
-        self.dev_type = DEV_TYPE_0D if protocol_version == "3.2" else DEV_TYPE_0A
+        self.dev_type = DEV_TYPE_0D if self._version_num == 3.2 else DEV_TYPE_0A
         # {"1": None, "2": None, ...} - the explicit DP list a type_0d
         # device requires in its query. Populated via add_dps_to_request()
         # from the device's profile (the reference fills it from the
@@ -382,7 +411,7 @@ class TuyaLocalDevice:
         self._seq = 0
         self._listen_task = asyncio.ensure_future(self._listen())
 
-        if self.protocol_version in ("3.4", "3.5"):
+        if self._uses_session_key:
             ok = await self._negotiate_session_key()
             if not ok:
                 # BUG FIXED HERE: this called self.close(), which is now
@@ -605,7 +634,7 @@ class TuyaLocalDevice:
         # side symptom). tinytuya's own payload_dict confirms this
         # explicitly, its own comment: "v3.5 is just a copy of v3.4" -
         # SAME override to DP_QUERY_NEW/CONTROL_NEW, not a 3.4-only thing.
-        if self.dev_type == DEV_TYPE_0D and self.protocol_version not in ("3.4", "3.5"):
+        if self.dev_type == DEV_TYPE_0D and not self._uses_session_key:
             # type_0d: DP_QUERY is overridden to CONTROL_NEW and must carry
             # the explicit DP list. `dps_to_request` deliberately goes out
             # even if empty - matches the reference, and an empty list is
@@ -618,7 +647,7 @@ class TuyaLocalDevice:
             }
             reply = await self._send_receive_json(CMD_CONTROL_NEW, obj)
             return _extract_dps(reply)
-        if self.protocol_version in ("3.4", "3.5"):
+        if self._uses_session_key:
             # 3.4/3.5 use DP_QUERY_NEW with a 3-field payload (no gwId) -
             # ported from the reference's "v3.4"/"v3.5" payload_dict
             # override (identical for both).
@@ -642,7 +671,7 @@ class TuyaLocalDevice:
     async def set_dps(self, dps: dict[int, Any]) -> dict[int, Any]:
         """Set one or more datapoints."""
         dps_str_keyed = {str(k): v for k, v in dps.items()}
-        if self.protocol_version in ("3.4", "3.5"):
+        if self._uses_session_key:
             # 3.4/3.5 use CONTROL_NEW: dps nested under "data", "t" as a
             # real int (not a string) - ported from the reference's
             # "v3.4"/"v3.5" payload_dict override (identical for both, its
@@ -716,7 +745,7 @@ class TuyaLocalDevice:
             _LOGGER.debug("%s: %s session key negotiation step 2 failed (short/no response)", self.device_id, self.protocol_version)
             return False
 
-        if self.protocol_version == "3.4":
+        if self._uses_hmac_frame:
             try:
                 decrypted = self._decrypt_raw(reply.payload)
             except (ValueError, KeyError) as err:
@@ -746,7 +775,7 @@ class TuyaLocalDevice:
         await self._send_only(CMD_SESS_KEY_NEG_FINISH, rkey_hmac)
 
         xored = bytes(a ^ b for a, b in zip(self._local_nonce, self._remote_nonce))
-        if self.protocol_version == "3.4":
+        if self._uses_hmac_frame:
             # NOT padded (pad=False in the reference) - the XOR result is
             # already exactly 16 bytes, one AES block.
             self.local_key = self._encrypt_raw(xored, pad_data=False)
@@ -864,7 +893,7 @@ class TuyaLocalDevice:
         hmac_key: bytes | None = None
         payload = raw_payload
 
-        if self.protocol_version == "3.5":
+        if self._uses_gcm_frame:
             # Own framing entirely (see _pack_6699) - header/encrypt/footer
             # all happen together there because the GCM AAD is the header
             # itself, so there is no separate "_pack" step to call into
@@ -874,7 +903,7 @@ class TuyaLocalDevice:
             self._seq += 1
             seq = self._seq
             return self._pack_6699(seq, command, payload), seq, self.local_key
-        if self.protocol_version == "3.4":
+        if self._uses_hmac_frame:
             hmac_key = self.local_key
             if command not in _NO_HEADER_CMDS:
                 # 3.4: header goes into the PLAINTEXT (encrypted together
@@ -882,7 +911,7 @@ class TuyaLocalDevice:
                 # is prepended to the already-encrypted ciphertext.
                 payload = self.version_header + payload
             payload = self._encrypt_raw(payload, pad_data=True)
-        elif self.protocol_version in ("3.2", "3.3"):
+        elif self._version_num >= 3.2:
             # BUG FIXED HERE (found by diffing against the reference):
             # this header was missing entirely on both send and receive
             # for a long time - every set_dps() control command would
@@ -955,7 +984,7 @@ class TuyaLocalDevice:
         # brightness AND a color change fired almost together by one MQTT
         # `turn_on`) never displace each other's waiter.
         use_cmd_wait = wait_cmd if wait_cmd is not None else (
-            command if self.protocol_version == "3.5" else None
+            command if self._uses_gcm_frame else None
         )
         serialize = self._cmd_lock is not None and use_cmd_wait is not None
 
@@ -1024,7 +1053,7 @@ class TuyaLocalDevice:
                     # error anywhere pointing at the cause. Resynchronize on
                     # the next frame boundary instead of dying.
                     try:
-                        if self.protocol_version == "3.5":
+                        if self._uses_gcm_frame:
                             # Own parser: GCM decrypt happens INSIDE here
                             # (needs self.local_key), unlike _try_parse's
                             # pure/stateless header-only parse for the
@@ -1033,11 +1062,11 @@ class TuyaLocalDevice:
                             frame, consumed = self._try_parse_6699(buf)
                         else:
                             frame, consumed = _try_parse(
-                                buf, hmac_framed=self.protocol_version == "3.4"
+                                buf, hmac_framed=self._uses_hmac_frame
                             )
                     except TuyaProtocolError as err:
                         self._trace_add("rx", -1, 0, buf[:48], f"UNPARSEABLE: {err}")
-                        prefix_bytes = PREFIX_6699_BYTES if self.protocol_version == "3.5" else PREFIX_BYTES
+                        prefix_bytes = PREFIX_6699_BYTES if self._uses_gcm_frame else PREFIX_BYTES
                         nxt = buf.find(prefix_bytes, 1)
                         _LOGGER.debug(
                             "%s: %s - %s",
@@ -1178,7 +1207,7 @@ class TuyaLocalDevice:
         if not raw:
             return None
         try:
-            if self.protocol_version == "3.5":
+            if self._uses_gcm_frame:
                 # Already plaintext by this point - _try_parse_6699 did the
                 # GCM decrypt+verify at parse time (see its docstring for
                 # why that can't be deferred here like 3.4's ECB can).
@@ -1186,7 +1215,7 @@ class TuyaLocalDevice:
                 if decrypted.startswith(self.version_bytes):
                     decrypted = decrypted[len(self.version_header) :]
                 text = decrypted.decode("utf-8")
-            elif self.protocol_version == "3.4":
+            elif self._uses_hmac_frame:
                 decrypted = self._decrypt_raw(raw)
                 if decrypted.startswith(self.version_bytes):
                     decrypted = decrypted[len(self.version_header) :]

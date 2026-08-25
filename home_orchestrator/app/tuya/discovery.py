@@ -51,6 +51,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -268,6 +269,108 @@ class PersistentDiscovery:
         for t in self._transports:
             t.close()
         self._transports = []
+
+
+DEVICE_PORT = 6668  # puerto TCP de datos de un dispositivo Tuya
+SCAN_CONCURRENCY = 128
+SCAN_TIMEOUT = 0.6
+
+
+def local_ipv4_subnets() -> list[str]:
+    """Prefijos /24 de las interfaces IPv4 locales, p.ej. ["192.168.1"].
+
+    Se resuelve por la ruta por defecto (un UDP connect a una direccion
+    externa NO envia nada, solo hace que el kernel elija la interfaz de
+    salida) mas cualquier direccion que resuelva el propio nombre del host.
+    Es el mismo criterio que usa la referencia cuando no tiene `netifaces`:
+    asumir /24, que es lo que hay en practicamente cualquier LAN domestica.
+    """
+    found: list[str] = []
+
+    def _add(ip: str) -> None:
+        if not ip or ip.startswith("127."):
+            return
+        prefix = ip.rsplit(".", 1)[0]
+        if prefix not in found:
+            found.append(prefix)
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 1))
+        _add(s.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        s.close()
+
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            _add(info[4][0])
+    except OSError:
+        pass
+    return found
+
+
+async def _port_open(ip: str, port: int, timeout: float) -> bool:
+    try:
+        _reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, port), timeout=timeout
+        )
+    except (OSError, asyncio.TimeoutError):
+        return False
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except OSError:
+        pass
+    return True
+
+
+async def active_scan(
+    subnets: list[str] | None = None,
+    timeout: float = SCAN_TIMEOUT,
+    concurrency: int = SCAN_CONCURRENCY,
+) -> list[str]:
+    """Barrido ACTIVO: devuelve las IPs de la LAN con el puerto 6668 abierto.
+
+    GAP CERRADO AQUI. Todo el descubrimiento de este modulo era PASIVO --
+    escuchar broadcasts UDP y nada mas. Eso no encuentra un dispositivo que
+    no los emita, y hay motivos de sobra para que no lleguen: aislamiento de
+    clientes en el punto de acceso, una VLAN o subred distinta, un sistema
+    mesh que no reenvia broadcast, o simplemente un dispositivo que solo los
+    manda al arrancar. La referencia si tiene esto (el "force scan" de
+    tinytuya, que en vez de esperar recorre la subred probando el puerto de
+    datos), y es la unica forma de dar con esos dispositivos.
+
+    Un connect TCP a 6668 NO identifica al dispositivo: no da device_id ni
+    version. Solo dice "aqui hay algo que habla Tuya". Emparejar esa IP con
+    un dispositivo concreto es cosa de la lista de la cuenta en la nube (ver
+    `get_user_devices`), que si trae device_id, nombre y local_key. Por eso
+    esto devuelve IPs y no `DiscoveredDevice`: prometer lo segundo seria
+    mentir sobre lo que un barrido de puertos puede saber.
+    """
+    prefixes = subnets if subnets is not None else local_ipv4_subnets()
+    if not prefixes:
+        _LOGGER.warning(
+            "Tuya: no se ha podido determinar ninguna subred local -- barrido activo omitido"
+        )
+        return []
+
+    targets = [f"{p}.{h}" for p in prefixes for h in range(1, 255)]
+    sem = asyncio.Semaphore(concurrency)
+    found: list[str] = []
+
+    async def probe(ip: str) -> None:
+        async with sem:
+            if await _port_open(ip, DEVICE_PORT, timeout):
+                found.append(ip)
+
+    await asyncio.gather(*(probe(ip) for ip in targets))
+    _LOGGER.info(
+        "Tuya: barrido activo de %s -- %d dispositivo(s) con el puerto %d abierto",
+        ", ".join(f"{p}.0/24" for p in prefixes), len(found), DEVICE_PORT,
+    )
+    return sorted(found, key=lambda ip: tuple(int(o) for o in ip.split(".")))
 
 
 async def discover_devices(timeout: float = DISCOVERY_TIMEOUT) -> dict[str, DiscoveredDevice]:
