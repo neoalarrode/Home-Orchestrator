@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.64.0
+
+**Un modo con consigna nunca reporta un hueco.** Visto en producción: la entidad en modo `cool` con `temperature: null`. Eso deja la tarjeta de HA sin mandos y, sobre todo, un puente Matter que **automapea las características de la entidad** no ve un termostato con consignas — puede modelarlo de un solo sentido (`ControlSequenceOfOperation HeatingOnly`), y entonces **rechaza** el modo frío y **aísla la entidad** del puente.
+
+En `heat`/`cool`/`heat_cool`, si el cálculo del ciclo no dejó consigna se cae al valor del preajuste activo en vez de publicar `null`. `dry` y `fan_only` son la excepción legítima: esos modos no tienen consigna de temperatura y `null` es la verdad.
+
+Complementa los arreglos de 0.62.0 (consignas borradas al ventilar por ventana abierta) y 0.63.0 (banda muerta mínima): entre los tres, una zona en un modo con consigna siempre publica lo que Matter necesita para poder ofrecer "auto".
+
+### Nota de diagnóstico, para quien vea que "auto" acaba en frío
+
+Si el puente ya expone `controlSequenceOfOperation: 4` (CoolingAndHeating) y `autoMode: true` pero la entidad acaba igualmente en `cool`, mira el ajuste **`useAutomaticModeManagement`** del propio puente: con él desactivado, el puente puede resolver "Auto" por su cuenta a un modo concreto y mandar ese a Home Assistant. Desde 0.63.0 el log registra a nivel INFO cada cambio de modo por orden externa (`modo cambiado por orden EXTERNA: 'heat_cool' -> 'cool'`), lo que permite distinguir esto de un cambio nuestro sin tener que adivinar.
+
 ## 0.63.1
 Climate re-pineado al tag `v0.63.0`. sha256 `a66a07ef…7485`, calculado sobre el tarball real y verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los seis arreglos (los tres de 0.63.0 y los tres de clima de 0.62.0) están presentes en el código empaquetado.
 

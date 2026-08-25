@@ -1139,6 +1139,29 @@ class ZoneRunner:
             self._last_written_signature = signature
 
     def _update_target_attrs(self, heat_target: float | None, cool_target: float | None) -> None:
+        # Un modo CON consigna que no reporta ninguna deja la entidad de HA con
+        # `temperature`/`target_temp_low`/`target_temp_high` a null, y eso rompe
+        # cosas rio abajo: en la tarjeta de HA desaparecen los mandos, y un
+        # puente Matter que automapea las caracteristicas de la entidad no ve un
+        # termostato con consignas -- puede modelarlo de un solo sentido (visto
+        # de verdad: `ControlSequenceOfOperation HeatingOnly`, que luego RECHAZA
+        # el modo frio y aisla la entidad del puente).
+        #
+        # `dry`/`fan_only` son la excepcion legitima: esos modos no tienen
+        # consigna de temperatura y null es la verdad. Para calor/frio/ambos se
+        # cae al valor del preajuste activo si el calculo del ciclo no dio
+        # ninguno, en vez de publicar un hueco.
+        if self.hvac_mode in ("heat", "cool", "heat_cool") and (
+            heat_target is None or cool_target is None
+        ):
+            respaldo_heat, respaldo_cool = self._resolve_preset_targets(
+                self._preset_mode, wants_heat=True, wants_cool=True,
+            )
+            if heat_target is None:
+                heat_target = respaldo_heat
+            if cool_target is None:
+                cool_target = respaldo_cool
+
         if self.hvac_mode == "heat_cool":
             self.target_temperature = None
             self.target_temperature_low = heat_target
