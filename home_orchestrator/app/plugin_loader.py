@@ -238,6 +238,66 @@ def uninstall_plugin(slug: str, purge_files: bool = False) -> None:
         plugin_downloader.remove_plugin_files(slug)
 
 
+def _ensure_pinned_version(slug: str) -> None:
+    """Pone en disco la version PINEADA de este plugin si la que hay activa es
+    otra.
+
+    BUG REAL de fondo, y de los gordos: `PLUGIN_CATALOG` se re-pinea a mano al
+    publicar (tag + sha256), pero NADIE descargaba ese tag nuevo. `download_
+    plugin` solo se llamaba desde `install_plugin`, o sea al pulsar "Instalar"
+    en la tienda o al restaurar una copia de seguridad. Al actualizar el add-on,
+    `load_all_plugins` se limitaba a poner el symlink `current` en `sys.path` --
+    y `current` seguia apuntando al tag VIEJO.
+
+    Consecuencia: actualizar el add-on traia los arreglos de los ficheros del
+    NUCLEO (los que van en la imagen) pero NO los de ningun plugin descargable.
+    Quien lo sufria no tenia forma de saberlo: la version del add-on subia, el
+    CHANGELOG prometia los arreglos, y el codigo que corria era el de varias
+    versiones atras hasta que a alguien se le ocurriera reinstalar el plugin a
+    mano desde la tienda.
+
+    Un fallo aqui NO puede impedir el arranque: si la descarga o la
+    verificacion fallan (sin red, GitHub devolviendo un 429...), se sigue con lo
+    que haya en disco -- mejor la version anterior funcionando que una zona
+    muerta. Eso si, se avisa bien fuerte en el log."""
+    meta = PLUGIN_CATALOG.get(slug)
+    if not meta or not meta.get("downloadable"):
+        return
+    tag = meta.get("tag")
+    if not tag:
+        return
+
+    import plugin_downloader
+
+    activo = plugin_downloader.current_tag(slug)
+    if activo == tag:
+        return  # ya es la version pineada, nada que hacer
+
+    if activo is None:
+        # Marcado como instalado pero sin nada en disco (una copia de seguridad
+        # que restauro solo la config, p.ej.): se descarga.
+        log.info("Plugin '%s': marcado como instalado pero sin codigo en disco -- descargando %s", slug, tag)
+    else:
+        log.info(
+            "Plugin '%s': en disco esta %s y el catalogo pinea %s -- actualizando",
+            slug, activo, tag,
+        )
+    try:
+        if plugin_downloader.is_installed(slug, tag):
+            # Ya se bajo en su momento (p.ej. tras volver atras y adelante):
+            # basta mover el symlink, sin gastar red.
+            plugin_downloader.activate(slug, tag)
+        else:
+            plugin_downloader.download_plugin(slug, tag, meta["sha256"], meta["files"])
+    except Exception:
+        log.exception(
+            "Plugin '%s': no se pudo poner la version pineada %s -- se sigue con %s. "
+            "Los arreglos de esa version NO estan activos; se reintenta en el proximo "
+            "arranque, o reinstala el plugin desde la tienda.",
+            slug, tag, activo or "nada",
+        )
+
+
 def load_all_plugins() -> list:
     """Ningun plugin es obligatorio -- si uno falla al cargar (codigo no
     encontrado, error de importacion...) se registra el error y se sigue
@@ -252,6 +312,10 @@ def load_all_plugins() -> list:
         if slug not in installed:
             log.info("Plugin '%s' no instalado -- no se carga", slug)
             continue
+        # ANTES de importarlo: el factory llama a `_prefer_downloaded`, que fija
+        # la ruta en sys.path, asi que la version correcta tiene que estar ya en
+        # disco en este punto. Ver `_ensure_pinned_version`.
+        _ensure_pinned_version(slug)
         try:
             plugins.append(factory())
         except Exception:

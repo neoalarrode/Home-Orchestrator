@@ -168,23 +168,50 @@ class TplinkDeviceManager:
 
     # --------------------------------------------------------- dispositivos
 
-    async def _discover_and_connect(self, host: str, credentials: Credentials | None) -> Device:
+    async def _discover_and_connect(self, host: str, credentials: Credentials | None) -> tuple[Device, bool]:
         # `discover_single` (no `connect()` directo) porque, igual que
         # hace Home Assistant, es lo que resuelve SOLO el protocolo real
         # del dispositivo (Kasa clasico / KLAP / AES-Tapo) sin que quien
         # llama tenga que saber de antemano cual es -- ver
         # `Discover.discover_single` de python-kasa.
         device = await Discover.discover_single(host, credentials=credentials, discovery_timeout=10)
-        await device.update()
-        return device
+        try:
+            await device.update()
+        except Exception:
+            # BUG REAL, visto en produccion: `KasaException: Error trying to
+            # decrypt device ... response: The length of the provided data is
+            # not a multiple of the block length` -- una sesion KLAP
+            # desincronizada. Pasa con facilidad porque un Tapo admite UNA sola
+            # sesion autenticada a la vez (lo documenta este mismo modulo mas
+            # abajo): si algo mas le esta hablando -- la integracion nativa de
+            # TP-Link de HA, por ejemplo -- la primera lectura puede salir
+            # corrupta.
+            #
+            # Antes esto se propagaba y `add_device` no llegaba a registrar el
+            # dispositivo, asi que `_poll_loop` no lo sondeaba NUNCA: se perdia
+            # hasta reiniciar el add-on entero. Pero el DESCUBRIMIENTO si
+            # funciono -- el dispositivo existe y sabemos como hablarle. Se
+            # devuelve sin cebar para registrarlo igualmente y que el sondeo
+            # (cada 5s) lo recupere solo.
+            log.warning(
+                "TP-Link en %s: descubierto pero la primera lectura fallo -- se registra "
+                "igualmente y el sondeo lo reintenta (empieza como no disponible)",
+                host, exc_info=True,
+            )
+            return device, False
+        return device, True
 
     def add_device(self, device_id: str, host: str, credentials: Credentials | None = None) -> None:
-        device = self._run_coro(self._discover_and_connect(host, credentials), timeout=15)
+        device, primed = self._run_coro(self._discover_and_connect(host, credentials), timeout=15)
         with self._lock:
             self._devices[device_id] = device
-            # Acaba de conectar y leer su estado: cuenta como sondeo bueno, para
-            # que no salga "no disponible" durante el primer intervalo.
-            self._last_poll_ok[device_id] = time.time()
+            if primed:
+                # Acaba de conectar y leer su estado: cuenta como sondeo bueno,
+                # para que no salga "no disponible" durante el primer intervalo.
+                # Si NO se cebo, se deja sin marca a proposito: `connected()`
+                # dira que no esta disponible hasta que un sondeo funcione de
+                # verdad, que es la verdad.
+                self._last_poll_ok[device_id] = time.time()
 
     def remove_device(self, device_id: str) -> None:
         with self._lock:

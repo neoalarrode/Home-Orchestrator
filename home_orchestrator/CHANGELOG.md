@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.62.0
+
+### El re-pineado de plugins no descargaba nada
+
+**El más importante de esta tanda, y explica por qué varios arreglos publicados no llegaban a funcionar.** `PLUGIN_CATALOG` se re-pinea a mano al publicar (tag + sha256), pero **nadie descargaba ese tag nuevo**: `download_plugin` solo se llamaba desde `install_plugin`, o sea al pulsar "Instalar" en la tienda o al restaurar una copia de seguridad. Al actualizar el add-on, `load_all_plugins` se limitaba a poner el symlink `current` en `sys.path` — y `current` seguía apuntando al tag **viejo**.
+
+Consecuencia: actualizar el add-on traía los arreglos de los ficheros del **núcleo** (los que van en la imagen) pero **ninguno de los plugins descargables**. Y sin forma de saberlo: la versión del add-on subía, el CHANGELOG prometía los arreglos, y el código en ejecución era el de varias versiones atrás hasta que a alguien se le ocurriera reinstalar el plugin a mano.
+
+Ahora `load_all_plugins` compara el tag pineado con el que hay en disco **antes de importar** el plugin, y lo pone al día. Si ese tag ya estaba descargado solo mueve el symlink, sin gastar red. Un fallo de descarga (sin red, un 429 de GitHub) **no impide arrancar**: se sigue con la versión anterior y se avisa en el log.
+
+`plugin_loader.py` y `plugin_downloader.py` son del núcleo, así que este arreglo llega con la propia actualización del add-on — y con él, por fin, todos los arreglos de plugin pineados desde la 0.57.0.
+
+### `NameError` en las zonas de clima (regresión introducida en 0.58.0)
+
+`climate/zone_runner.py` define su logger como `_LOGGER`, y el arreglo de "la zona apagada que se reenciende sola" publicado en 0.58.0 usaba `log.info`. En producción eso lanzaba **`NameError: name 'log' is not defined`** justo en esa rama —una zona con actuador de puente restaurando su modo guardado— y el ciclo de esa zona abortaba cada vez. `climate_plugin` lo captura por zona, así que no tiraba el add-on: simplemente esa zona dejaba de decidir.
+
+No lo detectan ni `compileall` ni el import: solo salta al ejecutar esa rama. Auditado el proyecto entero comparando loggers usados contra definidos en cada módulo — era el único caso.
+
+### Clima: desaparecían los mandos de temperatura y Matter no mantenía "auto"
+
+Al pausar calor/frío por ventana abierta se anulaban también las **consignas**, no solo la acción. Con `hvac_mode = heat_cool` y `target_temp_low/high = null`, HA se queda sin nada que ofrecer en el dial, y **un termostato Matter en modo Auto exige las dos consignas**: sin ellas el controlador no puede mantener Auto y cae a un modo concreto. Un solo bug, los dos síntomas.
+
+La rama de al lado (misma situación de ventana abierta, pero sin poder ventilar) ya conservaba las consignas: era una incoherencia entre las dos, no un criterio distinto. La consigna es "a qué aspira la zona"; la acción es "qué está haciendo ahora" — pausar lo segundo no debe borrar lo primero. Se reportan aparte a propósito, así que el camino de **control** (TPI, urgencia, `_execute`) se comporta exactamente igual que antes.
+
+Además, dos arreglos relacionados con la capacidad de la zona:
+
+- **Un delegado `climate.*` ilegible se tomaba como "sin capacidades".** El guardián solo cubría las refs de puente; para una entidad real de HA que no se pudiera leer, `supported` salía `[]`. Se perdía `heat` o `cool` y con ello `heat_cool`, y si pasaba al arrancar se anunciaba un termostato sin modo auto. Peor: `_climate_entities_unresolved` seguía en `False`, así que la capacidad se daba por resuelta y el discovery no se volvía a publicar nunca.
+- **El discovery se republica si cambian los modos ofrecidos**, no solo la primera vez que se resuelve la capacidad. El discovery de MQTT es retenido: sin republicar se queda anunciando la lista vieja para siempre.
+
+### TP-Link: un fallo de descifrado perdía el dispositivo hasta reiniciar
+
+`KasaException: Error trying to decrypt device ... response: The length of the provided data is not a multiple of the block length` — una sesión KLAP desincronizada, fácil de provocar porque un Tapo admite **una sola sesión autenticada a la vez** (algo que este mismo módulo ya documentaba): si algo más le está hablando, la primera lectura puede salir corrupta.
+
+El registro ocurría **después** de la lectura, así que al fallar el dispositivo no quedaba en `_devices` y `_poll_loop` no lo sondeaba nunca: perdido hasta reiniciar el add-on. Pero el **descubrimiento** sí había funcionado. Ahora se registra igualmente (sin marcarlo disponible, que sería mentira) y el sondeo lo recupera solo. Y, como ya se hizo en Tuya, un fallo de conexión no impide exponer la entidad en HA.
+
+**Hueco conocido:** si falla el *descubrimiento* en vez de la lectura, no hay objeto que registrar y el dispositivo sigue perdiéndose hasta reiniciar. Haría falta un bucle de reintento por host.
+
 ## 0.61.1
 Tuya y Lighting re-pineados al tag `v0.61.0` — es lo que hace que los arreglos de esa versión lleguen a las instalaciones que descargan los plugins. sha256 `230a3a73…7063`, calculado sobre el tarball real y verificado antes de fijarlo; comprobado que los elementos de sus listas `files` viajan dentro y que los seis arreglos están presentes en el código empaquetado.
 

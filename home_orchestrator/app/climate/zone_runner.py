@@ -181,6 +181,12 @@ class ZoneRunner:
         self._fan_modes: list[str] | None = None
 
         self._climate_entities_unresolved = False
+        # Firma de lo ULTIMO que se anuncio en el discovery (ver
+        # `_refresh_hvac_modes`). `None` = todavia no se ha anunciado nada, asi
+        # que la primera vuelta -- esta de aqui, dentro del __init__ -- solo
+        # toma la referencia: quien publica el discovery inicial es
+        # `ClimatePlugin._start_zone`, justo despues de construir la zona.
+        self._published_modes_sig: tuple | None = None
         capability = self._refresh_hvac_modes()
         self._capability_pending = self._capability_still_pending(capability)
 
@@ -384,7 +390,29 @@ class ZoneRunner:
             # ventilador ni el fallback de "apagar del todo" a "ventilar
             # en vez de apagar" (ver _smart_idle_action).
             state = self._get_state(entity_id)
-            if state is None and self._is_bridge_ref(entity_id):
+            if state is None:
+                # BUG REAL (sintoma: una zona expuesta a Matter/HomeKit deja de
+                # ofrecer "auto" y se queda en el modo de funcionamiento
+                # actual): este guardian solo cubria las refs de PUENTE
+                # (`and self._is_bridge_ref(...)`). Para un delegado que SI es
+                # una entidad `climate.*` real de HA, un estado ilegible caia a
+                # `((None) or {}).get("hvac_modes") or []` = [], o sea la zona
+                # concluia que ese equipo NO TIENE capacidades, en vez de "no lo
+                # he podido leer ahora mismo".
+                #
+                # Consecuencia: se perdia `heat` o `cool` de la capacidad, y con
+                # ello `heat_cool` de `hvac_modes`. Si eso pasa al ARRANCAR (HA
+                # reiniciandose, el delegado aun no disponible -- el caso
+                # normal), `publish_discovery` anuncia un termostato SIN modo
+                # auto, y entonces ni HA ni Matter pueden ofrecer las dos
+                # consignas: el controlador se queda en un modo concreto.
+                # Ademas `_climate_entities_unresolved` seguia en False, asi que
+                # `_capability_still_pending` daba False, `_capability_pending`
+                # se limpiaba y el discovery NO se volvia a publicar nunca --
+                # la zona se quedaba pillada con los modos recortados.
+                #
+                # Un delegado ilegible es "pendiente", no "sin capacidades",
+                # venga de un puente o de HA.
                 self._climate_entities_unresolved = True
                 continue
             supported = ((state or {}).get("attributes") or {}).get("hvac_modes") or []
@@ -418,6 +446,29 @@ class ZoneRunner:
         else:
             self._fan_modes = None
             self._fan_mode = None
+
+        # Si lo que la zona OFRECE cambia, hay que decirselo a HA: el discovery
+        # de MQTT es retenido, asi que sin republicar se queda anunciando la
+        # lista vieja para siempre. Antes solo se republicaba UNA vez, en
+        # `_reconcile_hvac_mode`, al resolverse la capacidad por primera vez --
+        # cualquier cambio posterior (un delegado que aparece o desaparece de
+        # verdad) se quedaba sin anunciar, y la entidad de HA seguia ofreciendo
+        # modos que ya no existen, o -- peor para Matter/HomeKit -- dejaba de
+        # ofrecer `heat_cool` sin que nada lo corrigiera.
+        sig = (tuple(self.hvac_modes), tuple(self._fan_modes or ()))
+        if self._published_modes_sig is None:
+            self._published_modes_sig = sig  # primera vuelta: solo toma la referencia
+        elif sig != self._published_modes_sig:
+            self._published_modes_sig = sig
+            if self.mqtt is not None:
+                _LOGGER.info(
+                    "Zona climate %s: los modos ofrecidos han cambiado (%s) -- se republica el "
+                    "discovery para que HA/Matter lo vean", self.zone_id, ", ".join(self.hvac_modes),
+                )
+                try:
+                    self.mqtt.publish_discovery(min_temp=self._min_temp, max_temp=self._max_temp)
+                except Exception:
+                    _LOGGER.exception("Zona climate %s: fallo republicando el discovery", self.zone_id)
 
         self.supports_humidify = "humidify" in capability
         self.supports_range = {"heat", "cool"} <= capability
@@ -459,7 +510,7 @@ class ZoneRunner:
             saved_mode = (saved_state or {}).get("hvac_mode")
             if saved_mode in set(self.hvac_modes):
                 self.hvac_mode = saved_mode
-                log.info(
+                _LOGGER.info(
                     "Zona climate %s: restaurado el modo guardado '%s' al conocerse la "
                     "capacidad real", self.zone_id, saved_mode,
                 )
@@ -935,6 +986,10 @@ class ZoneRunner:
         real_door_open = self._real_door_window_open()
         urgent = False
         force_off = False
+        # Consignas a REPORTAR cuando no coinciden con las de control (hoy solo
+        # al ventilar por ventana abierta, ver mas abajo). None = reportar las de
+        # control, que es el caso normal.
+        reported_targets: tuple[float | None, float | None] | None = None
 
         if self.hvac_mode == "off":
             action = "idle"
@@ -951,6 +1006,25 @@ class ZoneRunner:
             if can_fan:
                 action = "fan_only"
                 heat_target = cool_target = None
+                # BUG REAL (sintoma: en modo Calor/Frio desaparecen los mandos de
+                # temperatura, y la entidad expuesta a Matter/HomeKit no se
+                # queda en "auto"): al pausar calor/frio por ventana abierta se
+                # anulaban tambien las CONSIGNAS, no solo la accion. Con
+                # `hvac_mode = heat_cool` y `target_temp_low/high = null`, HA se
+                # queda sin nada que ofrecer en el dial, y un termostato Matter
+                # en modo Auto EXIGE las dos consignas -- sin ellas el
+                # controlador no puede mantener Auto y cae a un modo concreto.
+                #
+                # La consigna es "a que aspira la zona"; la accion es "que esta
+                # haciendo ahora". Pausar lo segundo no debe borrar lo primero.
+                # La rama de al lado (`else`, misma situacion de ventana abierta
+                # pero sin poder ventilar) ya conservaba las consignas -- esto
+                # era una incoherencia entre las dos, no un criterio distinto.
+                #
+                # Se reportan aparte a proposito: `heat_target`/`cool_target`
+                # siguen a None para que el camino de CONTROL (TPI, urgencia,
+                # `_execute`) se comporte exactamente igual que antes.
+                reported_targets = (preset_heat, preset_cool)
                 self.reason = f"{window_reason}: ventilando (calor/frío en pausa)"
             else:
                 action = "idle"
@@ -1026,7 +1100,7 @@ class ZoneRunner:
         tpi_cycle_minutes = float(self.zone.get(CONF_TPI_CYCLE_MINUTES, DEFAULT_TPI_CYCLE_MINUTES))
         self._last_heat_on_percent, self._last_cool_on_percent = heat_on_percent, cool_on_percent
 
-        self._update_target_attrs(heat_target, cool_target)
+        self._update_target_attrs(*(reported_targets or (heat_target, cool_target)))
         target_for_actuator = heat_target if action == "heat" else cool_target if action == "cool" else (heat_target or cool_target)
         real_action = self._execute(
             action, target_for_actuator, capability, current_temp, deadband, climate_idle_keep, force_off=force_off,

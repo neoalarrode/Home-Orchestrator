@@ -173,7 +173,19 @@ class TplinkPlugin(Plugin):
             self._manager.add_device(device["id"], cfg["host"], self._credentials())
         except Exception:
             log.exception("Fallo conectando al dispositivo TP-Link '%s'", cfg.get("name") or cfg["host"])
-            return
+            # Mismo criterio que en tuya_plugin: un fallo de CONEXION no es un
+            # fallo de ALTA. Si el dispositivo quedo registrado en el manager
+            # (`_discover_and_connect` ya lo registra aunque la primera lectura
+            # falle), el sondeo lo va a recuperar, asi que se expone en HA
+            # igualmente -- empieza como no disponible. Antes este `return` se
+            # saltaba el bloque de MQTT y la entidad no aparecia hasta reiniciar
+            # el add-on, aunque el sondeo hubiera levantado el dispositivo.
+            if self._manager.get_device(device["id"]) is None:
+                return
+            log.info(
+                "Dispositivo TP-Link '%s' registrado pero sin lectura buena todavia -- se expone "
+                "en HA igualmente y el sondeo lo reintenta", cfg.get("name") or cfg["host"],
+            )
 
         if cfg.get("expose_mqtt"):
             mqtt_dev = MqttTplinkDevice(self._mqtt, self._manager, device["id"], cfg.get("name") or cfg["host"])

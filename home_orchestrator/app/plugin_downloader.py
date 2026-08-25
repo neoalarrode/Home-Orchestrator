@@ -70,6 +70,34 @@ def current_path(slug: str) -> str | None:
     return link if os.path.exists(link) else None
 
 
+def current_tag(slug: str) -> str | None:
+    """Que tag esta activo AHORA en disco, resolviendo el symlink `current`
+    (cada version vive en `DATA_DIR/<slug>/<tag>/`, asi que el nombre del
+    directorio final ES el tag). None si no hay nada descargado todavia.
+
+    Hace falta para poder detectar al arrancar que el tag pineado en el catalogo
+    ya no es el que hay instalado -- ver `plugin_loader._ensure_pinned_version`."""
+    link = os.path.join(DATA_DIR, slug, "current")
+    if not os.path.exists(link):
+        return None
+    return os.path.basename(os.path.realpath(link)) or None
+
+
+def activate(slug: str, tag: str) -> str:
+    """Mueve el symlink `current` a un tag YA descargado, sin volver a bajar
+    nada. Para cuando una version anterior sigue en disco (p.ej. al volver
+    atras, o si el symlink se quedo desalineado)."""
+    dest_dir = os.path.join(DATA_DIR, slug, tag)
+    if not os.path.isdir(dest_dir):
+        raise PluginDownloadError(f"{slug}@{tag} no esta descargado, no se puede activar")
+    current_link = os.path.join(DATA_DIR, slug, "current")
+    if os.path.islink(current_link) or os.path.exists(current_link):
+        os.remove(current_link)
+    os.symlink(dest_dir, current_link)
+    log.info("Plugin '%s': activada la version ya descargada %s", slug, tag)
+    return dest_dir
+
+
 def download_plugin(slug: str, tag: str, sha256_hex: str, files: list[str]) -> str:
     """Descarga el tarball del tag, verifica su sha256, extrae SOLO los
     ficheros/paquetes listados en `files` (rutas relativas a
