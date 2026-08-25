@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.69.1
+Tuya re-pineado al tag `v0.69.0`. sha256 `2ce8a3a2…0f1f`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que el módulo nuevo `tuya/identify.py` va incluido, que la interfaz nueva está en el paquete, y que ni el barrido de red ni la consulta a la nube han quedado en el refresco periódico de la página.
+
 ## 0.69.0
 
 **Los dispositivos Tuya que no se anuncian se localizan solos, y aparecen en «Detectados en la red» como cualquier otro.**
