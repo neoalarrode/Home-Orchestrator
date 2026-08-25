@@ -38,6 +38,26 @@ MAX_INTEGRATION_GAP_HOURS = 2.0
 _lock = threading.RLock()
 
 
+def _naive_local(dt: datetime) -> datetime:
+    """Toda fecha que entre aqui, a la MISMA convencion: naive en hora local.
+
+    BUG REAL, y de los que tumban el ciclo entero: `run_cycle` trabaja con
+    `datetime.now()` (naive, local) y `energy_recovery` escribia
+    `datetime.now(timezone.utc)` (consciente). Restarlas lanza
+    `TypeError: can't subtract offset-naive and offset-aware datetimes`, y eso
+    aborta `run_cycle` en CADA ejecucion.
+
+    Y aunque no lanzara seria igual de malo: mezclar UTC con hora local daria
+    un intervalo desplazado por el huso, o sea energia inventada.
+
+    Se normaliza aqui, en el punto por el que pasan todas, en vez de confiar
+    en que cada llamante use la convencion correcta.
+    """
+    if dt.tzinfo is not None:
+        return dt.astimezone().replace(tzinfo=None)
+    return dt
+
+
 def _default() -> dict:
     return {"imported_kwh": 0.0, "exported_kwh": 0.0, "last_update": None}
 
@@ -76,12 +96,13 @@ def accumulate(now: datetime, imported_w: float | None, exported_w: float | None
     reinicio no integra nada (no hay "antes" con el que calcular un
     intervalo real), solo fija el punto de partida — mismo criterio que
     `_temp_ema`/EMAs del resto del repo con su primera lectura."""
+    now = _naive_local(now)
     with _lock:
         data = _load()
         last_iso = data.get("last_update")
         if last_iso is not None:
             try:
-                last = datetime.fromisoformat(last_iso)
+                last = _naive_local(datetime.fromisoformat(last_iso))
                 dt_hours = max(0.0, (now - last).total_seconds()) / 3600.0
                 if dt_hours <= MAX_INTEGRATION_GAP_HOURS:
                     # Se acota el signo: estos dos acumulados se publican como
@@ -116,7 +137,7 @@ def add_energy(imported_wh: float, exported_wh: float, now: datetime) -> dict:
         data = _load()
         data["imported_kwh"] += max(0.0, imported_wh) / 1000.0
         data["exported_kwh"] += max(0.0, exported_wh) / 1000.0
-        data["last_update"] = now.isoformat()
+        data["last_update"] = _naive_local(now).isoformat()
         _save(data)
         return data
 
@@ -130,7 +151,7 @@ def reset_baseline(now: datetime) -> dict:
     """
     with _lock:
         data = _load()
-        data["last_update"] = now.isoformat()
+        data["last_update"] = _naive_local(now).isoformat()
         _save(data)
         return data
 

@@ -109,9 +109,13 @@ def detect_gap(last_iso: str | None, now: datetime) -> tuple[datetime, datetime]
         last = datetime.fromisoformat(last_iso)
     except ValueError:
         return None
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    now = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+    # Una fecha sin huso es hora LOCAL, no UTC: el resto del addon trabaja con
+    # `datetime.now()` a secas. Etiquetarla como UTC desplazaria el hueco
+    # entero por el huso -- dos horas en verano peninsular, o sea inventarse
+    # dos horas de consumo o dar un hueco negativo. `astimezone()` sobre una
+    # fecha naive ya asume local, que es justo lo que hace falta.
+    last = last.astimezone() if last.tzinfo is None else last
+    now = now.astimezone() if now.tzinfo is None else now
     segundos = (now - last).total_seconds()
     if segundos < MIN_GAP_SECONDS:
         return None

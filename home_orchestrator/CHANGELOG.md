@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.76.2
+
+**Arreglo urgente de una regresión que introduje en 0.76.0.** El ciclo de Energy abortaba en **cada** ejecución:
+
+```
+TypeError: can't subtract offset-naive and offset-aware datetimes
+  grid_energy_store.py, línea 85, en accumulate
+```
+
+`run_cycle` trabaja con `datetime.now()` — sin huso horario, hora local — y la reconstrucción del reinicio que añadí escribía `last_update` con `datetime.now(timezone.utc)`, con huso. Restarlas lanza, y eso tumba el ciclo entero antes de planificar nada.
+
+Y aunque no hubiera lanzado sería igual de malo: mezclar UTC con hora local da un intervalo desplazado por el huso — dos horas en verano peninsular — o sea energía inventada.
+
+Normalizado en `grid_energy_store`, que es el punto por el que pasan todas las fechas, en vez de confiar en que cada llamante use la convención correcta. Y corregido el error simétrico en la detección del hueco: una marca sin huso es hora **local**, no UTC; etiquetarla como UTC habría desplazado el hueco entero.
+
+El test reproduce el traceback exacto, y comprueba además que las dos convenciones dan el mismo acumulado.
+
 ## 0.76.1
 Energy, Climate, Lighting y Tuya re-pineados al tag `v0.76.0`. sha256 `65e358cb…6179`, verificado antes de fijarlo; comprobado que los `files` de los cuatro viajan dentro, que `energy_recovery.py` — fichero **nuevo** — está declarado y empaquetado (sin eso, la reconstrucción del reinicio moriría con un `ImportError`), que catálogo y manifiesto dicen lo mismo, y que no se cuela bytecode.
 
