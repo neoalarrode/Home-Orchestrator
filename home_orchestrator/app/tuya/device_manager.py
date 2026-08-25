@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from .discovery import DiscoveredDevice, PersistentDiscovery
 from .discovery import active_scan as discovery_active_scan
+from .identify import identify as identify_unknown
 from .profile import (
     ClimateMapping,
     DeviceProfile,
@@ -79,6 +80,9 @@ class TuyaDeviceManager:
         # informativo hasta que el usuario decide añadir uno (ver
         # get_discovered_devices()) -- nunca añade nada por su cuenta.
         self._discovery = PersistentDiscovery()
+        # Los localizados cruzando barrido activo + cuenta (ver identify.py),
+        # que por definicion nunca van a aparecer en `_discovery.devices`.
+        self._identified: dict[str, DiscoveredDevice] = {}
 
     # ------------------------------------------------------------ arranque
 
@@ -97,12 +101,44 @@ class TuyaDeviceManager:
         loop.run_forever()
 
     def get_discovered_devices(self) -> list[DiscoveredDevice]:
-        """Snapshot de lo visto por broadcast LAN hasta ahora -- solo
-        device_id/ip/product_key/version (el broadcast NUNCA lleva el
-        local_key; eso solo lo da la nube de Tuya al vincular una cuenta,
-        ver tuya_cloud.py). Puramente informativo: el usuario decide, uno
-        a uno, si añade alguno (ver tuya_plugin.py)."""
-        return list(self._discovery.devices.values())
+        """Snapshot de lo detectado hasta ahora -- solo
+        device_id/ip/product_key/version (+nombre en los identificados; el
+        broadcast NUNCA lleva el local_key, eso solo lo da la nube de Tuya
+        al vincular una cuenta, ver tuya_cloud.py). Puramente informativo:
+        el usuario decide, uno a uno, si añade alguno (ver tuya_plugin.py).
+
+        Mezcla DOS fuentes a proposito, y sin distinguirlas de cara arriba:
+        lo oido por broadcast y lo identificado cruzando el barrido activo
+        con la cuenta (ver identify.py). Para el usuario final los dos casos
+        son lo mismo -- "esto hay en tu red" -- y no tiene por que saber que
+        a unos se les oyo y a otros hubo que ir a buscarlos. Gana el
+        broadcast si coinciden: es el dato de primera mano."""
+        merged: dict[str, DiscoveredDevice] = dict(self._identified)
+        merged.update(self._discovery.devices)
+        return list(merged.values())
+
+    def known_ips(self) -> set[str]:
+        """IPs de las que ya se sabe de quien son -- oidas por broadcast, ya
+        identificadas, o de un dispositivo dado de alta. `identify` no las
+        vuelve a probar."""
+        ips = {d.ip for d in self._discovery.devices.values() if d.ip}
+        ips |= {d.ip for d in self._identified.values() if d.ip}
+        ips |= {d.address for d in self._devices.values() if getattr(d, "address", None)}
+        return ips
+
+    def remember_identified(self, devices: list[DiscoveredDevice]) -> None:
+        for d in devices:
+            self._identified[d.device_id] = d
+
+    def identify_unknown(self, candidates: list[dict], timeout: float = 900.0) -> list[DiscoveredDevice]:
+        """Localiza los `candidates` (de la cuenta de la nube) que no se
+        anuncian, y los recuerda para que salgan en la lista de detectados
+        como cualquier otro."""
+        found = self._run_coro(
+            identify_unknown(candidates, self.known_ips()), timeout=timeout,
+        )
+        self.remember_identified(found)
+        return found
 
     def active_scan(self, timeout: float = 900.0) -> list[str]:
         """Barrido ACTIVO de la LAN (ver discovery.active_scan): IPs con el

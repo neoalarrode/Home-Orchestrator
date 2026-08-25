@@ -88,6 +88,11 @@ class DiscoveredDevice:
     ip: str
     product_key: str | None
     version: str | None
+    # El broadcast NUNCA trae el nombre, asi que aqui va None. Lo rellena
+    # `identify.py` para los dispositivos que hubo que localizar cruzando el
+    # barrido activo con la cuenta de la nube -- ahi si se conoce, y verlo en
+    # la lista es la diferencia entre "bf93e09d384740ff3flzis" y "Conga X80".
+    name: str | None = None
 
 
 def _decrypt_55aa(data: bytes) -> bytes | None:

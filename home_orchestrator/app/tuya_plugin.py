@@ -31,6 +31,13 @@ from tuya.tuya_cloud import TuyaCloudApi, TuyaCloudAuthError, TuyaCloudApiError
 
 log = logging.getLogger("tuya_plugin")
 
+# Espera inicial antes de la primera busqueda activa: el descubrimiento pasivo
+# necesita un rato para acumular lo que se anuncia solo, y lo que se anuncia no
+# hay que ir a buscarlo. Luego se reintenta de tanto en tanto -- un dispositivo
+# puede enchufarse despues, o entrar en la cuenta mas tarde.
+IDENTIFY_FIRST_DELAY_SECONDS = 45
+IDENTIFY_INTERVAL_SECONDS = 30 * 60
+
 
 class TuyaPlugin(Plugin):
     slug = "tuya"
@@ -42,6 +49,7 @@ class TuyaPlugin(Plugin):
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_tuya")
         self._mqtt_devices: dict[str, MqttTuyaDevice] = {}
         self._app = flask.Flask("tuya_plugin", template_folder="tuya_templates")
+        self._stop_identify = threading.Event()
         self._register_routes()
 
     # --------------------------------------------------------------- Flask -
@@ -121,6 +129,10 @@ class TuyaPlugin(Plugin):
                     "ip": d.ip,
                     "product_key": d.product_key,
                     "version": d.version,
+                    # Solo lo traen los identificados: el broadcast no lleva
+                    # nombre. Verlo es la diferencia entre un device_id y
+                    # "Conga X80".
+                    "name": d.name,
                     "already_added": d.device_id in added_ids,
                 }
                 for d in seen
@@ -198,31 +210,27 @@ class TuyaPlugin(Plugin):
 
         @app.get("/api/scan")
         def _scan():
-            """Barrido ACTIVO de la LAN -- ver discovery.active_scan. Todo el
-            descubrimiento era pasivo hasta ahora; esto encuentra lo que no
-            se anuncia. Devuelve IPs, no dispositivos: un connect al puerto
-            de datos no revela ni device_id ni version, eso hay que cruzarlo
-            con la lista de la cuenta (`/api/cloud/devices`)."""
+            """Busca en la red los dispositivos de la cuenta que no se
+            anuncian, y los deja IDENTIFICADOS en la lista de detectados.
+
+            No devuelve IPs crudas para que el usuario las cruce a mano: eso
+            era pedirle que hiciera el trabajo. Barre la red, prueba el
+            local_key de cada candidato contra cada IP desconocida y, cuando
+            uno responde, ya se sabe quien es y que version habla (ver
+            identify.py). A partir de ahi aparece en «Detectados en la red»
+            como cualquier otro, sin distinguir a quien se oyo y a quien
+            hubo que ir a buscar."""
             try:
-                ips = self._manager.active_scan()
+                found = self._identify_now()
             except Exception:
-                log.exception("Tuya: fallo en el barrido activo de la red")
-                return flask.jsonify({"error": "fallo barriendo la red"}), 502
-            seen_ips = {d.ip: d.device_id for d in self._manager.get_discovered_devices()}
-            added_ips = {
-                (d["config"] or {}).get("address") for d in tuya_store.load_devices()
-            }
-            return flask.jsonify([
-                {
-                    "ip": ip,
-                    "device_id": seen_ips.get(ip),
-                    "already_added": ip in added_ips,
-                    # Lo interesante: puerto abierto pero NADIE lo ha oido
-                    # anunciarse y no esta dado de alta.
-                    "unidentified": ip not in seen_ips and ip not in added_ips,
-                }
-                for ip in ips
-            ])
+                log.exception("Tuya: fallo buscando dispositivos en la red")
+                return flask.jsonify({"error": "fallo buscando en la red"}), 502
+            return flask.jsonify({
+                "identified": [
+                    {"device_id": d.device_id, "ip": d.ip, "version": d.version, "name": d.name}
+                    for d in found
+                ],
+            })
 
         @app.post("/api/discovered/<device_id>/resolve")
         def _resolve_discovered(device_id):
@@ -281,12 +289,64 @@ class TuyaPlugin(Plugin):
 
     # ------------------------------------------------------------- arranque
 
+    # --------------------------------------------- localizar lo que no se oye
+
+    def _identify_candidates(self) -> list[dict]:
+        """Dispositivos de la cuenta que merece la pena ir a buscar: los que
+        no estan dados de alta y no se han oido anunciarse. Si no hay
+        ninguno, no hay nada que buscar -- y entonces NO se barre la red."""
+        account = tuya_store.load_account()
+        if not (account["access_id"] and account["access_secret"] and account["uid"]):
+            return []
+        api = TuyaCloudApi(account["region"], account["access_id"], account["access_secret"])
+        added = {(d["config"] or {}).get("device_id") for d in tuya_store.load_devices()}
+        seen = {d.device_id for d in self._manager.get_discovered_devices()}
+        return [
+            d for d in api.get_user_devices(account["uid"])
+            if d["device_id"] not in added and d["device_id"] not in seen and d.get("local_key")
+        ]
+
+    def _identify_now(self):
+        candidates = self._identify_candidates()
+        if not candidates:
+            return []
+        return self._manager.identify_unknown(candidates)
+
+    def _identify_loop(self) -> None:
+        """Busca solo, sin que el usuario pulse nada -- que un dispositivo se
+        anuncie o no es un detalle de su firmware y de la topologia de la
+        red, no algo que el usuario final tenga que entender ni compensar a
+        mano.
+
+        Con dos frenos, porque esto barre la subred: solo corre si queda
+        alguien de la cuenta por localizar (`_identify_candidates`), y con
+        una espera inicial para dar tiempo al descubrimiento pasivo -- lo que
+        se anuncie solo no hace falta ir a buscarlo.
+        """
+        while not self._stop_identify.wait(IDENTIFY_FIRST_DELAY_SECONDS):
+            try:
+                found = self._identify_now()
+                if found:
+                    log.info(
+                        "Tuya: %d dispositivo(s) localizados en la red que no se anuncian: %s",
+                        len(found), ", ".join(f"{d.name or d.device_id} ({d.ip})" for d in found),
+                    )
+            except (TuyaCloudAuthError, TuyaCloudApiError):
+                log.debug("Tuya: no se ha podido consultar la cuenta para localizar", exc_info=True)
+            except Exception:
+                log.exception("Tuya: fallo localizando dispositivos en la red")
+            if self._stop_identify.wait(IDENTIFY_INTERVAL_SECONDS - IDENTIFY_FIRST_DELAY_SECONDS):
+                return
+
     def start_background_threads(self) -> None:
         self._manager.start()
         self._mqtt.connect()
         devices = tuya_store.load_devices()
         for device in devices:
             self._start_device(device)
+        threading.Thread(
+            target=self._identify_loop, name="tuya-identify", daemon=True,
+        ).start()
         log.info("Plugin Tuya arrancado con %d dispositivo(s)", len(devices))
 
     def _start_device(self, device: dict) -> None:

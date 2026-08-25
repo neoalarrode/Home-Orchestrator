@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.69.0
+
+**Los dispositivos Tuya que no se anuncian se localizan solos, y aparecen en «Detectados en la red» como cualquier otro.**
+
+La v0.68.0 dejó las piezas sueltas y el trabajo de juntarlas al usuario: había que llamar a un endpoint, mirar una lista de IPs a pelo y cruzarla a mano con la lista de la cuenta. Eso no es descubrimiento, es un puzzle. Peor: ninguno de los dos endpoints nuevos tenía interfaz, así que solo se llegaba con `curl`.
+
+Ninguna de las tres piezas sirve sola:
+
+- El descubrimiento pasivo solo oye a quien se anuncia por broadcast.
+- El barrido activo encuentra la IP, pero un connect al puerto de datos **no** dice qué hay ahí — ni `device_id`, ni versión de protocolo.
+- La cuenta de la nube sabe el `device_id`, el nombre y el `local_key` de todo, pero no la IP local.
+
+Ahora se cruzan, y de la única forma que es **prueba y no conjetura**: el `local_key` es por dispositivo, así que si el handshake contra una IP funciona con la clave de un dispositivo concreto, esa IP **es** ese dispositivo. De paso queda determinada la versión de protocolo, que es justo el otro dato que un barrido de puertos no puede saber — y sin él, el usuario tendría que adivinarla entre ocho.
+
+Verificado contra hardware real: un robot aspirador que nunca se había anunciado quedó identificado en su IP y con su versión (3.5) correcta, sin cruzar nada a mano.
+
+Detalles que importan:
+
+- **Corre solo**, en segundo plano, sin pulsar nada: que un dispositivo se anuncie o no es un detalle de su firmware y de la topología de la red, no algo que el usuario final tenga que entender ni compensar.
+- **Con dos frenos**, porque esto recorre la subred: solo se ejecuta si queda alguien de la cuenta por localizar, y espera un rato al arrancar para dar tiempo al descubrimiento pasivo. Lo que se anuncia solo no hay que ir a buscarlo.
+- **Un solo intento por pareja.** Al acertar, ese dispositivo sale del conjunto de candidatos y se pasa a la IP siguiente.
+- **Conectar no basta como prueba.** El handshake de 3.3 no autentica nada, así que un connect "correcto" contra el dispositivo equivocado es posible; lo que descarta el falso positivo es que devuelva DPS descifrables, que sí depende del `local_key`.
+- **Se mezclan sin distinguir.** Los localizados van a la misma lista que los oídos, con su nombre real — «Conga X80», no `bf93e09d384740ff3flzis`. Para el usuario los dos casos son lo mismo: "esto hay en tu red".
+
+Y la interfaz que faltaba: una tarjeta nueva con los dispositivos de la cuenta pendientes de dar de alta (con su categoría traducida y si está en línea), un botón *Buscar ahora* para adelantar la búsqueda si acabas de enchufar algo, y el nombre real en la lista de detectados.
+
 ## 0.68.1
 Tuya re-pineado al tag `v0.68.0` (venía de `v0.61.0`). sha256 `c874ff95…1488`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que las tres versiones nuevas y el barrido activo están presentes en el código empaquetado, y que el `404` que impedía resolver un dispositivo no oído en la LAN ya no está.
 

@@ -88,9 +88,29 @@
 
 <div class="card">
   <h2><span>Detectados en la red</span> <span class="hint">solo informativo — tú decides si añadir alguno</span></h2>
-  <p class="help">Dispositivos Tuya vistos por su propio anuncio en la LAN. No se conectan ni se controlan hasta que pulsas "Añadir" en uno concreto.</p>
+  <p class="help">Dispositivos Tuya que hay en tu red. No se conectan ni se controlan hasta que pulsas "Añadir" en uno concreto.</p>
   <div id="discovered-grid" class="device-grid"></div>
   <div id="discovered-empty" class="empty" style="display:none">Todavía no se ha visto ningún dispositivo Tuya en la red.</div>
+</div>
+
+<div class="card">
+  <h2>
+    <span>En tu cuenta de Tuya</span>
+    <span class="hint">incluidos los que no se anuncian solos</span>
+  </h2>
+  <p class="help">
+    Todo lo que hay en la cuenta vinculada. Los que no se anuncian solos se buscan
+    en la red por su cuenta y aparecen arriba, en «Detectados en la red», ya con su
+    nombre y su dirección — no hace falta hacer nada. Si acabas de enchufar uno y
+    tienes prisa, <em>Buscar ahora</em> lo adelanta.
+  </p>
+  <div class="actions">
+    <button type="button" onclick="loadCloudDevices()">Recargar la cuenta</button>
+    <button type="button" id="scan-btn" onclick="scanNetwork()">Buscar ahora</button>
+  </div>
+  <div id="cloud-grid" class="device-grid"></div>
+  <div id="cloud-empty" class="empty" style="display:none">Vincula una cuenta Tuya arriba para poder listarla.</div>
+  <div id="scan-result" style="display:none"></div>
 </div>
 
 <div class="card">
@@ -268,9 +288,9 @@ function renderDiscovered(devices) {
   grid.innerHTML = notAdded.map(d => `
     <div class="device-card">
       <div class="device-card-head">
-        <span class="device-name">${esc(d.device_id)}</span>
+        <span class="device-name">${esc(d.name || d.device_id)}</span>
       </div>
-      <div class="device-meta">${esc(d.ip)}${d.version ? ' · v' + esc(d.version) : ''}</div>
+      <div class="device-meta">${esc(d.ip)}${d.version ? ' · v' + esc(d.version) : ''}${d.name ? '' : ' · ' + esc(d.device_id)}</div>
       <div class="device-actions">
         <button onclick="addFromDiscovered('${d.device_id}')">Añadir</button>
       </div>
@@ -285,8 +305,101 @@ async function loadDiscovered() {
   } catch (e) { /* red temporalmente caida */ }
 }
 
+// ------------------------------------------------- cuenta Tuya + barrido -
+//
+// Esto NO va en el refresco periodico a proposito: cada llamada consulta la
+// API de Tuya en la nube (y el barrido recorre la subred entera). Se carga
+// una vez al abrir y luego solo cuando el usuario lo pide.
+
+let lastCloud = [];
+
+const CATEGORIAS = {
+  sd: "aspirador", kt: "aire acondicionado", qn: "calefactor", dj: "bombilla",
+  cz: "enchufe", ggq: "riego", msp: "arenero", wk: "termostato", cl: "persiana",
+};
+
+function renderCloudDevices(devices) {
+  const grid = document.getElementById("cloud-grid");
+  const empty = document.getElementById("cloud-empty");
+  const pending = devices.filter(d => !d.already_added);
+  empty.style.display = devices.length ? "none" : "block";
+  if (!pending.length) {
+    grid.innerHTML = devices.length
+      ? `<div class="empty">Los ${devices.length} dispositivos de la cuenta están ya dados de alta.</div>`
+      : "";
+    return;
+  }
+  grid.innerHTML = pending.map(d => {
+    const tipo = CATEGORIAS[d.category] || d.category || "sin categoría";
+    const donde = d.seen_on_lan
+      ? esc(d.ip)
+      : '<span title="no se le ha oído anunciarse: su IP hay que ponerla a mano">sin IP conocida</span>';
+    return `
+    <div class="device-card">
+      <div class="device-card-head">
+        <span class="device-name">${esc(d.name)}</span>
+        <span class="hint">${d.online ? "en línea" : "desconectado"}</span>
+      </div>
+      <div class="device-meta">${esc(tipo)} · ${donde}</div>
+      <div class="device-actions">
+        <button onclick="addFromDiscovered('${d.device_id}')">Añadir</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function loadCloudDevices() {
+  const grid = document.getElementById("cloud-grid");
+  grid.innerHTML = `<div class="empty">Consultando la cuenta…</div>`;
+  try {
+    const r = await fetch(`${API}/cloud/devices`);
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      grid.innerHTML = "";
+      document.getElementById("cloud-empty").style.display = "block";
+      document.getElementById("cloud-empty").textContent =
+        body.error || "No se ha podido consultar la cuenta.";
+      return;
+    }
+    lastCloud = await r.json();
+    renderCloudDevices(lastCloud);
+  } catch (e) {
+    grid.innerHTML = `<div class="empty">Fallo consultando la cuenta.</div>`;
+  }
+}
+
+async function scanNetwork() {
+  const btn = document.getElementById("scan-btn");
+  const box = document.getElementById("scan-result");
+  btn.disabled = true;
+  const antes = btn.textContent;
+  btn.textContent = "Buscando…";
+  box.style.display = "block";
+  box.innerHTML = `<p class="help">Recorriendo la red local, esto tarda unos segundos…</p>`;
+  try {
+    const r = await fetch(`${API}/scan`);
+    const found = r.ok ? (await r.json()).identified || [] : [];
+    if (!found.length) {
+      box.innerHTML = `<p class="help">No se ha encontrado en la red ningún dispositivo de la cuenta que faltara. Si esperabas alguno, comprueba que esté encendido y en esta misma red.</p>`;
+    } else {
+      // Ya estan en "Detectados en la red" -- solo hay que refrescarla.
+      box.innerHTML = `<p class="help">Encontrado(s) en la red: <strong>${found.map(d => esc(d.name || d.device_id)).join(", ")}</strong>. Ya están arriba, en «Detectados en la red», listos para añadir.</p>`;
+      loadDiscovered();
+      loadCloudDevices();
+    }
+  } catch (e) {
+    box.innerHTML = `<p class="help">Fallo buscando en la red.</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = antes;
+  }
+}
+
 async function addFromDiscovered(deviceId) {
-  const seen = lastDiscovered.find(d => d.device_id === deviceId);
+  // Puede venir de la lista de la LAN o de la de la cuenta: un dispositivo que
+  // no se anuncia solo esta en la segunda, y ahi no hay IP que precargar.
+  const seen = lastDiscovered.find(d => d.device_id === deviceId)
+    || lastCloud.find(d => d.device_id === deviceId);
   cancelDeviceForm();
   try {
     const r = await fetch(`${API}/discovered/${deviceId}/resolve`, {method: "POST"});
@@ -369,6 +482,9 @@ async function submitDeviceForm(ev) {
     toast(id ? "Dispositivo actualizado" : "Dispositivo añadido");
     cancelDeviceForm();
     loadDevices();
+    // Para que el que acabas de dar de alta desaparezca de "pendientes" de la
+    // cuenta sin tener que recargar la pagina.
+    if (lastCloud.length) loadCloudDevices();
   } else {
     const body = await r.json().catch(() => ({}));
     toast(body.error || "Fallo al guardar el dispositivo");
@@ -380,6 +496,7 @@ loadDevices();
 loadStatus();
 loadAccount();
 loadDiscovered();
+loadCloudDevices();
 renderPluginSwitch("tuya");
 setInterval(loadDevices, 8000);
 setInterval(loadStatus, 8000);
