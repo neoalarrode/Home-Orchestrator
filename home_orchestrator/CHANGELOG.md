@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.65.1
+Climate re-pineado al tag `v0.65.0`. sha256 `54d38b5c…551b`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los **ocho** arreglos de clima acumulados (0.62.0, 0.63.0, 0.64.0 y 0.65.0) están presentes en el código empaquetado.
+
 ## 0.65.0
 
 **Ventilar como respaldo se reporta como "en reposo", no como "ventilando".**
