@@ -1506,6 +1506,22 @@ class ZoneRunner:
         self.set_hvac_mode("off")
 
     def turn_on(self) -> None:
+        # Encender algo que YA esta encendido no debe tocar el modo.
+        #
+        # Un puente Matter expone un RoomAirConditioner con DOS clusters:
+        # `thermostat` (el modo) y `onOff`. Al tocar el modo desde el cliente
+        # llegan las dos cosas -- una escritura de `systemMode` y un
+        # `onOff.on` -- y el orden entre ellas NO esta garantizado (visto en
+        # produccion en los dos ordenes). Sin esta guarda, el `onOff.on`
+        # reaplica `_last_active_hvac_mode` y puede pisar el modo que el
+        # usuario acaba de pedir si llega despues.
+        #
+        # Ademas el cliente manda `onOff.on` de forma repetida (media docena de
+        # veces en pocos minutos, en el log real): cada una disparaba un
+        # `set_hvac_mode` + `decide_and_act()` completo, con su republicacion de
+        # estado, para no cambiar nada.
+        if self.hvac_mode != "off":
+            return
         target = self._last_active_hvac_mode
         if target is None or target not in (self.hvac_modes or []):
             target = self._default_hvac_mode(self._last_full_capability)

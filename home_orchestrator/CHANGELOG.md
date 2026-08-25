@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.66.0
+
+**Encender una zona que ya está encendida deja de tocar el modo.**
+
+Un puente Matter expone el aire como un `RoomAirConditioner` con dos clústeres separados: `thermostat` (el modo) y `onOff`. Al cambiar el modo desde el cliente llegan **las dos cosas** — una escritura de `systemMode` y un `onOff.on`, que aquí se traduce en `climate.turn_on` — y el orden entre ellas no está garantizado: en los registros de producción se ha visto en los dos sentidos.
+
+`turn_on()` reaplicaba el último modo activo. Si el `onOff.on` llegaba **detrás** de la escritura del modo, pisaba lo que el usuario acababa de pedir. Ahora, si la zona no está apagada, `turn_on()` no hace nada: encender lo que ya está encendido no es una orden de cambiar de modo.
+
+De paso quita trabajo repetido: el cliente manda `onOff.on` de forma reiterada (media docena de veces en pocos minutos en el registro real) y cada una disparaba un `set_hvac_mode` completo con su ciclo de decisión y su republicación de estado, para no cambiar nada.
+
+Apagada, `turn_on()` sigue restaurando el último modo activo como siempre.
+
+*Esto elimina una carrera real, pero no promete arreglar por sí solo lo que muestra el cliente Matter: si la zona se queda en `heat_cool` y aun así el cliente pinta "Frío", eso es presentación del puente.*
+
 ## 0.65.1
 Climate re-pineado al tag `v0.65.0`. sha256 `54d38b5c…551b`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los **ocho** arreglos de clima acumulados (0.62.0, 0.63.0, 0.64.0 y 0.65.0) están presentes en el código empaquetado.
 
