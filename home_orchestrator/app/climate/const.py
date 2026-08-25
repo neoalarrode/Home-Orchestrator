@@ -171,6 +171,15 @@ DEFAULT_MAX_POWER_W = 0.0  # 0 = sin limite (la prevencion de sobrecarga se desa
 DEFAULT_DEADBAND = 0.3
 DEFAULT_MIN_TEMP = 15.0
 DEFAULT_MAX_TEMP = 30.0
+
+# Consignas de ULTIMO RECURSO -- solo se usan si los preajustes declarados de
+# la zona no se pueden leer o no cubren el preset activo (ver
+# `ZoneRunner._update_target_attrs`). No son un valor "por defecto" que
+# configure nadie: existen para que la entidad nunca publique un hueco, que
+# es lo que deja la tarjeta de HA sin mandos y hace que un puente Matter
+# modele la zona de un solo sentido y la aisle.
+FALLBACK_HEAT_TEMP = 20.0
+FALLBACK_COOL_TEMP = 25.0
 DEFAULT_MIN_ON_SECONDS = 300
 DEFAULT_MIN_OFF_SECONDS = 300
 DEFAULT_HISTORY_DAYS_FOR_INERTIA = 5  # antes 14: cada dia de mas es historico REAL que HA tiene que traer entero a memoria en una sola consulta antes de poder procesarlo (ver MAX_STATES_PER_ENTITY en thermal_model.py/power_model.py) — con MIN_VALID_RUNS=3 tramos de MIN_RUN_MINUTES=20 cada uno, 5 dias basta de sobra para una zona con uso normal; configurable si hace falta mas

@@ -46,23 +46,101 @@ PRESET_AUTO = "Automático"
 PRESET_MANUAL = "Manual"
 
 
+# Etiquetas admitidas al declarar los dos lados por nombre en vez de con
+# la barra ("Ausente; calor=18; frio=27" en vez de "Ausente: 18/27").
+_HEAT_LABELS = ("calor", "heat", "invierno")
+_COOL_LABELS = ("frio", "frío", "cool", "verano")
+
+
+def _split_entries(text: str) -> list[str]:
+    """Separa el texto en entradas de preset.
+
+    BUG REAL, visto en produccion: una zona declarada con
+    "Presente; calor=21; frio=25\\nAusente; calor=18; frio=27" (un preset
+    por LINEA, sin ninguna coma) llegaba aqui como un unico trozo sin ":",
+    `parse_presets` lanzaba, `zone_runner` se tragaba el ValueError y la
+    zona se quedaba con CERO presets -- con `away_preset` apuntando a un
+    nombre que ya no existia y, por tanto, todas las consignas a null: sin
+    mandos en la tarjeta de HA ni en el cliente Matter, en ningun modo.
+
+    Un salto de linea es un separador de entradas al menos tan natural
+    como la coma, asi que se admiten los dos. El punto y coma se admite
+    tambien, pero SOLO como separador de entradas cuando no se esta usando
+    ya dentro de la entrada para separar nombre y valores -- por eso se
+    resuelve por linea y no de golpe sobre todo el texto.
+    """
+    entries: list[str] = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # "Ausente; calor=18; frio=27" es UNA entrada, no tres: si la linea
+        # trae etiquetas con "=", el ";" separa los campos de un mismo
+        # preset. Sin etiquetas ("Confort: 21/25; Ausente: 17/28") el ";"
+        # cumple el mismo papel que la coma.
+        parts = [line] if "=" in line else [p for p in line.split(";") if p.strip()]
+        for part in parts:
+            entries.extend(c for c in part.split(",") if c.strip())
+    return [e.strip() for e in entries if e.strip()]
+
+
+def _parse_labelled_sides(fields: list[str], name: str) -> tuple[float, float] | None:
+    """Interpreta "calor=21", "frio=25" (en cualquier orden, y con solo uno
+    de los dos lados en zonas de un unico sentido). None si estos campos no
+    usan etiquetas -- entonces decide `parse_presets` con el formato de la
+    barra."""
+    heat = cool = None
+    for field in fields:
+        if "=" not in field:
+            return None
+        label, _, raw = field.partition("=")
+        label = label.strip().lower()
+        try:
+            value = float(raw.strip().rstrip("°CcFf ").strip() or raw.strip())
+        except ValueError as e:
+            raise ValueError(f"«{raw.strip()}» no es una temperatura valida para «{name}»") from e
+        if label in _HEAT_LABELS:
+            heat = value
+        elif label in _COOL_LABELS:
+            cool = value
+        else:
+            raise ValueError(
+                f"«{label}» no es un lado valido en «{name}» — usa «calor» o «frío»"
+            )
+    if heat is None and cool is None:
+        raise ValueError(f"«{name}» no declara ninguna temperatura")
+    # Un solo lado declarado vale para una zona de un unico sentido; se
+    # replica para que el otro lado no quede en null (ver zone_runner:
+    # publicar un hueco rompe la tarjeta de HA y el puente Matter).
+    return (heat if heat is not None else cool), (cool if cool is not None else heat)
+
+
 def parse_presets(text: str) -> list[dict]:
     """Convierte el texto declarado en el asistente en una lista de
     presets. Cada preset es "Nombre: calor/frio" (dos consignas) o
     "Nombre: temperatura" (una sola, valida para el lado que corresponda
     en zonas de un solo sentido). Ejemplo: "Confort: 21/25, Ausente:
     17/28" o, en una zona solo de calor, "Confort: 21, Ausente: 17".
+
+    Se admite tambien declarar los lados por nombre y un preset por linea:
+        Presente; calor=21; frio=25
+        Ausente; calor=18; frio=27
+
     Lanza ValueError con un mensaje legible si el texto no tiene el
     formato esperado."""
     presets: list[dict] = []
     seen = set()
-    for chunk in text.split(","):
-        chunk = chunk.strip()
-        if not chunk:
-            continue
-        if ":" not in chunk:
+    for chunk in _split_entries(text):
+        # El nombre se separa de los valores con ":" o, en el formato de
+        # etiquetas, con el primer ";".
+        if ":" in chunk:
+            name, temps_str = chunk.split(":", 1)
+            fields = [f for f in temps_str.split(";") if f.strip()]
+        elif ";" in chunk:
+            name, _, rest = chunk.partition(";")
+            fields = [f for f in rest.split(";") if f.strip()]
+        else:
             raise ValueError(f"«{chunk}» no tiene el formato «Nombre: temperatura»")
-        name, temps_str = chunk.split(":", 1)
         name = name.strip()
         if not name or name in (PRESET_AUTO, PRESET_MANUAL):
             raise ValueError(f"«{name}» no es un nombre de preset valido")
@@ -70,7 +148,18 @@ def parse_presets(text: str) -> list[dict]:
             raise ValueError(f"el preset «{name}» esta repetido")
         seen.add(name)
 
-        temps_str = temps_str.strip()
+        labelled = _parse_labelled_sides(fields, name) if any("=" in f for f in fields) else None
+        if labelled is not None:
+            heat_temp, cool_temp = labelled
+            if heat_temp >= cool_temp and heat_temp != cool_temp:
+                raise ValueError(
+                    f"«{name}»: la consigna de calor ({heat_temp}°C) tiene que ser menor que la de frío "
+                    f"({cool_temp}°C)"
+                )
+            presets.append({"name": name, "heat_temp": heat_temp, "cool_temp": cool_temp})
+            continue
+
+        temps_str = ";".join(fields).strip()
         if "/" in temps_str:
             heat_str, cool_str = temps_str.split("/", 1)
             try:

@@ -68,6 +68,8 @@ from .const import (
     DEFAULT_MIN_HUMIDITY,
     DEFAULT_MIN_OFF_SECONDS,
     DEFAULT_MIN_ON_SECONDS,
+    FALLBACK_COOL_TEMP,
+    FALLBACK_HEAT_TEMP,
     DEFAULT_MIN_TEMP,
     DEFAULT_OUTDOOR_HORIZON_HOURS,
     DEFAULT_TARGET_HUMIDITY,
@@ -190,10 +192,28 @@ class ZoneRunner:
         capability = self._refresh_hvac_modes()
         self._capability_pending = self._capability_still_pending(capability)
 
+        # Tragarse esto en silencio costo una zona entera en produccion: con
+        # `presets_text` en un formato que el parser no entendia, la zona
+        # arrancaba con CERO presets, `away_preset` apuntaba a un nombre
+        # inexistente, `_preset_value` devolvia None para los dos lados y la
+        # entidad se quedaba con `temperature`/`target_temp_low`/`high` a null
+        # -- sin mandos de temperatura en la tarjeta de HA ni en el cliente
+        # Matter, en NINGUN modo, y sin un solo aviso en el log. El texto
+        # declarado no se valida en ningun sitio al guardarlo, asi que este es
+        # el unico punto donde el problema puede salir a la luz.
+        self._presets_error: str | None = None
+        presets_text = (self.zone.get(CONF_PRESETS_TEXT, "") or "").strip()
         try:
-            self._presets = presets_module.parse_presets(self.zone.get(CONF_PRESETS_TEXT, ""))
-        except ValueError:
+            self._presets = presets_module.parse_presets(presets_text)
+        except ValueError as e:
             self._presets = []
+            self._presets_error = str(e)
+            _LOGGER.error(
+                "zona «%s»: no se pueden leer los preajustes declarados (%s) — %s. "
+                "La zona seguira siendo controlable con consignas de respaldo, pero "
+                "revisa el texto de preajustes en la configuracion de la zona.",
+                self.zone.get("name") or zone_id, presets_text or "(vacio)", e,
+            )
         self._preset_modes = [presets_module.PRESET_AUTO, presets_module.PRESET_MANUAL] + [p["name"] for p in self._presets]
         self._preset_mode = presets_module.PRESET_AUTO
 
@@ -337,6 +357,10 @@ class ZoneRunner:
         return {
             "reason": self.reason,
             "active_preset": self._active_preset_name,
+            # Visible en la entidad a proposito: si los preajustes de la zona
+            # no se pueden leer, la zona funciona con consignas de respaldo y
+            # eso tiene que verse sin bucear en el log.
+            "presets_error": self._presets_error,
             "priority": self.zone.get(CONF_PRIORITY),
             "simulate": self.zone.get(CONF_SIMULATE, True),
             "thermal_model_reliable": self._thermal_model.get("reliable", False),
@@ -942,8 +966,19 @@ class ZoneRunner:
             # mientras tanto. Ahora se reintenta aqui tambien, siempre.
             capability = self._refresh_hvac_modes()
             self._reconcile_hvac_mode(capability)
+        # Los dos caminos que dejan la zona NO DISPONIBLE dicen ahora cual de
+        # los dos ha sido. Antes los dos se iban con `reason` intacto ("sin
+        # calcular todavia"), asi que desde fuera una zona caida por un
+        # actuador sin resolver y otra caida porque su sensor de temperatura
+        # esta offline se veian EXACTAMENTE igual -- imposible saber donde
+        # mirar sin leer el log del addon.
         if self._capability_pending:
             self.available = False
+            pendientes = ", ".join(self.zone.get(CONF_CLIMATE_ENTITIES) or []) or "ninguno declarado"
+            self.reason = (
+                f"no disponible: los actuadores de la zona ({pendientes}) todavía no se han "
+                "podido leer — si es un dispositivo de otro plugin, puede estar aún conectando"
+            )
             self._maybe_publish_state()
             return
 
@@ -955,6 +990,11 @@ class ZoneRunner:
         self.current_humidity = round(humidity) if humidity is not None else None
         if current_temp is None:
             self.available = False
+            sensor = self.zone.get(CONF_CURRENT_TEMP_SENSOR) or "(sin sensor declarado)"
+            self.reason = (
+                f"no disponible: sin lectura de temperatura de «{sensor}» — los actuadores sí "
+                "están resueltos, el que falta es el sensor"
+            )
             self._maybe_publish_state()
             return
         self.available = True
@@ -1170,13 +1210,36 @@ class ZoneRunner:
         if self.hvac_mode in ("heat", "cool", "heat_cool") and (
             heat_target is None or cool_target is None
         ):
+            # Contra el preset ACTIVO YA RESUELTO, no contra `_preset_mode`:
+            # en el modo por defecto `_preset_mode` vale "Automático", que no
+            # es el nombre de ningun preset declarado, asi que
+            # `_preset_value` devolvia None siempre y este respaldo -- puesto
+            # aqui justo para esto -- no se activaba nunca. El nombre que hay
+            # que resolver es el que salio de `resolve_active_preset_name`.
+            nombre = self._active_preset_name or self._preset_mode
             respaldo_heat, respaldo_cool = self._resolve_preset_targets(
-                self._preset_mode, wants_heat=True, wants_cool=True,
+                nombre, wants_heat=True, wants_cool=True,
             )
             if heat_target is None:
                 heat_target = respaldo_heat
             if cool_target is None:
                 cool_target = respaldo_cool
+
+            # Ultimo recurso. Si seguimos sin consigna es que los preajustes
+            # de la zona no se pueden leer (`_presets_error`) o no cubren el
+            # preset activo. Publicar un hueco es lo PEOR que se puede hacer
+            # aqui: deja la zona sin mandos en la tarjeta de HA y hace que un
+            # puente Matter que automapea la entidad la modele de un solo
+            # sentido y acabe aislandola. Mas vale una consigna de respaldo
+            # explicita, acotada a los limites de la zona, que la zona sigue
+            # siendo controlable a mano y el motivo dice lo que pasa.
+            if heat_target is None or cool_target is None:
+                bajo = max(self._min_temp, min(FALLBACK_HEAT_TEMP, self._max_temp))
+                alto = max(self._min_temp, min(FALLBACK_COOL_TEMP, self._max_temp))
+                if heat_target is None:
+                    heat_target = bajo
+                if cool_target is None:
+                    cool_target = alto
 
         if self.hvac_mode == "heat_cool":
             self.target_temperature = None

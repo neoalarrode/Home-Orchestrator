@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.67.0
+
+**Un texto de preajustes que no se entiende ya no deja la zona sin consignas.** Diagnosticado en producción sobre la zona Salón: no se podía fijar la temperatura en ningún modo ni desde ninguna interfaz.
+
+La cadena completa era esta. El texto de preajustes declarado no se valida en ningún punto al guardarlo, así que se aceptaba cualquier cosa. Al construir la zona, `parse_presets` lanzaba `ValueError` y el `except` **se lo tragaba en silencio**, sin una línea de log. La zona arrancaba con cero preajustes, pero `away_preset`/`presence_preset` seguían apuntando a nombres que ya no existían, así que `_preset_value` devolvía `None` por los dos lados y la entidad publicaba `temperature`, `target_temp_low` y `target_temp_high` a null. Sin consignas no hay mandos: ni en la tarjeta de HA, ni en el cliente Matter, en ningún modo. El síntoma visible era un `reason` que decía "sin consigna activa" y nada más.
+
+Tres arreglos, uno por eslabón:
+
+- **El parser acepta el formato que la gente escribe de verdad.** Además de `Confort: 19/23, Ausente: 17/26`, ahora entiende un preajuste por línea y los lados por nombre:
+
+  ```
+  Presente; calor=21; frio=25
+  Ausente; calor=18; frio=27
+  ```
+
+  Se admiten `calor`/`heat`/`invierno` y `frio`/`cool`/`verano`, en cualquier orden, y declarar un solo lado en zonas de un único sentido. Lo que ya funcionaba sigue funcionando, y lo que debía fallar sigue fallando (calor ≥ frío, nombres repetidos, etiquetas inventadas).
+
+- **El error deja de ser silencioso.** Se registra en el log nombrando la zona y el texto culpable, y se publica en la entidad como atributo `presets_error`, para que se vea sin bucear en el log.
+
+- **La entidad nunca publica un hueco.** Si aun así no hay consigna resoluble, se usa una de respaldo acotada a los límites de la zona. Publicar null es el peor resultado posible aquí: es exactamente lo que deja la tarjeta sin mandos y lo que hace que un puente Matter modele la zona de un solo sentido y acabe aislándola.
+
+**El respaldo de 0.64.0 no se activaba nunca.** Resolvía contra `_preset_mode`, que en el modo por defecto vale `Automático` — un nombre que no es de ningún preajuste declarado, así que devolvía `None` siempre. Ahora resuelve contra el preajuste activo ya resuelto, que es lo que debía hacer desde el principio.
+
+**Una zona no disponible dice por qué.** Los dos caminos que la marcan así (actuadores sin resolver, o sin lectura del sensor de temperatura) se iban con el `reason` intacto en "sin calcular todavía". Desde fuera las dos causas se veían idénticas, y no había forma de saber dónde mirar sin abrir el log del add-on. Ahora cada una nombra lo que falta.
+
 ## 0.66.1
 Climate re-pineado al tag `v0.66.0`. sha256 `00f53e8e…73c8`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los **nueve** arreglos de clima acumulados (0.62.0, 0.63.0, 0.64.0, 0.65.0 y 0.66.0) están presentes en el código empaquetado.
 
