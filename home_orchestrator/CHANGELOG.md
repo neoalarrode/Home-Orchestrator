@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.72.0
+
+**Un robot aspirador se daba de alta y no aparecía ninguna entidad `vacuum.*`.**
+
+El hueco estaba en el último tramo. El perfil sabía parsear `vacuums:` desde siempre, y el perfilado automático sabía construirlo — arranque, pausa, vuelta a la base, localizar, batería, estado y velocidad, todo correcto en el YAML generado. Pero el puente MQTT solo publicaba `dps`, `climates` y `lights`: **de `vacuums` no publicaba nada**. El dispositivo conectaba, sus datos llegaban, y en Home Assistant no había entidad.
+
+Ahora se publica como una entidad `vacuum.*` nativa, con el esquema `state` (el `legacy` está retirado). Las capacidades se anuncian según lo que el aparato ofrece **de verdad**, no una lista fija: si no hay DP de localizar, no se anuncia el botón. Anunciar un botón que luego no hace nada es peor que no tenerlo.
+
+**Un estado que el perfil no traduce ya no rompe la tarjeta.** Pasa de verdad: el mapa de estados lo deduce el perfilado automático del esquema de la nube, y un robot con base de lavado tiene estados que ahí no salen — visto en el aparato real, `airing` mientras seca la mopa. HA solo admite `cleaning`, `docked`, `paused`, `idle`, `returning` y `error`; publicar cualquier otra cosa deja la entidad en un estado inválido. Lo que no encaja se reporta como "en reposo", que es la verdad más cercana, y se avisa en el log **una vez por valor** — con el nombre exacto que hay que añadir a `status_map` si se quiere ver de otra forma.
+
 ## 0.71.1
 Tuya re-pineado al tag `v0.71.0`. sha256 `09341cf1…7922`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que el backend sirve las ocho versiones y la interfaz las pinta, y — la causa del fallo — que en el HTML ya no queda la lista escrita a mano, solo el `3.3` de respaldo.
 

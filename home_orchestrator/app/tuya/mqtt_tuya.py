@@ -45,6 +45,11 @@ _DOMAIN_FOR_PLATFORM = {
     "select": "select",
 }
 
+# Vocabulario de estados que admite una entidad `vacuum.*` de HA. Fuera de
+# estos la tarjeta no sabe que pintar, asi que lo que no encaje se cae a
+# "idle" en vez de publicarse tal cual (ver `_vacuum_activity`).
+_VACUUM_ACTIVITIES = frozenset({"cleaning", "docked", "paused", "idle", "returning", "error"})
+
 
 class MqttTuyaDevice:
     def __init__(self, mqtt_client, manager, device_id: str, device_name: str) -> None:
@@ -63,6 +68,9 @@ class MqttTuyaDevice:
         self._commands = ha_mqtt.MqttCommandWorker(
             name=f"tuya-mqtt-cmd-{device_id}", on_done=self.publish_state,
         )
+        # Estados de aspirador que el perfil no traduce: se avisa UNA vez por
+        # valor, no en cada ciclo (ver `_vacuum_activity`).
+        self._vacuum_unknown_states: set[str] = set()
 
     def _base(self, suffix: str) -> str:
         return f"{DISCOVERY_PREFIX}/{{domain}}/{NODE_ID}/{self.device_id}_{suffix}"
@@ -82,6 +90,63 @@ class MqttTuyaDevice:
             self._publish_climate(i, cm)
         for i, lt in enumerate(profile.lights):
             self._publish_light(i, lt)
+        # GAP CERRADO AQUI: el perfil parseaba `vacuums:` desde siempre y
+        # `auto_profile` sabia construirlo (start/pause/return/locate/bateria/
+        # estado/velocidad), pero aqui no se publicaba NADA -- un robot
+        # aspirador se daba de alta correctamente y no aparecia ninguna
+        # entidad `vacuum.*` en HA. Confirmado en produccion.
+        for i, vm in enumerate(profile.vacuums):
+            self._publish_vacuum(i, vm)
+
+    def _publish_vacuum(self, index: int, vm) -> None:
+        """Publica el bloque `vacuums:` como una entidad `vacuum.*` nativa
+        (esquema `state` de HA -- el `legacy` esta retirado).
+
+        `supported_features` se declara segun lo que el dispositivo ofrece de
+        verdad, no una lista fija: anunciar un boton que luego no hace nada
+        es peor que no tenerlo.
+        """
+        base = self._base(f"vacuum{index}").format(domain="vacuum")
+        features: list[str] = ["state"]
+        payload = {
+            "name": vm.name,
+            "unique_id": f"{NODE_ID}_{self.device_id}_vacuum{index}",
+            "schema": "state",
+            "state_topic": f"{base}/state",
+            "command_topic": f"{base}/command",
+            "availability_topic": f"{base}/availability",
+            "device": self._device_block,
+        }
+        if vm.icon:
+            payload["icon"] = vm.icon
+
+        if vm.start_dp is not None:
+            features += ["start", "pause"]
+            payload.update(payload_start="start", payload_pause="pause")
+            # Parar del todo solo se anuncia si hay un DP de arranque que
+            # apagar; si no, "stop" no tendria a que traducirse.
+            features.append("stop")
+            payload["payload_stop"] = "stop"
+        if vm.return_dp is not None:
+            features.append("return_home")
+            payload["payload_return_to_base"] = "return_to_base"
+        if vm.locate_dp is not None:
+            features.append("locate")
+            payload["payload_locate"] = "locate"
+        if vm.battery_dp is not None:
+            features.append("battery")
+        if vm.fan_speed_dp is not None and vm.fan_speed_map:
+            features.append("fan_speed")
+            payload["set_fan_speed_topic"] = f"{base}/fan_speed/set"
+            payload["fan_speed_list"] = list(vm.fan_speed_map.values())
+            self._mqtt.subscribe(
+                f"{base}/fan_speed/set", partial(self._on_vacuum_fan_speed, index),
+            )
+
+        payload["supported_features"] = features
+        self._mqtt.subscribe(f"{base}/command", partial(self._on_vacuum_command, index))
+        self._mqtt.publish(f"{base}/config", payload, retain=True)
+        self._mqtt.publish(f"{base}/availability", "online", retain=True)
 
     def _publish_dp(self, domain: str, dp) -> None:
         base = self._base(f"dp{dp.dp_id}").format(domain=domain)
@@ -216,6 +281,8 @@ class MqttTuyaDevice:
             self._mqtt.publish(self._base(f"climate{i}").format(domain="climate") + "/config", "", retain=True)
         for i in range(len(profile.lights)):
             self._mqtt.publish(self._base(f"light{i}").format(domain="light") + "/config", "", retain=True)
+        for i in range(len(profile.vacuums)):
+            self._mqtt.publish(self._base(f"vacuum{i}").format(domain="vacuum") + "/config", "", retain=True)
 
     # -------------------------------------------------------------- estado
 
@@ -239,6 +306,102 @@ class MqttTuyaDevice:
             self._publish_climate_state(i, cm)
         for i, lt in enumerate(profile.lights):
             self._publish_light_state(i, lt)
+        for i, vm in enumerate(profile.vacuums):
+            self._publish_vacuum_state(i, vm)
+
+    def _publish_vacuum_state(self, index: int, vm) -> None:
+        base = self._base(f"vacuum{index}").format(domain="vacuum")
+        self._publish_availability(base)
+        state: dict = {"state": self._vacuum_activity(vm)}
+        if vm.battery_dp is not None:
+            battery = self._manager.get_decoded(self.device_id, vm.battery_dp)
+            if battery is not None:
+                try:
+                    state["battery_level"] = int(float(battery) * (vm.battery_scale or 1))
+                except (TypeError, ValueError):
+                    pass
+        if vm.fan_speed_dp is not None and vm.fan_speed_map:
+            raw = self._manager.get_decoded(self.device_id, vm.fan_speed_dp)
+            if raw is not None:
+                state["fan_speed"] = vm.fan_speed_map.get(str(raw), str(raw))
+        self._mqtt.publish(f"{base}/state", state, retain=True)
+
+    def _vacuum_activity(self, vm) -> str:
+        """Estado en el vocabulario de HA. Fuera de esos valores la tarjeta no
+        sabe que pintar, asi que un estado que el mapa no cubre NO se pasa tal
+        cual: se cae a `idle` y se avisa una vez.
+
+        Pasa de verdad -- el mapa lo deduce `auto_profile` del esquema de la
+        nube, y un robot con base de lavado tiene estados que ahi no salen
+        (visto: `airing`, secando la mopa). Publicar eso deja la entidad en un
+        estado invalido; decir "en reposo" es la verdad mas cercana.
+        """
+        if vm.status_dp is None:
+            return "idle"
+        raw = self._manager.get_decoded(self.device_id, vm.status_dp)
+        if raw is None:
+            return "idle"
+        mapped = (vm.status_map or {}).get(str(raw))
+        if mapped in _VACUUM_ACTIVITIES:
+            return mapped
+        if str(raw) not in self._vacuum_unknown_states:
+            self._vacuum_unknown_states.add(str(raw))
+            log.info(
+                "Tuya %s: el aspirador reporta el estado %r, que su perfil no traduce "
+                "-- se publica como 'idle'. Añade `%s: <estado>` a `status_map` si "
+                "quieres que se vea de otra forma.",
+                self.device_id, raw, raw,
+            )
+        return "idle"
+
+    def _on_vacuum_command(self, index, client, userdata, msg) -> None:
+        command = msg.payload.decode(errors="replace").strip()
+
+        def apply() -> None:
+            profile = self._manager.profile(self.device_id)
+            if profile is None or index >= len(profile.vacuums):
+                return
+            vm = profile.vacuums[index]
+            if command in ("start", "pause", "stop"):
+                # `start_map` cubre los dispositivos cuyo DP de arranque es un
+                # enum ("smart"/"pause") en vez de un booleano.
+                if vm.start_map:
+                    raw = vm.start_map.get(command)
+                    if raw is None and command == "stop":
+                        raw = vm.start_map.get("pause")
+                    if raw is not None:
+                        self._manager.set_dp(self.device_id, vm.start_dp, raw)
+                    return
+                if command == "pause" and vm.pause_dp is not None:
+                    self._manager.set_dp(self.device_id, vm.pause_dp, True)
+                elif vm.start_dp is not None:
+                    self._manager.set_dp(self.device_id, vm.start_dp, command == "start")
+            elif command == "return_to_base" and vm.return_dp is not None:
+                self._manager.set_dp(self.device_id, vm.return_dp, True)
+            elif command == "locate" and vm.locate_dp is not None:
+                self._manager.set_dp(self.device_id, vm.locate_dp, True)
+            else:
+                log.warning(
+                    "Tuya %s: el aspirador no admite la orden %r", self.device_id, command,
+                )
+
+        self._commands.submit(apply)
+
+    def _on_vacuum_fan_speed(self, index, client, userdata, msg) -> None:
+        label = msg.payload.decode(errors="replace").strip()
+
+        def apply() -> None:
+            profile = self._manager.profile(self.device_id)
+            if profile is None or index >= len(profile.vacuums):
+                return
+            vm = profile.vacuums[index]
+            raw = next((k for k, v in (vm.fan_speed_map or {}).items() if v == label), None)
+            if raw is None:
+                log.warning("Tuya %s: velocidad de aspirador desconocida %r", self.device_id, label)
+                return
+            self._manager.set_dp(self.device_id, vm.fan_speed_dp, raw)
+
+        self._commands.submit(apply)
 
     def _publish_availability(self, base: str) -> None:
         """BUG REAL: la disponibilidad se publicaba "online" retenida UNA vez, al
