@@ -45,7 +45,10 @@ class TuyaPlugin(Plugin):
     version = "0.4.7"
 
     def __init__(self) -> None:
-        self._manager = TuyaDeviceManager(on_any_change=self._on_device_change)
+        self._manager = TuyaDeviceManager(
+            on_any_change=self._on_device_change,
+            on_address_change=self._persist_address,
+        )
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_tuya")
         self._mqtt_devices: dict[str, MqttTuyaDevice] = {}
         self._app = flask.Flask("tuya_plugin", template_folder="tuya_templates")
@@ -270,11 +273,28 @@ class TuyaPlugin(Plugin):
                 cloud_device["name"], cloud_device.get("category"), cloud_device.get("product_id"), schema,
             )
             if discovered is None:
+                # BUG REAL, visto al dar de alta un robot aspirador: se
+                # guardaba con protocolo 3.3 cuando hablaba 3.5. Este camino
+                # (añadir desde la lista de la cuenta, sin haberlo oido)
+                # rellenaba la version con el "3.3 es lo mas habitual" por
+                # defecto -- una CONJETURA presentada como un dato, y encima
+                # una que deja el dispositivo sin conectar.
+                #
+                # Localizarlo ahora mismo da las dos cosas de verdad: la IP y
+                # la version con la que responde. Un solo candidato, asi que
+                # es rapido; y si no aparece, se avisa en vez de inventar.
+                try:
+                    found = self._manager.identify_unknown([cloud_device])
+                except Exception:
+                    log.exception("Tuya: fallo localizando %s al resolverlo", device_id)
+                    found = []
+                discovered = next((d for d in found if d.device_id == device_id), None)
+            if discovered is None:
                 warnings = [
-                    "Este dispositivo no se ha oido anunciarse en la LAN, asi que no se "
-                    "conoce su direccion IP ni su version de protocolo: ponlas a mano. "
-                    "Prueba «buscar en la red» para localizar su IP; si no sabes la "
-                    "version, 3.3 es la mas habitual.",
+                    "No se ha encontrado este dispositivo en la red: ni se anuncia ni "
+                    "responde en ninguna direccion. Comprueba que este encendido y en "
+                    "esta misma red. Si lo añades igualmente, tendras que poner su IP y "
+                    "su version de protocolo a mano.",
                     *warnings,
                 ]
             return flask.jsonify({
@@ -291,20 +311,81 @@ class TuyaPlugin(Plugin):
 
     # --------------------------------------------- localizar lo que no se oye
 
+    def _persist_address(self, device_id: str, new_ip: str, new_version: str | None = None) -> None:
+        """Guarda la direccion (y la version, si se ha corregido) de un
+        dispositivo que se ha movido. Sin esto el cambio se perderia en el
+        siguiente reinicio: se arrancaria otra vez contra los datos viejos.
+        `update_device` va por el id INTERNO del almacen, no por el device_id
+        de Tuya, asi que hay que buscarlo."""
+        cambios: dict = {"address": new_ip}
+        if new_version:
+            cambios["protocol_version"] = new_version
+        for entry in tuya_store.load_devices():
+            if (entry["config"] or {}).get("device_id") != device_id:
+                continue
+            actualizado = tuya_store.update_device(entry["id"], cambios)
+            log.info(
+                "Tuya %s: guardado en %s%s", device_id, new_ip,
+                f" con protocolo {new_version}" if new_version else "",
+            )
+            if new_version and actualizado:
+                # Una version distinta obliga a reconstruir el dispositivo, y
+                # eso NO se puede hacer aqui: esto se ejecuta dentro del bucle
+                # de eventos de Tuya, y `remove_device`/`_start_device` usan
+                # `_run_coro`, que hace run_coroutine_threadsafe y espera el
+                # resultado -- llamarlo desde el propio bucle seria un
+                # bloqueo mutuo. Se hace desde fuera, en un hilo aparte.
+                threading.Thread(
+                    target=self._rebuild_device, args=(device_id, actualizado),
+                    name=f"tuya-rebuild-{device_id[:8]}", daemon=True,
+                ).start()
+            return
+
+    def _rebuild_device(self, device_id: str, entry: dict) -> None:
+        try:
+            self._manager.remove_device(device_id)
+            self._start_device(entry)
+        except Exception:
+            log.exception("Tuya %s: fallo reconstruyendo con la version nueva", device_id)
+
     def _identify_candidates(self) -> list[dict]:
-        """Dispositivos de la cuenta que merece la pena ir a buscar: los que
-        no estan dados de alta y no se han oido anunciarse. Si no hay
-        ninguno, no hay nada que buscar -- y entonces NO se barre la red."""
+        """A quien merece la pena ir a buscar por la red. Dos grupos, y para
+        el barrido son la misma operacion:
+
+        1. De la cuenta: los que no estan dados de alta ni se han oido. Son
+           los que todavia no existen para el usuario.
+        2. Del almacen: los YA dados de alta que estan desconectados. Un
+           dispositivo que no se anuncia y al que el DHCP le ha cambiado la
+           IP no tiene forma de avisarnos -- no hay broadcast que escuchar,
+           asi que la unica salida es volver a buscarlo. Estos no necesitan
+           la nube: su local_key ya lo tenemos guardado.
+
+        Si los dos grupos salen vacios NO se barre la red: no habria nada
+        que encontrar.
+        """
+        added_ids: set[str] = set()
+        candidates: list[dict] = []
+        for entry in tuya_store.load_devices():
+            cfg = entry["config"] or {}
+            device_id = cfg.get("device_id")
+            if not device_id:
+                continue
+            added_ids.add(device_id)
+            if cfg.get("local_key") and not self._manager.connected(device_id):
+                candidates.append({
+                    "device_id": device_id, "local_key": cfg["local_key"],
+                    "name": cfg.get("name"), "product_id": None,
+                })
+
         account = tuya_store.load_account()
-        if not (account["access_id"] and account["access_secret"] and account["uid"]):
-            return []
-        api = TuyaCloudApi(account["region"], account["access_id"], account["access_secret"])
-        added = {(d["config"] or {}).get("device_id") for d in tuya_store.load_devices()}
-        seen = {d.device_id for d in self._manager.get_discovered_devices()}
-        return [
-            d for d in api.get_user_devices(account["uid"])
-            if d["device_id"] not in added and d["device_id"] not in seen and d.get("local_key")
-        ]
+        if account["access_id"] and account["access_secret"] and account["uid"]:
+            api = TuyaCloudApi(account["region"], account["access_id"], account["access_secret"])
+            seen = {d.device_id for d in self._manager.get_discovered_devices()}
+            candidates += [
+                d for d in api.get_user_devices(account["uid"])
+                if d["device_id"] not in added_ids and d["device_id"] not in seen and d.get("local_key")
+            ]
+        return candidates
 
     def _identify_now(self):
         candidates = self._identify_candidates()

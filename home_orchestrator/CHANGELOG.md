@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.70.0
+
+Tres cosas, las dos primeras vistas en uso real.
+
+**Dar de alta un dispositivo que no se había oído lo guardaba con la versión equivocada.** Visto con un robot aspirador que habla 3.5: quedó guardado como 3.3 y por tanto sin conectar. El camino de "añadir desde la lista de la cuenta" rellenaba la versión con el *«3.3 es lo más habitual»* por defecto — una **conjetura presentada como un dato**. Ahora, si el dispositivo no se ha oído, se localiza en ese momento: eso da la IP y la versión con la que responde de verdad. Si no aparece, se dice, en vez de inventar un valor que no va a funcionar.
+
+**La lista de la cuenta era un volcado.** Salía todo lo vinculado, incluidas bombillas apagadas y cosas que no están en esta red — justo lo contrario de "solo lo que hay en tu red". Ahora esa tarjeta solo muestra lo que figura **encendido en la cuenta pero no se ha encontrado aquí**, que es la única información que aporta algo (suele significar que está en otra red o fuera de casa). Lo normal es que esté vacía: todo lo localizable aparece arriba, en «Detectados en la red». Los apagados se cuentan, no se listan.
+
+**La rotación de IPs del DHCP.** Esto era un arreglo a medio portar, y el propio código lo decía: `discovery.py` ya avisaba en cada broadcast oído, con un comentario que remite *"al lado `update_entry` de este arreglo"*… que nunca se portó. El consumidor se construía sin callback, así que nadie escuchaba. A un dispositivo ya dado de alta le cambiaba la IP en una renovación normal de DHCP, el broadcast lo anunciaba con la nueva, la caché se actualizaba — y la conexión viva seguía usando la vieja para siempre. Había que borrarlo y volverlo a añadir a mano.
+
+Ahora se cubren los dos casos, que son distintos:
+
+- **Se anuncia:** basta escuchar. Al oír una IP distinta de la que se está usando, se cierra, se reapunta, se reconecta y se guarda — sin lo último, el siguiente reinicio volvería a la dirección vieja.
+- **No se anuncia:** no hay broadcast que escuchar, así que la única salida es volver a buscarlo. Los dispositivos dados de alta que están desconectados entran ahora como candidatos de la búsqueda por red, y para esos no hace falta la nube: su `local_key` ya está guardado.
+
+Además, la dirección de un dispositivo **desconectado** ya no se da por buena al decidir qué IPs probar: es justo la sospechosa de haber cambiado, así que vuelve al conjunto de las que hay que mirar.
+
+Y si al localizarlo resulta que responde con una versión distinta de la configurada, se corrige sola. Eso no es reasignar un atributo — la versión decide la cabecera, el marco, el dialecto inicial y si hay clave de sesión — así que el dispositivo se reconstruye entero, desde fuera del bucle de eventos para no provocar un bloqueo mutuo.
+
 ## 0.69.1
 Tuya re-pineado al tag `v0.69.0`. sha256 `2ce8a3a2…0f1f`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que el módulo nuevo `tuya/identify.py` va incluido, que la interfaz nueva está en el paquete, y que ni el barrido de red ni la consulta a la nube han quedado en el refresco periódico de la página.
 

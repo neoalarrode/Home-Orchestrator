@@ -95,14 +95,15 @@
 
 <div class="card">
   <h2>
-    <span>En tu cuenta de Tuya</span>
-    <span class="hint">incluidos los que no se anuncian solos</span>
+    <span>En tu cuenta pero sin localizar</span>
+    <span class="hint">lo normal es que esto esté vacío</span>
   </h2>
   <p class="help">
-    Todo lo que hay en la cuenta vinculada. Los que no se anuncian solos se buscan
-    en la red por su cuenta y aparecen arriba, en «Detectados en la red», ya con su
-    nombre y su dirección — no hace falta hacer nada. Si acabas de enchufar uno y
-    tienes prisa, <em>Buscar ahora</em> lo adelanta.
+    Los dispositivos de tu cuenta se buscan solos en la red — también los que no se
+    anuncian — y aparecen arriba, en «Detectados en la red», ya con su nombre, su
+    dirección y su versión. No hace falta hacer nada. Aquí solo queda lo que figura
+    encendido en la cuenta pero no se ha encontrado en esta red. Si acabas de
+    enchufar algo y tienes prisa, <em>Buscar ahora</em> lo adelanta.
   </p>
   <div class="actions">
     <button type="button" onclick="loadCloudDevices()">Recargar la cuenta</button>
@@ -321,31 +322,36 @@ const CATEGORIAS = {
 function renderCloudDevices(devices) {
   const grid = document.getElementById("cloud-grid");
   const empty = document.getElementById("cloud-empty");
-  const pending = devices.filter(d => !d.already_added);
   empty.style.display = devices.length ? "none" : "block";
-  if (!pending.length) {
-    grid.innerHTML = devices.length
-      ? `<div class="empty">Los ${devices.length} dispositivos de la cuenta están ya dados de alta.</div>`
-      : "";
+  // Volcar la cuenta entera aqui era ruido: la mayoria son cosas que ni
+  // estan en esta red ni estan encendidas. Solo interesa lo que NO se ha
+  // conseguido localizar pero deberia estar: dado de alta no, apagado
+  // tampoco, y ya localizado tampoco -- eso ultimo ya sale arriba, en
+  // "Detectados en la red", que es donde el usuario tiene que mirar.
+  const perdidos = devices.filter(d => !d.already_added && d.online && !d.seen_on_lan);
+  const apagados = devices.filter(d => !d.already_added && !d.online).length;
+  if (!perdidos.length) {
+    grid.innerHTML = `<div class="empty">Todo lo que hay encendido en tu cuenta está localizado${
+      apagados ? ` (${apagados} más figuran apagados)` : ""}.</div>`;
     return;
   }
-  grid.innerHTML = pending.map(d => {
-    const tipo = CATEGORIAS[d.category] || d.category || "sin categoría";
-    const donde = d.seen_on_lan
-      ? esc(d.ip)
-      : '<span title="no se le ha oído anunciarse: su IP hay que ponerla a mano">sin IP conocida</span>';
-    return `
-    <div class="device-card">
-      <div class="device-card-head">
-        <span class="device-name">${esc(d.name)}</span>
-        <span class="hint">${d.online ? "en línea" : "desconectado"}</span>
-      </div>
-      <div class="device-meta">${esc(tipo)} · ${donde}</div>
-      <div class="device-actions">
-        <button onclick="addFromDiscovered('${d.device_id}')">Añadir</button>
-      </div>
-    </div>`;
-  }).join("");
+  grid.innerHTML = `
+    <p class="help">Están en tu cuenta y figuran encendidos, pero no se han encontrado en esta red.
+    Puede que estén en otra red o fuera de casa. Aun así puedes intentar añadirlos:</p>` +
+    perdidos.map(d => {
+      const tipo = CATEGORIAS[d.category] || d.category || "sin categoría";
+      return `
+      <div class="device-card">
+        <div class="device-card-head">
+          <span class="device-name">${esc(d.name)}</span>
+        </div>
+        <div class="device-meta">${esc(tipo)} · no encontrado en la red</div>
+        <div class="device-actions">
+          <button onclick="addFromDiscovered('${d.device_id}')">Añadir</button>
+        </div>
+      </div>`;
+    }).join("") +
+    (apagados ? `<p class="help">Otros ${apagados} de tu cuenta figuran apagados; no se listan.</p>` : "");
 }
 
 async function loadCloudDevices() {

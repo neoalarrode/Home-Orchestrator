@@ -58,8 +58,15 @@ class TuyaDeviceManager:
     un unico hook simple, no una cola de eventos ni un sistema de
     suscripcion por dispositivo (no hace falta mas que eso hoy)."""
 
-    def __init__(self, on_any_change: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        on_any_change: Callable[[str], None] | None = None,
+        on_address_change: Callable[[str, str], None] | None = None,
+    ) -> None:
         self._on_any_change = on_any_change
+        # Persistir la IP nueva es cosa de la capa de arriba (tuya_plugin, que
+        # es quien conoce el almacen) -- mismo criterio que `on_any_change`.
+        self._on_address_change = on_address_change
         self._devices: dict[str, TuyaLocalDevice] = {}
         self._profiles: dict[str, DeviceProfile] = {}
         self._state: dict[str, dict[int, Any]] = {}
@@ -79,7 +86,15 @@ class TuyaDeviceManager:
         # pierde una escucha que esta abierta ~100% del tiempo. Puramente
         # informativo hasta que el usuario decide añadir uno (ver
         # get_discovered_devices()) -- nunca añade nada por su cuenta.
-        self._discovery = PersistentDiscovery()
+        # BUG REAL, la otra mitad de un arreglo que se quedo a medio portar.
+        # `discovery.py` ya avisaba en CADA broadcast oido, con un comentario
+        # que remite explicitamente "al lado update_entry de este arreglo"...
+        # que nunca se porto: aqui se construia sin callback, asi que nadie
+        # escuchaba. Consecuencia: a un dispositivo ya dado de alta le cambia
+        # la IP en una renovacion normal de DHCP, el broadcast lo anuncia con
+        # la nueva, la cache se actualiza -- y la conexion viva sigue usando
+        # la vieja para siempre. Habia que borrarlo y volverlo a añadir a mano.
+        self._discovery = PersistentDiscovery(on_device=self._on_device_seen)
         # Los localizados cruzando barrido activo + cuenta (ver identify.py),
         # que por definicion nunca van a aparecer en `_discovery.devices`.
         self._identified: dict[str, DiscoveredDevice] = {}
@@ -118,26 +133,107 @@ class TuyaDeviceManager:
         return list(merged.values())
 
     def known_ips(self) -> set[str]:
-        """IPs de las que ya se sabe de quien son -- oidas por broadcast, ya
-        identificadas, o de un dispositivo dado de alta. `identify` no las
-        vuelve a probar."""
+        """IPs de las que ya se sabe de quien son. `identify` no las prueba.
+
+        De los dispositivos dados de alta solo se dan por buenas las de los
+        que estan CONECTADOS: la direccion de uno que lleva rato sin conectar
+        es justo la sospechosa -- puede haberla perdido en una renovacion de
+        DHCP -- asi que esa IP vuelve al conjunto de las que hay que probar.
+        """
         ips = {d.ip for d in self._discovery.devices.values() if d.ip}
         ips |= {d.ip for d in self._identified.values() if d.ip}
-        ips |= {d.address for d in self._devices.values() if getattr(d, "address", None)}
+        ips |= {
+            d.address for d in self._devices.values()
+            if d.connected and getattr(d, "address", None)
+        }
         return ips
 
     def remember_identified(self, devices: list[DiscoveredDevice]) -> None:
         for d in devices:
             self._identified[d.device_id] = d
 
+    def _on_device_seen(self, device: DiscoveredDevice) -> None:
+        """Un broadcast oido. Si es de un dispositivo YA dado de alta y viene
+        con una IP distinta a la que estamos usando, se ha movido."""
+        current = self._devices.get(device.device_id)
+        if current is None or not device.ip or device.ip == current.address:
+            return
+        if self._loop is None:
+            return
+        log.info(
+            "Tuya %s: la IP ha cambiado de %s a %s (renovacion de DHCP) -- reconectando",
+            device.device_id, current.address, device.ip,
+        )
+        # Ya estamos DENTRO del bucle (esto lo llama `datagram_received`), asi
+        # que create_task, no run_coroutine_threadsafe.
+        self._loop.create_task(self._move_device(device.device_id, device.ip))
+
+    async def _move_device(self, device_id: str, new_ip: str, new_version: str | None = None) -> None:
+        """Reapunta un dispositivo vivo a una direccion nueva y reconecta.
+
+        `new_version` solo llega cuando la reubicacion vino de una
+        identificacion, que SI determina con que version responde el
+        dispositivo de verdad. Si no coincide con la que tiene configurada,
+        no basta con reasignar un atributo: la version decide la cabecera,
+        el marco, el dialecto inicial y si hay clave de sesion (ver las
+        banderas `_uses_*` de tuya_lan). Hay que reconstruirlo, y eso lo hace
+        la capa de arriba, que es quien tiene el local_key y el perfil.
+        """
+        device = self._devices.get(device_id)
+        if device is None:
+            return
+        version_changed = bool(new_version) and new_version != device.protocol_version
+        if device.address == new_ip and not version_changed:
+            return
+        try:
+            await device.close()
+        except Exception:
+            log.debug("Tuya %s: fallo cerrando antes de mudarlo", device_id, exc_info=True)
+        device.address = new_ip
+        # Que se persista es lo que hace que el cambio sobreviva a un
+        # reinicio; sin esto volveria a arrancar contra la IP vieja.
+        if self._on_address_change:
+            try:
+                self._on_address_change(device_id, new_ip, new_version if version_changed else None)
+            except Exception:
+                log.exception("Tuya %s: fallo guardando la direccion nueva", device_id)
+        if version_changed:
+            log.info(
+                "Tuya %s: responde con el protocolo %s, no con el %s configurado -- "
+                "se reconstruye la conexion",
+                device_id, new_version, device.protocol_version,
+            )
+            return  # lo vuelve a levantar la capa de arriba, ya con la version buena
+        try:
+            await self._connect_and_prime(device_id)
+        except Exception:
+            log.debug("Tuya %s: no conecta todavia en %s", device_id, new_ip, exc_info=True)
+
     def identify_unknown(self, candidates: list[dict], timeout: float = 900.0) -> list[DiscoveredDevice]:
-        """Localiza los `candidates` (de la cuenta de la nube) que no se
-        anuncian, y los recuerda para que salgan en la lista de detectados
-        como cualquier otro."""
+        """Localiza los `candidates` que no se anuncian.
+
+        Sirve para las DOS cosas, que son la misma operacion: encontrar un
+        dispositivo nuevo que nunca se ha oido, y volver a encontrar uno ya
+        dado de alta que ha perdido su IP y no se anuncia para avisarlo. Al
+        primero se le recuerda para que salga en la lista de detectados; al
+        segundo se le reapunta la conexion y se le guarda la direccion nueva.
+        """
         found = self._run_coro(
             identify_unknown(candidates, self.known_ips()), timeout=timeout,
         )
-        self.remember_identified(found)
+        nuevos = []
+        for d in found:
+            if d.device_id in self._devices:
+                # close + connect + primera lectura: mas lento que una llamada
+                # normal, por eso no vale el timeout por defecto. Se pasa la
+                # version porque la identificacion SI la determina: es como se
+                # corrige un dispositivo dado de alta con la version erronea.
+                self._run_coro(
+                    self._move_device(d.device_id, d.ip, d.version), timeout=60.0,
+                )
+            else:
+                nuevos.append(d)
+        self.remember_identified(nuevos)
         return found
 
     def active_scan(self, timeout: float = 900.0) -> list[str]:
