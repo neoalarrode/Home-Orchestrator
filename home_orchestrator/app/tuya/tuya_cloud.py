@@ -109,6 +109,40 @@ class TuyaCloudApi:
             for d in devices
         ]
 
+    def get_device_logs(
+        self, device_id: str, hours: float = 24, size: int = 100, event_types: str = "1,2,5,7",
+    ) -> list[dict[str, Any]]:
+        """Historial de eventos del dispositivo tal y como lo ve la nube.
+
+        Sirve para una pregunta que ni el esquema ni la LAN pueden responder:
+        QUE DP usa de verdad la app para algo. El API de especificaciones solo
+        declara lo que el fabricante documento, y por LAN solo se ve lo que el
+        aparato reporta -- un DP de SOLO ESCRITURA no aparece en ninguno de los
+        dos. En el log si: si la app manda una orden por un DP, queda ahi.
+
+        `event_types` por defecto: 1 (conexion), 2 (desconexion),
+        5 (orden enviada) y 7 (dato reportado). El interesante para descubrir
+        un canal de mando es el 5.
+        """
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - int(hours * 3600 * 1000)
+        path = (
+            f"/v1.0/devices/{device_id}/logs"
+            f"?start_time={start_ms}&end_time={now_ms}&type={event_types}&size={size}"
+        )
+        try:
+            result = self._request("GET", path)
+        except TuyaCloudApiError:
+            # La v1.0 no esta disponible en todas las cuentas/regiones; la v2.0
+            # expone lo mismo con otra forma.
+            result = self._request(
+                "GET",
+                f"/v2.0/cloud/thing/{device_id}/report-logs"
+                f"?start_time={start_ms}&end_time={now_ms}&size={size}",
+            )
+        logs = result.get("logs") or result.get("list") or []
+        return logs if isinstance(logs, list) else []
+
     def get_device_schema(self, device_id: str) -> list[dict[str, Any]]:
         """Esquema DP real del dispositivo, normalizado. Consulta v1.1 Y
         v2.0 y las fusiona por dp_id (v1.1 gana en conflicto, v2.0 rellena

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.74.0
+
+**Log de eventos del dispositivo desde la nube**, en `GET /api/cloud/logs/<device_id>`.
+
+Responde a una pregunta que ni el esquema ni la LAN pueden: **qué DP usa de verdad la app**. El API de especificaciones solo declara lo que el fabricante documentó, y consultando el aparato por LAN solo se ve lo que reporta — un DP de **solo escritura** no aparece en ninguno de los dos, por mucho que se pregunte, porque no tiene estado que leer. En el log de órdenes enviadas sí queda.
+
+Devuelve los eventos crudos y, además, un recuento por código: qué DP aparece y cuántas veces, que es lo que se viene a mirar. Por defecto las últimas 24 h y los tipos 1/2/5/7 (conexión, desconexión, **orden enviada**, dato reportado) — el interesante para descubrir un canal de mando es el 5. Ajustables con `?hours=`, `?size=` y `?types=`. Cae a la v2.0 del API si la cuenta no tiene la v1.0.
+
+**Resolver un dispositivo ya dado de alta ya no miente.** Decía "no se ha encontrado este dispositivo en la red" de un aparato conectado y respondiendo: al no estar en la lista de detectados salía a buscarlo, y la búsqueda excluye — con razón — la IP de un dispositivo conectado, así que no encontraba nada. Ahora, si ya está dado de alta, sus datos buenos son los suyos y no hay nada que localizar. Un mensaje falso es peor que ninguno.
+
 ## 0.73.1
 Tuya re-pineado al tag `v0.73.0`. sha256 `3698e849…7282`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que la constante de capacidades válidas y su filtro están en el código empaquetado, y que ni `state` ni `battery` siguen colándose en `supported_features`.
 

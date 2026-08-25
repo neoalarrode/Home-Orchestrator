@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from types import SimpleNamespace
 
 import flask
 
@@ -222,6 +223,36 @@ class TuyaPlugin(Plugin):
                 for d in cloud
             ])
 
+        @app.get("/api/cloud/logs/<device_id>")
+        def _cloud_logs(device_id):
+            """Log de eventos del dispositivo segun la nube -- diagnostico.
+
+            Responde a una pregunta que ni el esquema ni la LAN pueden: que DP
+            usa de verdad la app. Un DP de solo escritura no sale en
+            `/specifications` ni lo reporta el aparato al consultarlo; en el
+            log de ordenes enviadas si aparece.
+            """
+            account = tuya_store.load_account()
+            if not (account["access_id"] and account["access_secret"] and account["uid"]):
+                return flask.jsonify({"error": "vincula primero una cuenta Tuya"}), 400
+            try:
+                api = TuyaCloudApi(account["region"], account["access_id"], account["access_secret"])
+                logs = api.get_device_logs(
+                    device_id,
+                    hours=float(flask.request.args.get("hours", 24)),
+                    size=int(flask.request.args.get("size", 100)),
+                    event_types=flask.request.args.get("types", "1,2,5,7"),
+                )
+            except (TuyaCloudAuthError, TuyaCloudApiError) as err:
+                log.warning("Tuya: fallo pidiendo el log de %s", device_id, exc_info=True)
+                return flask.jsonify({"error": f"la nube de Tuya rechazo la peticion: {err}"}), 502
+            # Que DP aparece y cuantas veces -- que es lo que se viene a mirar.
+            por_codigo: dict[str, int] = {}
+            for entry in logs:
+                clave = str(entry.get("code") or entry.get("dps") or entry.get("event_id") or "?")
+                por_codigo[clave] = por_codigo.get(clave, 0) + 1
+            return flask.jsonify({"total": len(logs), "por_codigo": por_codigo, "logs": logs})
+
         @app.get("/api/scan")
         def _scan():
             """Busca en la red los dispositivos de la cuenta que no se
@@ -283,6 +314,22 @@ class TuyaPlugin(Plugin):
             profile, warnings = auto_profile.build_profile_from_schema(
                 cloud_device["name"], cloud_device.get("category"), cloud_device.get("product_id"), schema,
             )
+            # Si YA esta dado de alta, sus datos buenos son los suyos: no hay
+            # nada que localizar. Sin esto se salia a buscarlo, y como
+            # `known_ips` excluye -- con razon -- la IP de un dispositivo
+            # conectado, la busqueda no encontraba nada y se avisaba de que
+            # "no esta en la red" de un aparato que estaba conectado y
+            # respondiendo. Un mensaje falso es peor que ninguno.
+            if discovered is None:
+                ya_dado_de_alta = next(
+                    (e["config"] for e in tuya_store.load_devices()
+                     if (e["config"] or {}).get("device_id") == device_id), None,
+                )
+                if ya_dado_de_alta and ya_dado_de_alta.get("address"):
+                    discovered = SimpleNamespace(
+                        ip=ya_dado_de_alta["address"],
+                        version=ya_dado_de_alta.get("protocol_version") or None,
+                    )
             if discovered is None:
                 # BUG REAL, visto al dar de alta un robot aspirador: se
                 # guardaba con protocolo 3.3 cuando hablaba 3.5. Este camino
