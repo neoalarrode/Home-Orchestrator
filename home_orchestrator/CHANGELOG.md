@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.70.1
+Tuya re-pineado al tag `v0.70.0`. sha256 `536964a9…f1d7`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que el broadcast ya tiene consumidor, que la IP de un dispositivo desconectado no se da por buena, y que el `3.3` por defecto como conjetura ya no está en el código empaquetado.
+
 ## 0.70.0
 
 Tres cosas, las dos primeras vistas en uso real.
