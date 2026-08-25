@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.75.1
+Tuya re-pineado al tag `v0.75.0` (venía de `v0.73.0`, así que arrastra también el log de eventos de 0.74.0). sha256 `ccfe6065…01fc`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que `_normalize_path` se aplica en `_request` — el punto por el que pasan todas las peticiones — y que ordena **antes** de calcular la firma, no después.
+
 ## 0.75.0
 
 **`1004: sign invalid` en cualquier llamada a la nube de Tuya con más de un parámetro.**

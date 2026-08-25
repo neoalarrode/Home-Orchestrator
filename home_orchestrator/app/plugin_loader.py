@@ -142,8 +142,8 @@ PLUGIN_CATALOG = {
         "description": "Puente de ingesta para dispositivos Tuya-por-LAN — consumo interno por Climate y/o exposición opcional a HA por MQTT",
         "version": "0.4.7",
         "downloadable": True,
-        "tag": "v0.74.0",
-        "sha256": "4f6abf18cd70c1f1c41cd94d1cc7436207cbd88724a76ca2abd9c7c8dc94c2a0",  # sha256 real del tarball de v0.74.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: log de eventos del dispositivo desde la nube -- la unica forma de ver que DP usa la app, porque un DP de solo escritura no sale ni en el esquema ni al consultar el aparato -- y resolver uno ya dado de alta deja de avisar en falso de que no esta en la red)
+        "tag": "v0.75.0",
+        "sha256": "ccfe606500b39aead225db0c9b469c1079af15bc9ee8f4ea6a37074002c101fc",  # sha256 real del tarball de v0.75.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: la firma de la nube ordena los parametros de consulta -- sin eso, CUALQUIER llamada con mas de uno se llevaba un "1004: sign invalid", que es justo lo que impedia leer el log de eventos)
         "files": ["tuya_plugin.py", "tuya", "tuya_templates"],
     },
     "lighting": {
