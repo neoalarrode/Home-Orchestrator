@@ -50,6 +50,22 @@ _DOMAIN_FOR_PLATFORM = {
 # "idle" en vez de publicarse tal cual (ver `_vacuum_activity`).
 _VACUUM_ACTIVITIES = frozenset({"cleaning", "docked", "paused", "idle", "returning", "error"})
 
+# Las UNICAS capacidades que admite el discovery MQTT de un vacuum en HA
+# (`STRING_TO_SERVICE` en homeassistant/components/mqtt/vacuum.py).
+#
+# BUG REAL, y de los caros de diagnosticar: HA valida esta lista con
+# `vol.In(...)`, asi que UN SOLO valor no reconocido no se ignora -- tumba el
+# mensaje de discovery ENTERO y la entidad no llega a existir. No aparece a
+# medias: no aparece. Se colaron dos:
+#   - "state", que no es una capacidad sino el esquema (va en `schema`).
+#   - "battery", que HA retiro de las capacidades de vacuum.
+# `battery_level` se sigue publicando en el estado; si la version de HA ya no
+# lo usa simplemente lo ignora, que es inofensivo -- al reves no lo era.
+_VACUUM_FEATURES = frozenset({
+    "start", "pause", "stop", "return_home", "fan_speed",
+    "status", "send_command", "locate", "clean_spot",
+})
+
 
 class MqttTuyaDevice:
     def __init__(self, mqtt_client, manager, device_id: str, device_name: str) -> None:
@@ -107,7 +123,7 @@ class MqttTuyaDevice:
         es peor que no tenerlo.
         """
         base = self._base(f"vacuum{index}").format(domain="vacuum")
-        features: list[str] = ["state"]
+        features: list[str] = []
         payload = {
             "name": vm.name,
             "unique_id": f"{NODE_ID}_{self.device_id}_vacuum{index}",
@@ -133,8 +149,6 @@ class MqttTuyaDevice:
         if vm.locate_dp is not None:
             features.append("locate")
             payload["payload_locate"] = "locate"
-        if vm.battery_dp is not None:
-            features.append("battery")
         if vm.fan_speed_dp is not None and vm.fan_speed_map:
             features.append("fan_speed")
             payload["set_fan_speed_topic"] = f"{base}/fan_speed/set"
@@ -143,6 +157,16 @@ class MqttTuyaDevice:
                 f"{base}/fan_speed/set", partial(self._on_vacuum_fan_speed, index),
             )
 
+        # Red de seguridad, porque el precio de equivocarse aqui es que la
+        # entidad no exista y sin un mensaje que lo explique: se filtra contra
+        # lo que HA admite de verdad y se avisa si algo se ha colado.
+        invalidas = [f for f in features if f not in _VACUUM_FEATURES]
+        if invalidas:
+            log.error(
+                "Tuya %s: capacidades de aspirador no validas para HA %s -- se descartan "
+                "(dejarlas tumbaria el discovery entero)", self.device_id, invalidas,
+            )
+            features = [f for f in features if f in _VACUUM_FEATURES]
         payload["supported_features"] = features
         self._mqtt.subscribe(f"{base}/command", partial(self._on_vacuum_command, index))
         self._mqtt.publish(f"{base}/config", payload, retain=True)

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.73.0
+
+**La entidad `vacuum.*` de 0.72.0 no llegaba a existir: el mensaje de descubrimiento era inválido.**
+
+HA valida `supported_features` con `vol.In(...)` contra una lista cerrada de nueve nombres. Un solo valor no reconocido **no se ignora: tumba el mensaje entero**, así que la entidad no aparece a medias — no aparece. Y sin nada en el log del add-on, porque el rechazo ocurre en el otro lado.
+
+Se habían colado dos:
+
+- **`state`**, que no es una capacidad sino el esquema (va en `schema`).
+- **`battery`**, que HA retiró de las capacidades de `vacuum`.
+
+`battery_level` se sigue publicando en el estado. Si la versión de HA ya no lo usa, lo ignora — inofensivo. Al revés no lo era.
+
+El test de 0.72.0 dio verde con las dos dentro porque comprobaba que estuvieran las capacidades **esperadas**, nunca que fueran **válidas**: verificaba mis propias suposiciones en vez del contrato de HA. Ahora la lista permitida está en el código como constante, se filtra contra ella antes de publicar avisando si algo se cuela, y el test la comprueba entera.
+
 ## 0.72.1
 Tuya re-pineado al tag `v0.72.0`. sha256 `c8a34efd…ed31`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que los cuatro métodos del aspirador están en el código empaquetado, que los bucles de discovery y de estado recorren `vacuums`, y que el estado sale del traductor y no del DP crudo.
 
