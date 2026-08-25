@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.67.1
+Climate re-pineado al tag `v0.67.0`. sha256 `40d32c34…5e94`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los **doce** arreglos de clima acumulados (0.62.0, 0.63.0, 0.64.0, 0.65.0, 0.66.0 y 0.67.0) están presentes en el código empaquetado.
+
 ## 0.67.0
 
 **Un texto de preajustes que no se entiende ya no deja la zona sin consignas.** Diagnosticado en producción sobre la zona Salón: no se podía fijar la temperatura en ningún modo ni desde ninguna interfaz.
