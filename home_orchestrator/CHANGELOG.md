@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.64.1
+Climate re-pineado al tag `v0.64.0`. sha256 `b8adc980…786d`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los **siete** arreglos de clima acumulados (0.62.0, 0.63.0 y 0.64.0) están presentes en el código empaquetado.
+
 ## 0.64.0
 
 **Un modo con consigna nunca reporta un hueco.** Visto en producción: la entidad en modo `cool` con `temperature: null`. Eso deja la tarjeta de HA sin mandos y, sobre todo, un puente Matter que **automapea las características de la entidad** no ve un termostato con consignas — puede modelarlo de un solo sentido (`ControlSequenceOfOperation HeatingOnly`), y entonces **rechaza** el modo frío y **aísla la entidad** del puente.

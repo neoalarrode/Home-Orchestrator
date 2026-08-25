@@ -133,8 +133,8 @@ PLUGIN_CATALOG = {
         "description": "Termostatos adaptativos por zona, expuestos como climate.* nativos de HA (HomeKit/Matter) vía MQTT Discovery",
         "version": "0.4.11",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
         "downloadable": True,
-        "tag": "v0.63.0",
-        "sha256": "a66a07efe49ceaad35fb080ab86584c432fc3df9360ffb973ebe14ed63207485",  # sha256 real del tarball de v0.63.0, verificado contra una descarga real antes de fijarlo aqui (todo lo de v0.62.0 mas: banda muerta minima entre consignas, no salirse de "Automatico" al reescribir lo mismo, y set_hvac_mode validado con rastro en el log)
+        "tag": "v0.64.0",
+        "sha256": "b8adc980e002a4cb9433747e1d59557b824ca591b530ede7696a4012cdcb786d",  # sha256 real del tarball de v0.64.0, verificado contra una descarga real antes de fijarlo aqui (todo lo de v0.62.0 y v0.63.0 mas: un modo con consigna nunca reporta un hueco, que es lo que hacia que un puente Matter modelase la zona de un solo sentido)
         "files": ["climate_plugin.py", "climate", "climate_templates"],
     },
     "tuya": {
