@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.63.1
+Climate re-pineado al tag `v0.63.0`. sha256 `a66a07ef…7485`, calculado sobre el tarball real y verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los seis arreglos (los tres de 0.63.0 y los tres de clima de 0.62.0) están presentes en el código empaquetado.
+
+Solo se re-pinea Climate: el único fichero tocado en 0.63.0 es `climate/zone_runner.py`.
+
 ## 0.63.0
 
 Tres arreglos en el trato con controladores Matter/HomeKit, salidos de un caso real.
