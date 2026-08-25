@@ -118,6 +118,24 @@ def main() -> None:
                 p.slug,
             )
 
+    # UNA sola conexion con HA para todo el addon, abierta por el core y
+    # consumida por los plugins (ver ha_websocket.shared()). Antes cada plugin
+    # abria la suya y las tres recibian el MISMO aluvion completo de cambios
+    # de estado -- medido: 786 KB/min y 9,3 eventos/s por conexion, de los que
+    # el filtro local tiraba el 97%, por tres.
+    #
+    # Se arranca DESPUES de instanciar los plugins, para que ya se hayan
+    # registrado con `subscribe()` y declarado sus entidades: asi el lector
+    # nace sabiendo a quien avisar de que.
+    import ha_websocket
+    ha_websocket.start_shared()
+
+    # Publicar un plugin ya no obliga a publicar el core: el addon revisa el
+    # registro remoto por su cuenta (ver plugin_manifest.py). El arranque ya
+    # ha comprobado una vez dentro de `load_all_plugins`; esto cubre el addon
+    # que lleva dias encendido.
+    plugin_loader.start_update_checker()
+
     run_simple("0.0.0.0", 8099, root_app, threaded=True)
 
 

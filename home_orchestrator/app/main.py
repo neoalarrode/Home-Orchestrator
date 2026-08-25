@@ -81,7 +81,11 @@ def _restrict_wallpanel_port():
 # `REACTIVE_MIN_INTERVAL_SECONDS`. El propio ciclo periodico sigue
 # funcionando igual, como respaldo si el WebSocket se cae.
 _reactive_trigger = ha_websocket.ReactiveTrigger(lambda: _run_cycle_locked())
-_ha_ws_client = ha_websocket.HAWebSocketClient(lambda entity_id, new_state: _reactive_trigger.trigger())
+# Conexion COMPARTIDA del core -- ver ha_websocket.shared(). El callback ya no
+# va en el constructor: con la conexion compartida cada plugin se registra con
+# su propia clave, y solo se le avisa de las entidades que EL vigila.
+_ha_ws_client = ha_websocket.shared()
+_ha_ws_client.subscribe("battery", lambda entity_id, new_state: _reactive_trigger.trigger())
 
 _state_lock = threading.Lock()
 _last_status = {
@@ -549,7 +553,7 @@ def run_cycle():
     # Cada vuelta (periodica o reactiva) refresca que sensores le interesa
     # escuchar al WebSocket -- baterias/sensores pueden cambiar en caliente
     # desde la interfaz, sin reiniciar el add-on.
-    _ha_ws_client.set_watched_entities(_watched_entities_from_cfg(cfg))
+    _ha_ws_client.set_watched_entities(_watched_entities_from_cfg(cfg), key="battery")
     _reconcile_ecoflow_ble_addresses(cfg)
     _reconcile_ecoflow_sn_from_ble(cfg)
     batteries_cfg = cfg["batteries"]
@@ -2473,11 +2477,27 @@ def start_background_threads() -> None:
     desarrollo local) sigue funcionando exactamente igual, solo que ahora
     llama a esta misma funcion en vez de repetir el codigo.
     """
+    def _recover_energy_gap() -> None:
+        import energy_recovery
+
+        # Se espera a que el WebSocket este listo: el historico se pide por ahi.
+        for _ in range(60):
+            if _ha_ws_client.connected:
+                break
+            time.sleep(1)
+        try:
+            energy_recovery.run_at_startup(_ha_ws_client, config_store.load_config())
+        except Exception:
+            log.exception("Fallo reconstruyendo el consumo del reinicio")
+
+    # Lo que paso mientras estabamos parados se LEE del historico de HA, no se
+    # estima: ver energy_recovery.py. Va en su propio hilo porque necesita el
+    # WebSocket ya conectado, y esperar aqui retrasaria el arranque entero.
+    threading.Thread(target=_recover_energy_gap, daemon=True).start()
     threading.Thread(target=background_loop, daemon=True).start()
     threading.Thread(target=_live_sensor_loop, daemon=True).start()
     threading.Thread(target=_run_wallpanel_server, daemon=True).start()
     threading.Thread(target=_run_full_access_server, daemon=True).start()
-    threading.Thread(target=_ha_ws_client.run_forever, daemon=True).start()
     threading.Thread(target=_reactive_trigger.worker_loop, daemon=True).start()
 
 

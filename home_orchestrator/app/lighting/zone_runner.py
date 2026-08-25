@@ -353,6 +353,39 @@ class ZoneRunner:
             # de ESTA luz deja de aplicar.
             self._state.setdefault("manual_override", {}).pop(entity_id, None)
 
+    def all_lights(self) -> set[str]:
+        """Todas las luces que esta zona puede llegar a tocar, de cualquiera
+        de sus reglas. No despiertan a la zona, pero su estado si se lee --
+        ver `LightingPlugin._refresh_watched_entities`."""
+        return rules.all_lights(self._rules)
+
+    def _needs_reapply(self, entity_id: str, values: dict | None, brightness_only: bool) -> bool:
+        """True si a esta luz YA ENCENDIDA hay algo nuevo que mandarle.
+
+        BUG REAL, medido contra la instalacion del usuario: una misma bombilla
+        recibia SIETE `light.turn_on` en 36 segundos, con exactamente los
+        mismos valores. La causa: el ciclo reactivo recorre TODAS las zonas
+        ante CUALQUIER entidad vigilada que cambie -- un detector de la
+        Entrada hacia que la Cocina, el Salon y las demas re-mandasen su curva
+        entera a sus luces, sin que nada de esas zonas hubiera cambiado.
+
+        Reajustar de vez en cuando es correcto y deliberado (la curva solar se
+        mueve, ver `reapply_minutes`), pero solo cuando el valor a mandar es
+        DISTINTO del ultimo que se mando. Repetir el mismo carga la red de la
+        bombilla, gasta una llamada bloqueante por luz -- y en un dispositivo
+        con transicion se nota, porque cada orden reinicia la transicion.
+
+        Si nunca se le mando nada, o si alguien cambio la luz por fuera (eso
+        lo detecta `_detect_manual_overrides`, que corre antes), se manda.
+        """
+        commanded = (self._state.get("commanded") or {}).get(entity_id)
+        if not commanded:
+            return True
+        brillo = values.get("brightness_pct") if values else None
+        color = None if brightness_only else (values.get("color_temp_kelvin") if values else None)
+        return (commanded.get("brightness_pct") != brillo
+                or commanded.get("color_temp_kelvin") != color)
+
     def _detect_manual_overrides(self, states: dict[str, dict], entity_ids: set[str]) -> None:
         """Heuristica deliberadamente simple (mismo espiritu "sin caja
         negra" que el resto del proyecto, y el mismo problema que
@@ -594,7 +627,7 @@ class ZoneRunner:
                 # aqui ni se molesta en llamar: nada que mandar.
                 if only_on_off:
                     continue
-                if not overrides.get(entity_id):
+                if not overrides.get(entity_id) and self._needs_reapply(entity_id, values, only_brightness):
                     pending.append((entity_id, values, False, only_brightness, None, False))
             elif auto_on and transitioned and dark_enough:
                 pending.append((entity_id, values, True, only_brightness, None, only_on_off))

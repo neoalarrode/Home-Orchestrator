@@ -1,0 +1,5 @@
+# Bytecode: lo regenera Python en cada arranque, y dentro de la imagen del
+# addon se compila solo. Tenerlo versionado no aporta nada y ensucia cada
+# commit hecho despues de ejecutar los tests o `compileall`.
+__pycache__/
+*.py[cod]

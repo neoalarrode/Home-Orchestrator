@@ -103,6 +103,38 @@ def accumulate(now: datetime, imported_w: float | None, exported_w: float | None
         return data
 
 
+def add_energy(imported_wh: float, exported_wh: float, now: datetime) -> dict:
+    """Suma energia YA MEDIDA y reposiciona el punto de partida.
+
+    Lo usa la reconstruccion del hueco de un reinicio (ver energy_recovery.py):
+    esos kWh no salen de integrar la potencia de ahora, salen del historico
+    real de HA. Al fijar `last_update` a `now` se evita ademas que la primera
+    llamada a `accumulate` vuelva a contar el mismo hueco -- lo contaria por
+    segunda vez, y encima mal.
+    """
+    with _lock:
+        data = _load()
+        data["imported_kwh"] += max(0.0, imported_wh) / 1000.0
+        data["exported_kwh"] += max(0.0, exported_wh) / 1000.0
+        data["last_update"] = now.isoformat()
+        _save(data)
+        return data
+
+
+def reset_baseline(now: datetime) -> dict:
+    """Fija el punto de partida SIN integrar nada.
+
+    Para el arranque cuando el hueco no se ha podido reconstruir: es preferible
+    no contabilizar ese rato a rellenarlo extrapolando la potencia instantanea
+    del momento del arranque sobre un intervalo que nadie midio.
+    """
+    with _lock:
+        data = _load()
+        data["last_update"] = now.isoformat()
+        _save(data)
+        return data
+
+
 def set_totals(imported_kwh: float, exported_kwh: float, since: str | None = None) -> dict:
     """Fija los dos acumulados a valores concretos -- para dejarlos alineados
     con un historico recien reconstruido (ver `/api/energy/backfill_history`).

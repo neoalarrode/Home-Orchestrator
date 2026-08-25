@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "note": "Registro de plugins oficiales de Home Orchestrator. Solo plugins de este mismo repositorio/organizacion (neoalarrode) -- no se admiten repos personalizados de terceros, para no abrir ejecucion de codigo sin verificar dentro de un addon con credenciales reales (EcoFlow, HA...). La descarga/verificacion dinamica de plugins desde este registro es una fase posterior; por ahora el cargador (app/plugin_loader.py, PLUGIN_CATALOG) es la fuente de verdad operativa -- este fichero es el registro DESCRIPTIVO que la refleja, mantenido a mano en sincronia (mismos 8 plugins, mismas versiones). Starlink es distinto de los demas: sirve tal cual el build oficial de Dishylink (https://github.com/DaveyHert/dishylink, MIT) en vez de una reimplementacion propia -- ver su docstring en app/starlink_plugin.py.",
+  "schema_version": 2,
+  "note": "Registro de plugins oficiales de Home Orchestrator, y FUENTE DE VERDAD OPERATIVA de que version es la buena de cada uno. El addon lo lee EN CALIENTE desde la rama principal (ver app/plugin_manifest.py), asi que publicar un plugin es subir su codigo con su tag y actualizar este fichero -- sin publicar el core. Antes el pin vivia dentro de la imagen del core y hacian falta DOS releases por cada cambio de plugin; la segunda se olvidaba, y el plugin de Tuya llego a estar siete versiones con sus arreglos publicados y ninguno activo. El sha256 de cada tarball se verifica antes de tocar disco, igual que antes: solo cambia donde se lee. `app/plugin_loader.py:PLUGIN_CATALOG` queda como semilla y respaldo para un arranque sin red. Solo plugins de este mismo repositorio (neoalarrode) -- no se admiten repos de terceros, para no abrir ejecucion de codigo sin verificar dentro de un addon con credenciales reales (EcoFlow, HA...). Starlink es distinto de los demas: sirve tal cual el build oficial de Dishylink (https://github.com/DaveyHert/dishylink, MIT) en vez de una reimplementacion propia -- ver su docstring en app/starlink_plugin.py.",
   "plugins": [
     {
       "slug": "battery",
@@ -8,7 +8,36 @@
       "description": "Baterias, solar y cargas diferibles -- carga y descarga adaptativa por precio, sol y consumo real",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.11.93"
+      "version": "0.11.93",
+      "downloadable": true,
+      "tag": "v0.59.0",
+      "sha256": "326146b78233f9b36c43764189f92b2b12e62bef5e51681fec305734d2b42a49",
+      "files": [
+        "main.py",
+        "battery_plugin.py",
+        "battery_exec.py",
+        "anomaly_store.py",
+        "capacity_store.py",
+        "climate_link.py",
+        "deferrable_exec.py",
+        "deferrable_scheduler.py",
+        "deferrable_store.py",
+        "ecoflow_ble.py",
+        "ecoflow_cloud.py",
+        "ecoflow_login.py",
+        "forecast_store.py",
+        "grid_energy_store.py",
+        "ha_client.py",
+        "ha_statistics.py",
+        "history_store.py",
+        "lifetime_store.py",
+        "pv_source.py",
+        "savings_store.py",
+        "scheduler.py",
+        "solar_energy_store.py",
+        "tariff_source.py",
+        "templates"
+      ]
     },
     {
       "slug": "climate",
@@ -16,7 +45,15 @@
       "description": "Termostatos adaptativos por zona, expuestos como climate.* nativos de HA (HomeKit/Matter) via MQTT Discovery",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.4.11"
+      "version": "0.4.11",
+      "downloadable": true,
+      "tag": "v0.67.0",
+      "sha256": "40d32c34378989f90b1993fe96247970dadce84004a15fc1b4617d8a2a325e94",
+      "files": [
+        "climate_plugin.py",
+        "climate",
+        "climate_templates"
+      ]
     },
     {
       "slug": "tuya",
@@ -24,7 +61,15 @@
       "description": "Puente de ingesta para dispositivos Tuya-por-LAN -- consumo interno por Climate y/o exposicion opcional a HA por MQTT",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.4.7"
+      "version": "0.4.7",
+      "downloadable": true,
+      "tag": "v0.75.0",
+      "sha256": "ccfe606500b39aead225db0c9b469c1079af15bc9ee8f4ea6a37074002c101fc",
+      "files": [
+        "tuya_plugin.py",
+        "tuya",
+        "tuya_templates"
+      ]
     },
     {
       "slug": "lighting",
@@ -32,7 +77,15 @@
       "description": "Iluminacion adaptativa por zona -- color y brillo por hora, encendido/apagado por presencia y reglas condicionales",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.7.12"
+      "version": "0.7.12",
+      "downloadable": true,
+      "tag": "v0.61.0",
+      "sha256": "230a3a7304fb275613792e47c5de9a2ab913520cedf00d70fe24aaf91d5e7063",
+      "files": [
+        "lighting_plugin.py",
+        "lighting",
+        "lighting_templates"
+      ]
     },
     {
       "slug": "tplink",
@@ -40,7 +93,16 @@
       "description": "Puente de ingesta para dispositivos TP-Link (Kasa/Tapo) via python-kasa -- consumo interno por Lighting y/o exposicion opcional a HA por MQTT",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.1.13"
+      "version": "0.1.13",
+      "downloadable": true,
+      "tag": "v0.62.0",
+      "sha256": "527b7b2203187610566068593e2b295bdf719811d2ddfcb22bf4bab76c1fbd1b",
+      "files": [
+        "tplink_plugin.py",
+        "tplink",
+        "tplink_templates",
+        "tplink_store.py"
+      ]
     },
     {
       "slug": "starlink",
@@ -48,7 +110,16 @@
       "description": "Monitorizacion de tu Starlink (rendimiento, latencia, obstruccion, alineacion, consumo) -- build oficial de Dishylink, servido tal cual, con un proxy local al dish",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.3.1"
+      "version": "0.3.1",
+      "downloadable": true,
+      "tag": "v0.57.0",
+      "sha256": "f5fb59cd341fce23b700431a097f23c989741b70951b64094a93983dde0cd05a",
+      "files": [
+        "starlink_plugin.py",
+        "starlink_store.py",
+        "starlink_dist",
+        "starlink_node"
+      ]
     },
     {
       "slug": "govee",
@@ -56,7 +127,16 @@
       "description": "Puente de ingesta para bombillas Govee -- LAN API local del propio dispositivo (sin cuenta ni nube) -- consumo interno por Lighting y/o exposicion opcional a HA por MQTT",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.1.0"
+      "version": "0.1.0",
+      "downloadable": true,
+      "tag": "v0.58.0",
+      "sha256": "2cff537730f18007d10fd1d31255f4fc6c8cc4a322a9bcdee497ded22fa4e1f6",
+      "files": [
+        "govee_plugin.py",
+        "govee",
+        "govee_templates",
+        "govee_store.py"
+      ]
     },
     {
       "slug": "shelly",
@@ -64,7 +144,16 @@
       "description": "Puente de ingesta para dispositivos Shelly -- API local del propio fabricante (Gen1 HTTP / Gen2+ RPC), sin cuenta ni nube -- consumo interno por Lighting y/o exposicion opcional a HA por MQTT",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.1.2"
+      "version": "0.1.2",
+      "downloadable": true,
+      "tag": "v0.58.0",
+      "sha256": "2cff537730f18007d10fd1d31255f4fc6c8cc4a322a9bcdee497ded22fa4e1f6",
+      "files": [
+        "shelly_plugin.py",
+        "shelly",
+        "shelly_templates",
+        "shelly_store.py"
+      ]
     }
   ]
 }

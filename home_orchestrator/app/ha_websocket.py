@@ -62,6 +62,42 @@ RECONNECT_BACKOFF_SECONDS = (2, 5, 10, 30, 60)
 # de que la vuelta anterior haya podido terminar y sentar los cambios.
 REACTIVE_MIN_INTERVAL_SECONDS = 5
 
+# Clave del consumidor que se registra por el constructor, para no obligar a
+# cambiar de golpe todas las llamadas existentes.
+_DEFAULT_KEY = "__default__"
+
+_shared_client: "HAWebSocketClient | None" = None
+_shared_lock = threading.Lock()
+
+
+def shared() -> "HAWebSocketClient":
+    """La UNICA conexion con HA de todo el addon.
+
+    La abre el core al arrancar y la consumen los plugins: cada uno se
+    registra con `subscribe(clave, callback)` y declara sus entidades con
+    `set_watched_entities(..., key=clave)`.
+
+    Antes cada plugin abria la suya. Las tres recibian exactamente el mismo
+    aluvion -- medido contra una instalacion real: 786 KB/min y 9,3
+    eventos/s por conexion, de los que el filtro local tiraba el 97% -- y
+    ademas cada una mantenia su propia copia de los ~1700 estados. Tres
+    veces el trabajo para el mismo dato.
+    """
+    global _shared_client
+    with _shared_lock:
+        if _shared_client is None:
+            _shared_client = HAWebSocketClient()
+        return _shared_client
+
+
+def start_shared() -> "HAWebSocketClient":
+    """Arranca el lector de la conexion compartida (idempotente)."""
+    cliente = shared()
+    if not getattr(cliente, "_reader_started", False):
+        cliente._reader_started = True
+        threading.Thread(target=cliente.run_forever, name="ha-ws", daemon=True).start()
+    return cliente
+
 
 class HAWebSocketClient:
     """Una instancia por add-on. `set_watched_entities` se llama cada vez
@@ -70,10 +106,27 @@ class HAWebSocketClient:
     `state_changed` (HA no permite filtrar por entidad en la suscripcion),
     el filtrado a "nos interesa esta o no" se hace aqui, en memoria, barato."""
 
-    def __init__(self, on_relevant_change) -> None:
-        self._on_relevant_change = on_relevant_change
+    def __init__(self, on_relevant_change=None) -> None:
         self._watched: set[str] = set()
         self._watched_lock = threading.Lock()
+        # Varios consumidores sobre UNA sola conexion (ver `subscribe`). El
+        # callback del constructor sigue admitiendose para no cambiar a la vez
+        # todas las llamadas: se registra como uno mas, con la clave por
+        # defecto.
+        self._listeners: dict[str, object] = {}
+        self._watched_by_key: dict[str, set[str]] = {}
+        # Lo que se LEE pero no despierta (ver `set_cached_entities`).
+        self._cached_by_key: dict[str, set[str]] = {}
+        # Conjunto por el que se pregunto en la suscripcion viva, para saber
+        # cuando hay que rehacerla (una zona nueva, una regla editada...).
+        self._subscribed: set[str] | None = None
+        self._sub_id: int | None = None
+        # True si HA acepto `subscribe_entities` (filtra el y manda deltas);
+        # False si hubo que caer a la suscripcion completa de siempre.
+        self._compressed = False
+        if on_relevant_change is not None:
+            self._listeners[_DEFAULT_KEY] = on_relevant_change
+            self._watched_by_key[_DEFAULT_KEY] = set()
         self._ws = None
         self._stop = False
         self.connected = False
@@ -196,13 +249,82 @@ class HAWebSocketClient:
             points.append({"state": p.get("s"), "last_updated": p.get("lu"), "attributes": attrs})
         return points
 
-    def set_watched_entities(self, entities: set[str]) -> None:
+    def subscribe(self, key: str, on_change) -> None:
+        """Registra un consumidor. `key` identifica al plugin, para que cada
+        uno declare SUS entidades sin pisar las de los demas.
+
+        Una sola conexion para todo el addon: antes cada plugin abria la
+        suya, y las tres recibian el MISMO aluvion completo de cambios de
+        estado. Medido contra una instalacion real: 786 KB/min por conexion,
+        de los que el filtro local tiraba el 97% -- multiplicado por tres.
+        """
         with self._watched_lock:
-            self._watched = {e for e in entities if e}
+            self._listeners[key] = on_change
+            self._watched_by_key.setdefault(key, set())
+
+    def set_watched_entities(self, entities: set[str], key: str | None = None) -> None:
+        """Entidades que le importan a UN consumidor.
+
+        `key=None` mantiene la firma de antes (un solo consumidor, el que se
+        paso al constructor). Con la conexion compartida, cada plugin usa su
+        propia clave: esto SUSTITUYE su conjunto, no el de todos -- que es lo
+        que pasaria si siguiera habiendo un unico `_watched` global.
+        """
+        clave = key or _DEFAULT_KEY
+        with self._watched_lock:
+            self._watched_by_key[clave] = {e for e in entities if e}
+            self._watched = set().union(*self._watched_by_key.values()) if self._watched_by_key else set()
+
+    def set_cached_entities(self, entities: set[str], key: str) -> None:
+        """Entidades cuyo estado hay que tener FRESCO, pero que no disparan.
+
+        Hacen falta dos conjuntos, no uno. `set_watched_entities` dice "esto
+        me despierta"; esto dice "esto lo LEO". Las luces son el ejemplo: no
+        queremos recalcular una zona porque su propia bombilla haya cambiado
+        (seria un bucle), pero su estado real si se consulta -- para saber si
+        ya esta encendida y para detectar que alguien la toco a mano.
+
+        Antes daba igual, porque se recibia el aluvion entero y el caché
+        estaba fresco por accidente. Al pedirle a HA que filtre, lo que no se
+        declare aqui se queda con el valor del volcado inicial y envejece en
+        silencio -- y `respect_manual_changes` empezaria a fallar sin que
+        nadie supiera por que.
+        """
+        with self._watched_lock:
+            self._cached_by_key[key] = {e for e in entities if e}
+
+    def _subscription_entities(self) -> set[str]:
+        """Lo que se le pide a HA que nos mande: lo que despierta MAS lo que
+        se lee."""
+        with self._watched_lock:
+            todo: set[str] = set(self._watched)
+            for s in self._cached_by_key.values():
+                todo |= s
+            return todo
+
+    def watched_entities(self) -> set[str]:
+        """Union de lo que vigilan todos los consumidores."""
+        with self._watched_lock:
+            return set(self._watched)
 
     def _is_watched(self, entity_id: str) -> bool:
         with self._watched_lock:
             return entity_id in self._watched
+
+    def _notify(self, entity_id: str, new_state: dict) -> None:
+        """Avisa SOLO a quien vigila esa entidad. Sin esto, con la conexion
+        compartida cada plugin se despertaria por los cambios de los otros y
+        se perderia justo lo que se gana al filtrar."""
+        with self._watched_lock:
+            destinos = [
+                cb for clave, cb in self._listeners.items()
+                if entity_id in self._watched_by_key.get(clave, ())
+            ]
+        for cb in destinos:
+            try:
+                cb(entity_id, new_state)
+            except Exception:
+                log.exception("Fallo notificando el cambio de %s a un consumidor", entity_id)
 
     def stop(self) -> None:
         self._stop = True
@@ -231,6 +353,104 @@ class HAWebSocketClient:
             attempt += 1
             time.sleep(delay)
 
+    def _resubscribe_locked(self) -> None:
+        """(Re)suscribe pidiendole a HA que filtre EL en su lado.
+
+        Solo puede llamarlo el hilo lector: manda y espera el ack por el mismo
+        socket, sin pasar por `call()`.
+
+        `subscribe_entities` es la diferencia entre recibirlo todo y recibir
+        lo nuestro. Medido contra la instalacion del usuario, en paralelo y
+        sobre la misma ventana: 628 KB/min con `subscribe_events` frente a
+        3 KB/min con esto -- 214 veces menos, porque ademas de filtrar manda
+        DELTAS (solo los campos que cambian) en vez del estado viejo y el
+        nuevo enteros con todos sus atributos.
+
+        Si HA no lo admite (version antigua) se cae a la suscripcion de
+        siempre: peor, pero funcionando.
+        """
+        objetivo = self._subscription_entities()
+        if self._subscribed is not None:
+            anterior_id = self._sub_id
+            if anterior_id is not None:
+                try:
+                    self._ws.send(json.dumps({
+                        "id": self._next_msg_id(), "type": "unsubscribe_events",
+                        "subscription": anterior_id,
+                    }))
+                except Exception:
+                    log.debug("No se ha podido cancelar la suscripcion anterior", exc_info=True)
+
+        sub_id = self._next_msg_id()
+        if objetivo:
+            self._ws.send(json.dumps({
+                "id": sub_id, "type": "subscribe_entities", "entity_ids": sorted(objetivo),
+            }))
+            ack = json.loads(self._ws.recv())
+            if ack.get("success"):
+                self._sub_id, self._subscribed, self._compressed = sub_id, set(objetivo), True
+                log.info(
+                    "WebSocket de HA: suscrito a %d entidad(es) concretas -- HA filtra en su lado",
+                    len(objetivo),
+                )
+                return
+            log.warning(
+                "WebSocket de HA: `subscribe_entities` rechazado (%s) -- se usa la suscripcion "
+                "completa, mas cara", ack.get("error"),
+            )
+            sub_id = self._next_msg_id()
+
+        self._ws.send(json.dumps({"id": sub_id, "type": "subscribe_events", "event_type": "state_changed"}))
+        ack = json.loads(self._ws.recv())
+        if not ack.get("success"):
+            raise RuntimeError(f"No se pudo suscribir a state_changed: {ack}")
+        self._sub_id, self._subscribed, self._compressed = sub_id, set(objetivo), False
+
+    def _apply_compressed(self, event: dict) -> list[tuple[str, dict, str | None]]:
+        """Traduce el formato comprimido de `subscribe_entities` al mismo que
+        usa el resto del codigo, y actualiza el cache.
+
+        Devuelve (entity_id, estado_nuevo, estado_viejo) de cada cambio, para
+        que el llamante decida a quien avisar.
+
+        Formato: `a` altas (completas), `c` cambios (`+` lo que cambia, `-` lo
+        que se quita), `r` bajas. Los campos van abreviados: `s` estado,
+        `a` atributos, `lc`/`lu` marcas de tiempo.
+        """
+        salida: list[tuple[str, dict, str | None]] = []
+        with self._states_lock:
+            for entity_id, comp in (event.get("a") or {}).items():
+                self._states_cache[entity_id] = {
+                    "entity_id": entity_id, "state": comp.get("s"),
+                    "attributes": comp.get("a") or {},
+                    "last_changed": comp.get("lc"), "last_updated": comp.get("lu"),
+                }
+            for entity_id in (event.get("r") or []):
+                self._states_cache.pop(entity_id, None)
+            for entity_id, cambio in (event.get("c") or {}).items():
+                actual = self._states_cache.get(entity_id)
+                anterior = (actual or {}).get("state")
+                if actual is None:
+                    actual = {"entity_id": entity_id, "state": None, "attributes": {}}
+                nuevo = dict(actual)
+                mas = cambio.get("+") or {}
+                if "s" in mas:
+                    nuevo["state"] = mas["s"]
+                if "a" in mas:
+                    # Los atributos vienen SOLO los que cambian: se funden con
+                    # los que ya habia, no se sustituyen -- reemplazarlos
+                    # borraria todo lo que no viniera en este delta.
+                    nuevo["attributes"] = {**(actual.get("attributes") or {}), **(mas["a"] or {})}
+                if "lc" in mas:
+                    nuevo["last_changed"] = mas["lc"]
+                if "lu" in mas:
+                    nuevo["last_updated"] = mas["lu"]
+                for quitado in (cambio.get("-") or {}).get("a", []) if isinstance(cambio.get("-"), dict) else []:
+                    nuevo.get("attributes", {}).pop(quitado, None)
+                self._states_cache[entity_id] = nuevo
+                salida.append((entity_id, nuevo, anterior))
+        return salida
+
     def _connect_and_listen(self) -> None:
         import websocket as ws_lib
 
@@ -244,11 +464,10 @@ class HAWebSocketClient:
             if auth_result.get("type") != "auth_ok":
                 raise RuntimeError(f"Autenticacion WebSocket de HA fallida: {auth_result}")
 
-            sub_id = self._next_msg_id()
-            self._ws.send(json.dumps({"id": sub_id, "type": "subscribe_events", "event_type": "state_changed"}))
-            sub_ack = json.loads(self._ws.recv())
-            if not sub_ack.get("success"):
-                raise RuntimeError(f"No se pudo suscribir a state_changed: {sub_ack}")
+            # El volcado inicial siembra el cache ENTERO (ver mas abajo), asi
+            # que los selectores de la interfaz siguen viendo todas las
+            # entidades de HA aunque la suscripcion viva vaya filtrada.
+            self._resubscribe_locked()
 
             # Siembra UNA vez la copia local completa -- directo por
             # `recv()`, NO via `call()` (que esperaria la respuesta desde
@@ -275,7 +494,22 @@ class HAWebSocketClient:
             )
 
             while not self._stop:
-                raw = self._ws.recv()
+                try:
+                    raw = self._ws.recv()
+                except ws_lib.WebSocketTimeoutException:
+                    # CON FILTRO, el silencio es lo NORMAL: antes llegaban 9
+                    # eventos por segundo de toda la casa y el timeout del
+                    # socket no saltaba jamas, asi que tratarlo como error
+                    # nunca se noto. Pidiendole a HA que filtre pueden pasar
+                    # minutos sin nada nuestro, y reconectar por eso seria
+                    # peor que el problema que se venia a resolver.
+                    #
+                    # De paso es el momento natural para rehacer la
+                    # suscripcion si han cambiado las entidades (una zona
+                    # nueva, una regla editada).
+                    if self._subscribed is not None and self._subscription_entities() != self._subscribed:
+                        self._resubscribe_locked()
+                    continue
                 if not raw:
                     raise RuntimeError("WebSocket de HA cerrado por el otro lado")
                 msg = json.loads(raw)
@@ -296,6 +530,19 @@ class HAWebSocketClient:
                 if msg_type != "event":
                     continue
                 event = msg.get("event") or {}
+
+                if self._compressed:
+                    # `subscribe_entities`: HA ya ha filtrado, y lo que llega
+                    # son deltas. Todo lo suscrito entra al cache; solo
+                    # despierta a alguien lo que ESE alguien vigile.
+                    for entity_id, nuevo, anterior in self._apply_compressed(event):
+                        if not self._is_watched(entity_id):
+                            continue
+                        if anterior == nuevo.get("state"):
+                            continue  # solo cambio un atributo, no es lectura nueva
+                        self._notify(entity_id, nuevo.get("state"))
+                    continue
+
                 if event.get("event_type") != "state_changed":
                     continue
                 data = event.get("data") or {}
@@ -325,10 +572,7 @@ class HAWebSocketClient:
                     # integracion) — no es una lectura nueva de verdad,
                     # ignorarlo evita relanzar el ciclo por nada.
                     continue
-                try:
-                    self._on_relevant_change(entity_id, new_state)
-                except Exception:
-                    log.exception("Fallo procesando el evento reactivo de %s", entity_id)
+                self._notify(entity_id, new_state)
         finally:
             try:
                 self._ws.close()

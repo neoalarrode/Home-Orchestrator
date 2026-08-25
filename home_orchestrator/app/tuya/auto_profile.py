@@ -309,22 +309,43 @@ def _guess_vacuum_status_map(raw_range: list[str]) -> dict[str, str] | None:
     unmapped (returns None) if nothing recognizable - a raw `sensor` entry
     for the status DP is safer than a wrong `activity`, added as a plain
     dps: fallback by the caller in that case."""
-    guess = {}
-    for raw in raw_range:
-        low = raw.lower()
-        if "charg" in low or "dock" in low:
-            guess[raw] = "docked"
-        elif "clean" in low and "comp" not in low:
-            guess[raw] = "cleaning"
-        elif "pause" in low:
-            guess[raw] = "paused"
-        elif "find" in low or "return" in low or "goto_charge" in low:
-            guess[raw] = "returning"
-        elif "sleep" in low or "standby" in low or "idle" in low or "halt" in low:
-            guess[raw] = "idle"
-        elif "error" in low or "fault" in low:
-            guess[raw] = "error"
-    return guess or None
+    return {raw: act for raw in raw_range if (act := guess_vacuum_activity(raw))} or None
+
+
+def guess_vacuum_activity(raw: str) -> str | None:
+    """Traduce UN estado crudo al vocabulario de HA, o None si no se reconoce.
+
+    Publico a proposito: el puente MQTT lo usa tambien en vivo, para los
+    estados que el esquema de la nube no declara. Y son muchos -- confirmado
+    contra un robot real, cuyo `status` paso por `collecting_dust`, `washing`,
+    `airing` y `select_room`, ninguno de los cuales aparecia en el enum
+    declarado. Casi todo su ciclo de base.
+
+    El ORDEN de las comprobaciones importa. `goto_charge` contiene "charg",
+    asi que con la comprobacion de carga delante se traducia a `docked` --
+    "acoplado" mientras va de camino a la base -- y la rama de `returning` que
+    venia despues era codigo muerto que no se ejecutaba nunca.
+    """
+    low = raw.lower()
+    # Primero lo que es "de camino": si no, "charg" de `goto_charge` gana.
+    if "goto" in low or "return" in low or "find" in low or "seek" in low:
+        return "returning"
+    if "error" in low or "fault" in low or "trap" in low or "stuck" in low:
+        return "error"
+    if "pause" in low:
+        return "paused"
+    # En la base: cargando, vaciando el deposito, lavando o secando la mopa.
+    # Las tres ultimas solo pasan estando acoplado.
+    if ("charg" in low or "dock" in low or "dust" in low
+            or "wash" in low or "air" in low or "dry" in low):
+        return "docked"
+    # `select_room` es esperar a que le digan que hacer, no limpiar -- y lleva
+    # "room", no "clean", asi que hay que mirarlo antes que la regla general.
+    if "select" in low or "sleep" in low or "standby" in low or "idle" in low or "halt" in low:
+        return "idle"
+    if "clean" in low or "mop" in low or "sweep" in low or "smart" in low:
+        return "cleaning"
+    return None
 
 
 def _auto_dp_mapping(entry: dict[str, Any]) -> DPMapping | None:

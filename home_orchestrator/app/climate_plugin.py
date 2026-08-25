@@ -40,7 +40,9 @@ class ClimatePlugin(Plugin):
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
         self._mqtt_zones: dict[str, MqttClimateZone] = {}
-        self._ws = ha_websocket.HAWebSocketClient(self._on_entity_change)
+        # Conexion COMPARTIDA del core -- ver ha_websocket.shared().
+        self._ws = ha_websocket.shared()
+        self._ws.subscribe("climate", self._on_entity_change)
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_climate")
         self._reactive = ha_websocket.ReactiveTrigger(self._run_reactive_cycle)
         self._app = flask.Flask("climate_plugin", template_folder="climate_templates")
@@ -284,7 +286,6 @@ class ClimatePlugin(Plugin):
     # ------------------------------------------------------------- arranque
 
     def start_background_threads(self) -> None:
-        threading.Thread(target=self._ws.run_forever, name="climate-ws", daemon=True).start()
         threading.Thread(target=self._reactive.worker_loop, name="climate-reactive", daemon=True).start()
         self._mqtt.connect()
 
@@ -349,7 +350,7 @@ class ClimatePlugin(Plugin):
                 watched |= runner.watched_entities()
             except Exception:
                 log.exception("Fallo obteniendo watched_entities de zona %s", runner.zone_id)
-        self._ws.set_watched_entities(watched)
+        self._ws.set_watched_entities(watched, key="climate")
 
     # ----------------------------------------------------------- reactivo -
 

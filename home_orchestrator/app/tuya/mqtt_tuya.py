@@ -21,6 +21,7 @@ import logging
 from functools import partial
 
 import ha_mqtt
+from tuya import auto_profile
 from tuya.profile import (
     LIGHT_MAX_MIREDS,
     LIGHT_MIN_MIREDS,
@@ -368,13 +369,30 @@ class MqttTuyaDevice:
         mapped = (vm.status_map or {}).get(str(raw))
         if mapped in _VACUUM_ACTIVITIES:
             return mapped
-        if str(raw) not in self._vacuum_unknown_states:
-            self._vacuum_unknown_states.add(str(raw))
+
+        # El perfil no lo traduce: se deduce del propio nombre antes de darse
+        # por vencido. El mapa lo genera `auto_profile` a partir del enum que
+        # declara la nube, y ese enum viene INCOMPLETO -- confirmado contra un
+        # robot real, cuyo `status` paso por cuatro valores que no estaban
+        # declarados (`collecting_dust`, `washing`, `airing`, `select_room`).
+        # Caer a "en reposo" con todos ellos dejaba la entidad diciendo que el
+        # aparato esta parado durante casi todo su ciclo de base.
+        deducido = auto_profile.guess_vacuum_activity(str(raw))
+        primera_vez = str(raw) not in self._vacuum_unknown_states
+        self._vacuum_unknown_states.add(str(raw))
+        if deducido in _VACUUM_ACTIVITIES:
+            if primera_vez:
+                log.info(
+                    "Tuya %s: el aspirador reporta el estado %r, que su perfil no "
+                    "traduce -- se deduce «%s» por el nombre. Añádelo a `status_map` "
+                    "si quieres otra cosa.", self.device_id, raw, deducido,
+                )
+            return deducido
+        if primera_vez:
             log.info(
-                "Tuya %s: el aspirador reporta el estado %r, que su perfil no traduce "
-                "-- se publica como 'idle'. Añade `%s: <estado>` a `status_map` si "
-                "quieres que se vea de otra forma.",
-                self.device_id, raw, raw,
+                "Tuya %s: el aspirador reporta el estado %r, que ni su perfil traduce "
+                "ni se deja deducir -- se publica como 'idle'. Añade `%s: <estado>` a "
+                "`status_map`.", self.device_id, raw, raw,
             )
         return "idle"
 

@@ -53,14 +53,13 @@ class LightingPlugin(Plugin):
         # ACTO al pararla en vez de seguir durmiendo hasta `reapply_minutes`
         # (ver `_periodic_loop`: ahi estaba la fuga de hilos).
         self._zone_stops: dict[str, threading.Event] = {}
-        self._ws = ha_websocket.HAWebSocketClient(self._on_entity_change)
+        # Un disparador reactivo POR ZONA: cada una se despierta solo por
+        # sus propias entidades (ver `_on_entity_change`).
+        self._zone_reactive: dict[str, ha_websocket.ReactiveTrigger] = {}
+        # Conexion COMPARTIDA del core -- ver ha_websocket.shared().
+        self._ws = ha_websocket.shared()
+        self._ws.subscribe("lighting", self._on_entity_change)
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_lighting")
-        # margen minimo casi nulo (no cero -- sigue haciendo falta un
-        # pelin de coalescencia si varias entidades cambian a la vez, p.
-        # ej. una zona entera de sensores en el mismo evento de HA) a
-        # proposito: encender la luz debe sentirse inmediato, igual que
-        # con Node-RED -- ver docstring de ReactiveTrigger.
-        self._reactive = ha_websocket.ReactiveTrigger(self._run_reactive_cycle, min_interval_seconds=0.2)
         self._app = flask.Flask("lighting_plugin", template_folder="lighting_templates")
         # Registro GENERICO de "proveedores de actuadores" -- mismo
         # mecanismo que ya usa ClimatePlugin (ver su propio comentario):
@@ -260,8 +259,6 @@ class LightingPlugin(Plugin):
     # ------------------------------------------------------------- arranque
 
     def start_background_threads(self) -> None:
-        threading.Thread(target=self._ws.run_forever, name="lighting-ws", daemon=True).start()
-        threading.Thread(target=self._reactive.worker_loop, name="lighting-reactive", daemon=True).start()
         self._mqtt.connect()
 
         zones = zone_store.load_zones()
@@ -347,6 +344,23 @@ class LightingPlugin(Plugin):
             daemon=True,
         ).start()
 
+        # Disparador PROPIO de esta zona: solo lo despierta lo que ella
+        # vigila, y su hilo es suyo -- una bombilla lenta aqui no retrasa a
+        # ninguna otra zona. Margen minimo igual que antes: hace falta un
+        # pelin de coalescencia si varios sensores de la MISMA zona cambian
+        # en el mismo evento de HA.
+        disparador = ha_websocket.ReactiveTrigger(
+            lambda zid=zone_id: self._run_zone_reactive(zid), min_interval_seconds=0.2,
+        )
+        self._zone_reactive[zone_id] = disparador
+        threading.Thread(
+            target=disparador.worker_loop, name=f"luz-reactiva-{zone_id}", daemon=True,
+        ).start()
+        # Un primer ciclo YA, sin esperar a que cambie un sensor ni al hilo
+        # periodico (que duerme `reapply_minutes` ANTES de su primera vuelta):
+        # al arrancar, una zona ocupada tiene que encender sus luces ahora.
+        disparador.trigger()
+
         self._refresh_watched_entities()
 
     def _stop_zone(self, zone_id: str) -> None:
@@ -361,74 +375,88 @@ class LightingPlugin(Plugin):
         stop = self._zone_stops.pop(zone_id, None)
         if stop is not None:
             stop.set()
+        self._zone_reactive.pop(zone_id, None)
         self._refresh_watched_entities()
 
     def _refresh_watched_entities(self) -> None:
         watched: set[str] = set()
+        # Las LUCES no despiertan a nadie (seria un bucle: la zona enciende su
+        # bombilla y el cambio la vuelve a despertar), pero su estado si se
+        # LEE -- para saber si ya esta encendida y para detectar que alguien
+        # la toco a mano. Hay que declararlas aparte: con la suscripcion
+        # filtrada, lo que no se pida se queda con el valor del volcado
+        # inicial y envejece en silencio.
+        leidas: set[str] = set()
         for runner in self._runners.values():
             try:
                 watched |= runner.watched_entities()
             except Exception:
                 log.exception("Fallo obteniendo watched_entities de zona %s", runner.zone_id)
-        self._ws.set_watched_entities(watched)
+            try:
+                leidas |= {e for e in runner.all_lights() if not self.is_bridge_ref(e)}
+                lux = (runner.zone or {}).get("lux_sensor")
+                if lux:
+                    leidas.add(lux)
+            except Exception:
+                log.exception("Fallo obteniendo las luces de la zona %s", runner.zone_id)
+        self._ws.set_cached_entities(leidas, key="lighting")
+        self._ws.set_watched_entities(watched, key="lighting")
 
     # ----------------------------------------------------------- reactivo -
 
     def _on_entity_change(self, entity_id: str, new_state: dict) -> None:
-        self._reactive.trigger()
+        """Despierta SOLO a las zonas que vigilan esa entidad.
 
-    def _run_reactive_cycle(self) -> None:
-        # BUG REAL, confirmado por el usuario: el encendido al detectar
-        # presencia tardaba 5-10s (con Node-RED era instantaneo). Causa
-        # real: cada `ZoneRunner.decide_and_act()` pedia su PROPIA lectura
-        # completa de HA (`ws.get_states()`) -- con 7 zonas, un solo
-        # evento disparaba 7 lecturas completas seguidas por WebSocket.
-        # Una unica lectura aqui, compartida por las 7 zonas del ciclo,
-        # en vez de que cada una pida lo mismo por su cuenta.
-        # Medicion real de tiempos -- a peticion expresa del usuario
-        # (objetivo: menos de 1s de principio a fin), en vez de seguir
-        # ajustando a ciegas. INFO, no DEBUG: es la unica forma de saber
-        # de verdad donde se va el tiempo en produccion sin tener que
-        # cronometrar a mano desde fuera cada vez que se sospecha una
-        # regresion.
-        cycle_start = time.monotonic()
+        BUG REAL, medido contra la instalacion del usuario: un cambio en
+        CUALQUIER entidad vigilada disparaba un ciclo que recorria TODAS las
+        zonas. Confirmado en el log: la presencia de la Entrada provocaba, en
+        el mismo segundo, una orden a la luz de la Cocina. Y cada orden a una
+        bombilla de TP-Link/Tuya es una llamada BLOQUEANTE de hasta 10-15s,
+        asi que una deteccion de verdad podia quedarse esperando detras de un
+        monton de ordenes ajenas que ademas no cambiaban nada.
+
+        Las zonas son independientes -- distintos detectores, distintas luces
+        -- y ahora se comportan como tales: cada una tiene su propio
+        disparador y solo corre cuando cambia algo SUYO.
+        """
+        afectadas = []
+        for zone_id, runner in list(self._runners.items()):
+            try:
+                if entity_id in runner.watched_entities():
+                    afectadas.append(zone_id)
+            except Exception:
+                log.exception("Fallo mirando si la zona %s vigila %s", zone_id, entity_id)
+        for zone_id in afectadas:
+            disparador = self._zone_reactive.get(zone_id)
+            if disparador is not None:
+                disparador.trigger()
+
+    def _run_zone_reactive(self, zone_id: str) -> None:
+        """Ciclo reactivo de UNA zona. Su latencia ya no depende de cuantas
+        zonas haya ni de lo lenta que sea la bombilla de la de al lado."""
+        runner = self._runners.get(zone_id)
+        if runner is None:
+            return
+        inicio = time.monotonic()
         try:
             states = {s.get("entity_id"): s for s in self._ws.get_states() if s.get("entity_id")}
         except Exception:
-            log.exception("Fallo leyendo estados de HA para el ciclo reactivo de Lighting")
+            log.exception("Fallo leyendo estados de HA para la zona %s", zone_id)
             states = None
-        states_elapsed = time.monotonic() - cycle_start
-        # BUG REAL, confirmado por el usuario: incluso tras eliminar el
-        # volcado completo de HA (`get_states()`), el ciclo seguia
-        # tardando 1-3s -- `zone_store.update_zone_state` relee y
-        # reescribe el fichero de config COMPLETO (compartido con
-        # Battery/Climate/Tuya/TP-Link) en cada llamada, y aqui se
-        # llamaba una vez POR ZONA (7 lecturas + 7 escrituras completas
-        # de disco, en serie, por un solo evento). Se acumulan aqui y se
-        # escriben de una sola vez al final (`update_zone_states`).
-        pending_states: dict[str, dict] = {}
-        for zone_id, runner in list(self._runners.items()):
-            try:
-                runner.handle_reactive_event(states)
-                pending_states[zone_id] = runner.to_persisted_state()
-                mqtt_zone = self._mqtt_zones.get(zone_id)
-                if mqtt_zone:
-                    # Se pasa el snapshot COMPARTIDO: sin esto, `group_state`
-                    # pedia su propia lectura completa de HA por zona, una
-                    # entera extra por zona y por evento -- deshaciendo la
-                    # lectura unica que este ciclo hace justo arriba.
-                    mqtt_zone.publish_state(runner, states)
-            except Exception:
-                log.exception("Fallo en ciclo reactivo de zona lighting %s", zone_id)
         try:
-            zone_store.update_zone_states(pending_states)
+            runner.handle_reactive_event(states)
+            mqtt_zone = self._mqtt_zones.get(zone_id)
+            if mqtt_zone:
+                mqtt_zone.publish_state(runner, states)
+            zone_store.update_zone_states({zone_id: runner.to_persisted_state()})
         except Exception:
-            log.exception("Fallo guardando el estado de las zonas de Lighting tras el ciclo reactivo")
-        total_elapsed = time.monotonic() - cycle_start
-        log.info(
-            "Ciclo reactivo de Lighting: %.3fs total (lectura de HA: %.3fs, %d zona(s))",
-            total_elapsed, states_elapsed, len(self._runners),
-        )
+            log.exception("Fallo en ciclo reactivo de zona lighting %s", zone_id)
+            return
+        elapsed = time.monotonic() - inicio
+        if elapsed >= 0.5:
+            log.info(
+                "Zona de luz '%s': ciclo reactivo de %.3fs", runner.zone.get("name") or zone_id, elapsed,
+            )
 
     # ------------------------------------------------------------ periodo -
 

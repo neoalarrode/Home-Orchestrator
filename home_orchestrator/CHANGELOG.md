@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.76.0
+
+Cinco frentes. Casi todo sale de medir contra una instalación real, no de leer código.
+
+### La entidad `vacuum.*` no llegaba a existir
+
+HA valida `supported_features` con `vol.In(...)` contra una lista cerrada de nueve nombres, y **un solo valor no reconocido tumba el mensaje de descubrimiento entero**. Se habían colado `state` (que no es una capacidad, es el esquema) y `battery` (que HA retiró). Por eso no aparecía a medias: no aparecía. La lista válida está ahora como constante, se filtra antes de publicar, y el test la comprueba entera en vez de comprobar solo las que yo esperaba.
+
+Además, cuatro estados reales del aparato no estaban declarados por la nube (`select_room`, `collecting_dust`, `washing`, `airing`) y caían todos a "en reposo" — la entidad mostraba el robot parado durante casi todo su ciclo de base. Y `goto_charge` se traducía a `docked`, o sea "acoplado" mientras va de camino: la comprobación de carga capturaba el `charg` de dentro y la rama de `returning` era código muerto.
+
+### Publicar un plugin ya no obliga a publicar el core
+
+Core y plugins son dos capas separadas a propósito, pero la lista de "qué versión es la buena de cada plugin" vivía **dentro de la imagen del core**. Eso las ataba por la puerta de atrás: cada arreglo de plugin necesitaba una segunda release solo para re-pinear. Y la segunda se olvida — el plugin de Tuya estuvo **siete versiones** con sus arreglos publicados y ninguno activo.
+
+La fuente de verdad se saca de la imagen: `plugins.json`, en la rama principal, leído en caliente. El add-on lo revisa solo. El `sha256` de cada tarball se sigue verificando antes de tocar disco; solo cambia dónde se lee. Sin red, se usa la última lectura buena y luego el catálogo de la imagen.
+
+### Una sola conexión con Home Assistant
+
+Cada plugin abría la suya, y las tres recibían el mismo aluvión completo. Medido: **786 KB/min y 9,3 eventos/s por conexión**, de los que el filtro local tiraba el 97 %, por tres. Ahora la abre el core y la consumen los plugins, cada uno con su clave y su propio conjunto de entidades.
+
+Y se le pide a HA que filtre él (`subscribe_entities`): **628 KB/min → 3 KB/min**, medido en paralelo sobre la misma ventana. Si la versión de HA no lo admite, cae sola a la suscripción de siempre.
+
+Dos cosas que ese cambio destapó. El socket tiene timeout de 30 s que hoy no salta nunca porque hay tráfico constante; al filtrar, medio minuto de silencio es lo normal, y tratarlo como error habría dado reconexiones perpetuas. Y hacían falta **dos** conjuntos de entidades, no uno: las luces no deben despertar a su zona (sería un bucle) pero su estado sí se lee para detectar cambios manuales — con el aluvión estaban frescas por accidente.
+
+### Cada zona de luz, independiente
+
+Un cambio en cualquier entidad vigilada disparaba un ciclo que recorría **todas** las zonas. Confirmado en el log: la presencia de la Entrada provocaba, en el mismo segundo, una orden a la luz de la Cocina. Y cada orden a una bombilla de TP-Link/Tuya es una llamada bloqueante de hasta 10-15 s, así que una detección real esperaba detrás de órdenes ajenas.
+
+Ahora cada zona tiene su disparador y su hilo, y solo se despierta por lo suyo. Arranca además con un ciclo inmediato, en vez de esperar hasta cinco minutos al periódico.
+
+Y una luz ya encendida solo recibe orden **si el valor cambió**: una misma bombilla llegó a recibir siete `light.turn_on` idénticos en 36 segundos, y cada uno reinicia la transición.
+
+### El consumo del reinicio se lee, no se estima
+
+`accumulate` integra usando el tiempo desde la última llamada, y esa marca se persiste. Al reiniciar se encontraba un "antes" de hace cuarenta minutos y multiplicaba ese hueco entero por la potencia instantánea de **ese** momento. Su propio docstring decía que la primera llamada tras un reinicio no integra nada; el código sí lo hacía. El resultado no era un hueco visible, sino un número verosímil y equivocado.
+
+Home Assistant sí estuvo grabando mientras nosotros no, así que el hueco se lee de su histórico y se integra de verdad, punto a punto. Si no hay sensor de red, o HA no devuelve ese rango, **no se inventa**: se deja sin contabilizar y se dice en el log. Por encima de 48 h tampoco se reconstruye — el histórico de HA se purga, y un hueco así ya no es un reinicio.
+
 ## 0.75.1
 Tuya re-pineado al tag `v0.75.0` (venía de `v0.73.0`, así que arrastra también el log de eventos de 0.74.0). sha256 `ccfe6065…01fc`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro, que `_normalize_path` se aplica en `_request` — el punto por el que pasan todas las peticiones — y que ordena **antes** de calcular la firma, no después.
 

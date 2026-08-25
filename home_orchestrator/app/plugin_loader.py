@@ -24,6 +24,91 @@ import sys
 log = logging.getLogger("plugin_loader")
 
 
+def catalogo(force: bool = False) -> dict:
+    """El catalogo que MANDA: el de la imagen con el registro remoto por
+    encima (ver plugin_manifest.py).
+
+    `PLUGIN_CATALOG`, mas abajo, pasa a ser la semilla: lo que se usa en una
+    instalacion recien nacida sin red todavia, y el respaldo si el registro
+    remoto no se puede leer. La version buena de cada plugin la decide el
+    registro, que vive fuera de esta imagen -- que es justo lo que permite
+    publicar un plugin sin publicar el core.
+    """
+    try:
+        import plugin_manifest
+        return plugin_manifest.catalogo_efectivo(PLUGIN_CATALOG, force=force)
+    except Exception:
+        log.warning("No se ha podido aplicar el registro remoto -- se usa el de la imagen", exc_info=True)
+        return dict(PLUGIN_CATALOG)
+
+
+UPDATE_CHECK_INTERVAL_SECONDS = 6 * 3600
+
+
+def check_for_updates() -> list[str]:
+    """Mira el registro remoto y pone en disco los plugins que se hayan
+    quedado atras. Devuelve los slugs actualizados.
+
+    Cuando corre al ARRANCAR (antes de instanciar nada, ver
+    `load_all_plugins`) el codigo nuevo entra del tiron. Cuando corre en el
+    bucle de fondo, el modulo ya esta importado y Python no lo recarga, asi
+    que queda listo para el siguiente arranque -- y se dice claramente, en
+    vez de dar a entender que ya esta activo.
+
+    Nunca lanza: quedarse en la version anterior es peor que nada, pero
+    mucho mejor que tumbar el addon por un fallo de red.
+    """
+    import config_store
+
+    actualizados: list[str] = []
+    try:
+        cat = catalogo(force=True)
+        instalados = set(config_store.get_installed_plugins())
+    except Exception:
+        log.exception("No se ha podido comprobar si hay plugins nuevos")
+        return actualizados
+
+    for slug in instalados:
+        meta = cat.get(slug)
+        if not meta or not meta.get("downloadable"):
+            continue
+        try:
+            import plugin_downloader
+
+            activo = plugin_downloader.current_tag(slug)
+            if not activo or activo == meta.get("tag"):
+                continue
+            _ensure_pinned_version(slug)
+            if plugin_downloader.current_tag(slug) == meta.get("tag"):
+                actualizados.append(slug)
+        except Exception:
+            log.exception("Plugin '%s': fallo comprobando actualizaciones", slug)
+    return actualizados
+
+
+def start_update_checker() -> None:
+    """Hilo de fondo que revisa el registro remoto cada pocas horas.
+
+    Esto es lo que hace que publicar un plugin NO necesite publicar el core:
+    el addon se entera solo. Un plugin no se publica cada minuto, asi que no
+    hace falta apretar -- y el arranque ya fuerza una comprobacion.
+    """
+    import threading
+
+    def bucle() -> None:
+        parar = threading.Event()
+        while not parar.wait(UPDATE_CHECK_INTERVAL_SECONDS):
+            actualizados = check_for_updates()
+            if actualizados:
+                log.info(
+                    "Plugins actualizados en disco: %s. El codigo nuevo entra en el "
+                    "proximo arranque del addon (Python no recarga un modulo ya "
+                    "importado).", ", ".join(actualizados),
+                )
+
+    threading.Thread(target=bucle, name="plugin-updates", daemon=True).start()
+
+
 def _prefer_downloaded(slug: str) -> None:
     """Si hay una version descargada de verdad de este plugin (ver
     plugin_downloader.py), se antepone a sys.path para que gane sobre
@@ -198,17 +283,27 @@ def list_catalog() -> list[dict]:
     import config_store
 
     installed = set(config_store.get_installed_plugins())
-    return [
-        {
+    import plugin_downloader
+
+    salida = []
+    for slug, meta in catalogo().items():
+        activo = plugin_downloader.current_tag(slug) if meta.get("downloadable") else None
+        salida.append({
             "slug": slug,
             "name": meta["name"],
             "description": meta["description"],
             "version": meta["version"],
             "installed": slug in installed,
             "downloadable": meta.get("downloadable", False),
-        }
-        for slug, meta in PLUGIN_CATALOG.items()
-    ]
+            # Que version esta CORRIENDO y cual es la buena segun el registro
+            # remoto -- sin esto, "actualizado" era un acto de fe.
+            "tag": meta.get("tag"),
+            "active_tag": activo,
+            "update_available": bool(
+                meta.get("downloadable") and activo and meta.get("tag") and activo != meta["tag"]
+            ),
+        })
+    return salida
 
 
 def install_plugin(slug: str) -> None:
@@ -218,7 +313,7 @@ def install_plugin(slug: str) -> None:
     ese caso no se marca nada como instalado."""
     import config_store
 
-    meta = PLUGIN_CATALOG.get(slug)
+    meta = catalogo().get(slug)
     if meta is None:
         raise KeyError(f"plugin desconocido: {slug}")
 
@@ -233,7 +328,7 @@ def uninstall_plugin(slug: str, purge_files: bool = False) -> None:
     import config_store
 
     config_store.set_plugin_installed(slug, False)
-    if purge_files and PLUGIN_CATALOG.get(slug, {}).get("downloadable"):
+    if purge_files and catalogo().get(slug, {}).get("downloadable"):
         import plugin_downloader
         plugin_downloader.remove_plugin_files(slug)
 
@@ -260,7 +355,7 @@ def _ensure_pinned_version(slug: str) -> None:
     verificacion fallan (sin red, GitHub devolviendo un 429...), se sigue con lo
     que haya en disco -- mejor la version anterior funcionando que una zona
     muerta. Eso si, se avisa bien fuerte en el log."""
-    meta = PLUGIN_CATALOG.get(slug)
+    meta = catalogo().get(slug)
     if not meta or not meta.get("downloadable"):
         return
     tag = meta.get("tag")
