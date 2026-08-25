@@ -200,13 +200,14 @@ PLUGIN_CATALOG = {
         "description": "Baterías, solar y cargas diferibles — carga y descarga adaptativa por precio, sol y consumo real",
         "version": "0.11.93",
         "downloadable": True,
-        "tag": "v0.59.0",
-        "sha256": "326146b78233f9b36c43764189f92b2b12e62bef5e51681fec305734d2b42a49",  # sha256 real del tarball de v0.59.0, verificado contra una descarga real antes de fijarlo aqui (potencia de grupo EcoFlow contada una vez, cmsBattSoc=0 ignorado, atribucion fisica solar/red y reconstruccion del historico de 5 series)
+        "tag": "v0.76.0",
+        "sha256": "65e358cbc2dbf5e555f0c2f5d29ee357e61ace39918d4a321f950e129b1b6179",  # sha256 real del tarball de v0.76.0, verificado contra una descarga real antes de fijarlo aqui (main.py, grid_energy_store.py y el nuevo energy_recovery.py)
         "files": [
             "main.py", "battery_plugin.py", "battery_exec.py", "anomaly_store.py",
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",
             "deferrable_scheduler.py", "deferrable_store.py", "ecoflow_ble.py",
-            "ecoflow_cloud.py", "ecoflow_login.py", "forecast_store.py", "grid_energy_store.py",
+            "ecoflow_cloud.py", "ecoflow_login.py", "energy_recovery.py", "forecast_store.py",
+            "grid_energy_store.py",
             "ha_client.py", "ha_statistics.py", "history_store.py", "lifetime_store.py",
             "pv_source.py",
             "savings_store.py", "scheduler.py", "solar_energy_store.py", "tariff_source.py",
@@ -218,8 +219,8 @@ PLUGIN_CATALOG = {
         "description": "Termostatos adaptativos por zona, expuestos como climate.* nativos de HA (HomeKit/Matter) vía MQTT Discovery",
         "version": "0.4.11",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
         "downloadable": True,
-        "tag": "v0.67.0",
-        "sha256": "40d32c34378989f90b1993fe96247970dadce84004a15fc1b4617d8a2a325e94",  # sha256 real del tarball de v0.67.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: un `presets_text` ilegible ya no deja la zona sin consignas -- parser mas tolerante, el error deja de tragarse, consigna de respaldo, y una zona no disponible dice por que)
+        "tag": "v0.76.0",
+        "sha256": "65e358cbc2dbf5e555f0c2f5d29ee357e61ace39918d4a321f950e129b1b6179",  # sha256 real del tarball de v0.76.0, verificado contra una descarga real antes de fijarlo aqui (climate_plugin.py (conexion compartida))
         "files": ["climate_plugin.py", "climate", "climate_templates"],
     },
     "tuya": {
@@ -227,8 +228,8 @@ PLUGIN_CATALOG = {
         "description": "Puente de ingesta para dispositivos Tuya-por-LAN — consumo interno por Climate y/o exposición opcional a HA por MQTT",
         "version": "0.4.7",
         "downloadable": True,
-        "tag": "v0.75.0",
-        "sha256": "ccfe606500b39aead225db0c9b469c1079af15bc9ee8f4ea6a37074002c101fc",  # sha256 real del tarball de v0.75.0, verificado contra una descarga real antes de fijarlo aqui (todo lo anterior mas: la firma de la nube ordena los parametros de consulta -- sin eso, CUALQUIER llamada con mas de uno se llevaba un "1004: sign invalid", que es justo lo que impedia leer el log de eventos)
+        "tag": "v0.76.0",
+        "sha256": "65e358cbc2dbf5e555f0c2f5d29ee357e61ace39918d4a321f950e129b1b6179",  # sha256 real del tarball de v0.76.0, verificado contra una descarga real antes de fijarlo aqui (tuya/mqtt_tuya.py y tuya/auto_profile.py)
         "files": ["tuya_plugin.py", "tuya", "tuya_templates"],
     },
     "lighting": {
@@ -236,8 +237,8 @@ PLUGIN_CATALOG = {
         "description": "Iluminación adaptativa por zona — color y brillo por hora, encendido/apagado por presencia y reglas condicionales (p.ej. TV encendida -> luces laterales en vez del techo)",
         "version": "0.7.12",
         "downloadable": True,
-        "tag": "v0.61.0",
-        "sha256": "230a3a7304fb275613792e47c5de9a2ab913520cedf00d70fe24aaf91d5e7063",  # sha256 real del tarball de v0.61.0, verificado contra una descarga real antes de fijarlo aqui (negacion `!=` y comparacion de ATRIBUTOS en las condiciones de las reglas)
+        "tag": "v0.76.0",
+        "sha256": "65e358cbc2dbf5e555f0c2f5d29ee357e61ace39918d4a321f950e129b1b6179",  # sha256 real del tarball de v0.76.0, verificado contra una descarga real antes de fijarlo aqui (lighting_plugin.py y lighting/zone_runner.py)
         "files": ["lighting_plugin.py", "lighting", "lighting_templates"],
     },
     "tplink": {

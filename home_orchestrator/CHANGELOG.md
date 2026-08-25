@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.76.1
+Energy, Climate, Lighting y Tuya re-pineados al tag `v0.76.0`. sha256 `65e358cb…6179`, verificado antes de fijarlo; comprobado que los `files` de los cuatro viajan dentro, que `energy_recovery.py` — fichero **nuevo** — está declarado y empaquetado (sin eso, la reconstrucción del reinicio moriría con un `ImportError`), que catálogo y manifiesto dicen lo mismo, y que no se cuela bytecode.
+
+**Esta es la última vez que hace falta una segunda release para re-pinear.** El add-on que corre hoy todavía lee el catálogo de su propia imagen; a partir de esta versión sabe leer `plugins.json` desde la rama principal, así que publicar un plugin pasa a ser subir su código y actualizar ese fichero.
+
 ## 0.76.0
 
 Cinco frentes. Casi todo sale de medir contra una instalación real, no de leer código.
