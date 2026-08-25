@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.65.0
+
+**Ventilar como respaldo se reporta como "en reposo", no como "ventilando".**
+
+Estando en un modo de temperatura (Calor, Frío o Calor/Frío) la zona puede acabar ventilando sin que nadie lo haya pedido: porque hay una ventana abierta y el calor/frío está en pausa, o porque dentro de margen prefiere mover aire a apagar del todo (ver `_smart_idle_action`). Reportar eso como acción `fan` da problemas río abajo: Matter solo admite `Off`/`Cool`/`Heat` en `ThermostatRunningMode`, así que un termostato en "auto" que dice estar ventilando se traduce a algo que el cliente final no sabe representar.
+
+Para el **termostato** la verdad es que está en reposo: no está calentando ni enfriando. El ventilador sigue viéndose donde corresponde, en su propio clúster (`fan_mode`), y el motivo de la zona sigue explicando que está ventilando.
+
+Elegir **Ventilador** o **Seco** a propósito como modo no es un respaldo y se sigue reportando tal cual (`fan` / `drying`).
+
 ## 0.64.1
 Climate re-pineado al tag `v0.64.0`. sha256 `b8adc980…786d`, verificado antes de fijarlo; comprobado que los 3 elementos de su lista `files` viajan dentro y que los **siete** arreglos de clima acumulados (0.62.0, 0.63.0 y 0.64.0) están presentes en el código empaquetado.
 

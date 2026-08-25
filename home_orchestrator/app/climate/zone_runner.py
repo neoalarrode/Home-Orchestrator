@@ -1108,6 +1108,22 @@ class ZoneRunner:
             urgent=urgent,
         )
         self.hvac_action = "off" if self.hvac_mode == "off" else _ACTION_MAP.get(real_action, "idle")
+        # Ventilar es un RESPALDO, no la accion de un termostato de temperatura.
+        # Estando en un modo de temperatura (calor/frio/ambos) la zona puede
+        # acabar ventilando -- porque hay una ventana abierta y el calor/frio
+        # esta en pausa, o porque dentro de margen se prefiere mover aire a
+        # apagar del todo (ver `_smart_idle_action`). Reportarlo como accion
+        # "fan" da problemas rio abajo: Matter solo admite Off/Cool/Heat en
+        # `ThermostatRunningMode`, asi que un termostato en "auto" que dice
+        # estar ventilando se traduce a algo que el cliente final no sabe
+        # representar. Para el TERMOSTATO la verdad es que esta en reposo: no
+        # esta calentando ni enfriando. El ventilador sigue viendose donde
+        # corresponde, en su propio cluster (`fan_mode`).
+        #
+        # Si el usuario elige `fan_only` (o `dry`) A PROPOSITO como modo, eso NO
+        # es un respaldo y se sigue reportando tal cual.
+        if self.hvac_action == "fan" and self.hvac_mode in ("heat", "cool", "heat_cool"):
+            self.hvac_action = "idle"
 
         humidify_active = self.hvac_mode != "off" and not force_off
         self._drive_humidifiers(humidify_active)
