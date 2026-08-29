@@ -200,8 +200,8 @@ PLUGIN_CATALOG = {
         "description": "Baterías, solar y cargas diferibles — carga y descarga adaptativa por precio, sol y consumo real",
         "version": "0.11.93",
         "downloadable": True,
-        "tag": "v0.77.0",
-        "sha256": "91a9e77b0e7333fe3393c234b5ee8214883e2191ae8bcde75c8a864e636755ea",  # sha256 real del tarball de v0.77.0, verificado contra una descarga real antes de fijarlo aqui (el Panel de Energia contaba de mas: acumulados que ya no bajan y vertido que no se inventa)
+        "tag": "v0.77.1",
+        "sha256": "23b0d4fbac1a37a26232de851fbceb998884a12d7637ca19969510d3c1fb6ecd",  # sha256 real del tarball de v0.77.1, verificado contra una descarga real antes de fijarlo aqui (el camino de Cloud tambien respeta al dueño del grupo: en modo hibrido la esclava se quedaba la potencia y el contador de carga se paraba)
         "files": [
             "main.py", "battery_plugin.py", "battery_exec.py", "anomaly_store.py",
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",

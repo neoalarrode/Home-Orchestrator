@@ -10,8 +10,8 @@
       "repo": "neoalarrode/Home-Orchestrator",
       "version": "0.11.93",
       "downloadable": true,
-      "tag": "v0.77.0",
-      "sha256": "91a9e77b0e7333fe3393c234b5ee8214883e2191ae8bcde75c8a864e636755ea",
+      "tag": "v0.77.1",
+      "sha256": "23b0d4fbac1a37a26232de851fbceb998884a12d7637ca19969510d3c1fb6ecd",
       "files": [
         "main.py",
         "battery_plugin.py",
