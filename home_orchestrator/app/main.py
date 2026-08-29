@@ -361,7 +361,9 @@ def _live_battery_charge_discharge_w(batteries_cfg: list[dict], cfg: dict) -> tu
             if net_power is None and ecoflow_mode in ("cloud", "hybrid"):
                 main_sn = b.get("ecoflow_main_sn")
                 access_key, secret_key = cfg.get("ecoflow_access_key"), cfg.get("ecoflow_secret_key")
-                if main_sn and main_sn not in ecoflow_main_sns_counted and access_key and secret_key:
+                if (main_sn and main_sn not in ecoflow_main_sns_counted
+                        and group_owners.get(main_sn, b.get("id")) == b.get("id")
+                        and access_key and secret_key):
                     client = ecoflow_cloud.get_client(access_key, secret_key)
                     state = client.get_live_state(main_sn, required_fields=("powGetBpCms",)) if client else None
                     if state and state.get("powGetBpCms") is not None:
@@ -1817,7 +1819,9 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                                 soc = candidate
                                 ecoflow_source = "cloud"
                                 break
-                    if net_power is None and main_sn and main_sn not in ecoflow_main_sns_counted:
+                    if (net_power is None and main_sn
+                            and main_sn not in ecoflow_main_sns_counted
+                            and group_owners.get(main_sn, b.get("id")) == b.get("id")):
                         main_state = client.get_live_state(main_sn, required_fields=("powGetBpCms",)) if client else None
                         if main_state and main_state.get("powGetBpCms") is not None:
                             net_power = float(main_state["powGetBpCms"])

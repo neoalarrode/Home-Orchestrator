@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.77.1
+
+**La energía de una unidad esclava tapaba la de la principal, y el contador de carga se quedaba parado.**
+
+En un grupo EcoFlow enlazado la potencia la reporta la unidad **principal**; las esclavas devuelven 0. La 0.77.0 ya hacía que solo la principal se quedase con la potencia del grupo — pero solo en el camino de Bluetooth. En modo **híbrido**, Bluetooth saltaba correctamente a la esclava y el respaldo de Cloud se la volvía a dar acto seguido, con lo que el arreglo quedaba anulado.
+
+Confirmado en producción: `sensor.battery_orchestrator_energy_charged` llevaba **más de un día congelado** mientras la potencia agregada sí se publicaba. La causa era esta: se leía el 0 de la esclava y se descartaba el dato bueno de la principal.
+
+Ahora los dos caminos, Bluetooth y Cloud, respetan a la unidad dueña del grupo. Tras el arreglo el contador volvió a moverse en el mismo ciclo.
+
 ## 0.77.0
 
 **El Panel de Energía contaba muchísimo más consumo del real.** Medido contra un Shelly Pro 3EM: el día 27 el panel decía 29,8 kWh y el medidor 14,5. Algunos días llegaban a ×15.
