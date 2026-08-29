@@ -111,14 +111,54 @@ def accumulate(now: datetime, imported_w: float | None, exported_w: float | None
                     # mete en las graficas del Panel de Energia). `exported_w`
                     # sale del sensor CRUDO del usuario, y un medidor que
                     # reporte el vertido en negativo restaba del acumulado.
-                    imported_w = max(0.0, imported_w or 0.0)
-                    exported_w = max(0.0, exported_w or 0.0)
-                    if imported_w:
-                        data["imported_kwh"] += (imported_w / 1000.0) * dt_hours
-                    if exported_w:
-                        data["exported_kwh"] += (exported_w / 1000.0) * dt_hours
+                    # `None` NO es cero: significa "no hay sensor que lo mida".
+                    # Un cero se acumula (no suma nada, pero es un dato real);
+                    # un None no toca el contador, para que no parezca que hay
+                    # una medida de 0 W donde no hay medicion ninguna.
+                    if imported_w is not None:
+                        data["imported_kwh"] += (max(0.0, imported_w) / 1000.0) * dt_hours
+                    if exported_w is not None:
+                        data["exported_kwh"] += (max(0.0, exported_w) / 1000.0) * dt_hours
             except ValueError:
                 pass
+        data["last_update"] = now.isoformat()
+        _save(data)
+        return data
+
+
+def from_counters(imported_kwh: float | None, exported_kwh: float | None, now: datetime) -> dict:
+    """Acumula a partir de CONTADORES externos en kWh, en vez de integrar
+    potencia nosotros.
+
+    Es bastante mas exacto, y no por poco. Integrar potencia significa
+    muestrear una señal que salta de 139 a 493 W en segundos y multiplicar
+    cada muestra por el tiempo transcurrido: el error depende de en que
+    instante caiga cada muestra. Medido contra un Shelly Pro 3EM real, la
+    desviacion diaria iba de +58% a -22% sin patron. Un contador de energia
+    lo integra en continuo dentro del propio aparato: su incremento ES la
+    energia del periodo, sin muestreo de por medio.
+
+    Solo se suman los INCREMENTOS. Si un contador baja (se reinicio el
+    aparato, se sustituyo) no se resta ni se cuenta el valor entero como
+    consumo -- se toma como punto de partida nuevo y se sigue desde ahi.
+    """
+    now = _naive_local(now)
+    with _lock:
+        data = _load()
+        previos = data.get("counters") or {}
+        for clave, valor in (("imported_kwh", imported_kwh), ("exported_kwh", exported_kwh)):
+            if valor is None:
+                continue
+            valor = float(valor)
+            anterior = previos.get(clave)
+            if anterior is not None:
+                delta = valor - float(anterior)
+                if delta > 0:
+                    data[clave] += delta
+                # delta < 0: el contador externo se reinicio. Ni se resta ni se
+                # cuenta entero -- solo se reancla mas abajo.
+            previos[clave] = valor
+        data["counters"] = previos
         data["last_update"] = now.isoformat()
         _save(data)
         return data

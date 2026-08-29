@@ -29,6 +29,7 @@ import ha_statistics
 import ha_websocket
 import history_store
 import lifetime_store
+import monotonic_sensor
 import pv_source
 import savings_store
 import scheduler
@@ -125,11 +126,36 @@ _last_published_at: dict[str, float] = {}
 
 def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
                                min_interval: float = PUBLISH_MIN_INTERVAL_SECONDS) -> None:
+    """Publica un sensor a HA, como mucho una vez cada `min_interval`.
+
+    CADA sensor es independiente. Antes esta funcion dejaba escapar la
+    excepcion de `publish_sensor` (que hace `raise_for_status`), y los sitios
+    que llaman agrupan VARIAS publicaciones bajo un solo `try`: un fallo
+    transitorio de HA en la primera -- un timeout, un 500 al reiniciar --
+    se llevaba por delante las siguientes, que tenian su valor perfectamente
+    calculado y listo. Y el log no decia cual habia fallado.
+
+    Al fallar NO se marca la hora a proposito: asi el siguiente ciclo
+    reintenta en vez de quedarse callado el intervalo entero. Con el
+    throttle marcado, un fallo puntual dejaba el sensor sin actualizar
+    bastante mas de lo que costo el fallo.
+    """
+    if state is None:
+        # Publicar un hueco deja la entidad en "None" y ensucia el historico:
+        # mejor no tocarla y conservar el ultimo valor bueno.
+        return
     now_ts = time.time()
     last = _last_published_at.get(entity_id)
     if last is not None and (now_ts - last) < min_interval:
         return
-    ha_client.publish_sensor(entity_id, state, attributes)
+    try:
+        ha_client.publish_sensor(entity_id, state, attributes)
+    except Exception:
+        log.warning(
+            "No se ha podido publicar %s en HA (se reintenta en el proximo ciclo)",
+            entity_id, exc_info=True,
+        )
+        return
     _last_published_at[entity_id] = now_ts
 
 
@@ -234,6 +260,38 @@ def _ecoflow_group_key(b: dict, address: str | None) -> str:
     return key
 
 
+def _ecoflow_group_owners(batteries_cfg: list[dict]) -> dict[str, str]:
+    """Que bateria de cada grupo se queda con la potencia del grupo.
+
+    La potencia que reportan BLE y Cloud es la del GRUPO entero, asi que solo
+    puede contarse una vez. Hasta ahora se la quedaba la PRIMERA que apareciera
+    en la lista de configuracion -- o sea, un detalle del orden en que el
+    usuario dio de alta las baterias decidia a cual se le atribuia toda la
+    energia del grupo. Arbitrario y, peor, inestable: reordenar la lista movia
+    la energia de una unidad a otra.
+
+    Ahora se la queda la unidad PRINCIPAL (`ecoflow_sn == ecoflow_main_sn`),
+    que es la que de verdad reporta el dato del grupo y no depende del orden.
+    Si en un grupo no hay ninguna principal declarada, se cae a la primera --
+    mismo comportamiento que antes, pero solo en ese caso.
+
+    Devuelve {clave_de_grupo: id_de_bateria}.
+    """
+    owners: dict[str, str] = {}
+    primeras: dict[str, str] = {}
+    for b in batteries_cfg:
+        if (b.get("source") or "ha") != "ecoflow":
+            continue
+        clave = _ecoflow_group_key(b, b.get("ecoflow_ble_address"))
+        primeras.setdefault(clave, b.get("id"))
+        main_sn, own_sn = b.get("ecoflow_main_sn"), b.get("ecoflow_sn")
+        if main_sn and own_sn and main_sn == own_sn:
+            owners[clave] = b.get("id")  # la principal manda
+    for clave, bid in primeras.items():
+        owners.setdefault(clave, bid)
+    return owners
+
+
 def _live_battery_charge_discharge_w(batteries_cfg: list[dict], cfg: dict) -> tuple[float, float, bool]:
     """
     Carga y descarga TOTAL de todas las baterias AHORA MISMO, leido en vivo
@@ -267,6 +325,7 @@ def _live_battery_charge_discharge_w(batteries_cfg: list[dict], cfg: dict) -> tu
     total_discharge_w = 0.0
     any_data = False
     ecoflow_main_sns_counted: set[str] = set()
+    group_owners = _ecoflow_group_owners(cfg["batteries"])
     for b in batteries_cfg:
         source = b.get("source") or "ha"
         net_power = None
@@ -292,6 +351,8 @@ def _live_battery_charge_discharge_w(batteries_cfg: list[dict], cfg: dict) -> tu
                 group_key = _ecoflow_group_key(b, address)
                 if group_key in ecoflow_main_sns_counted:
                     pass  # el grupo ya aporto su potencia en otra bateria de esta vuelta
+                elif group_owners.get(group_key) != b.get("id"):
+                    pass  # no es la unidad dueña del grupo (ver _ecoflow_group_owners)
                 elif address and user_id:
                     state = ecoflow_ble.get_state(address, user_id)
                     if state and state.get("battery_power") is not None:
@@ -545,6 +606,10 @@ def _ecoflow_pv_live_overrides(cfg: dict) -> dict[str, float]:
 # SECONDS.
 ENERGY_ACCUMULATE_MAX_GAP_SECONDS = 300
 _energy_accumulate_last_ts: float | None = None
+# Ultima vez que se aviso de que la energia de bateria no avanzaba. Se avisa de
+# tanto en tanto, no en cada ciclo: seria ruido en el log.
+_sin_acumular_avisado_ts: float | None = None
+SIN_ACUMULAR_AVISO_SEGUNDOS = 900
 
 
 def run_cycle():
@@ -966,34 +1031,43 @@ def run_cycle():
     # abajo, extraida aqui para poder integrarla en el acumulado (ver
     # grid_energy_store.py) sin llamar a `_live_export_w` dos veces.
     vertido_now_w = _live_export_w(cfg, known_net_grid_w=net_grid_now_w)
-    if vertido_now_w is None:
-        # Sin sensor de vertido dedicado (`export_sensor`/`net_grid_sensor`)
-        # -- caso real en instalaciones de autoconsumo COMPARTIDO (ver
-        # "self_consumption_share_pct" en DEFAULT_PV_ARRAY): no hay ningun
-        # sensor fisico que mida el vertido, porque el excedente ni
-        # siquiera pasa por tu propio contador. Se DERIVA del mismo balance
-        # que ya se usa para el resto del flujo (solar menos lo que se
-        # consume y lo que se carga en bateria DESDE solar): si sale
-        # positivo, es excedente que de verdad se esta vertiendo. Esto NO
-        # es un cero inventado (ver docstring de `_live_export_w`) -- es un
-        # calculo real a partir de datos reales, solo que sin sensor propio
-        # que lo confirme directamente.
-        vertido_now_w = max(0.0, flow_pv_w - flow_load_w - solar_to_batt_w)
-    grid_totals = grid_energy_store.accumulate(now, grid_total_w, vertido_now_w)
+    # Estimacion del excedente para el DIAGRAMA de flujo, cuando no hay sensor
+    # de vertido. Sirve para pintar "esto se esta yendo a la red" en una
+    # instalacion de autoconsumo compartido, donde el excedente ni pasa por tu
+    # contador. Pero es una ESTIMACION, y por eso no entra en el acumulado.
+    vertido_estimado_w = max(0.0, flow_pv_w - flow_load_w - solar_to_batt_w)
+
+    # BUG REAL, medido contra un Shelly Pro 3EM: sin sensor de vertido, esa
+    # estimacion se estaba integrando en el contador de energia vertida como
+    # si fuera una medida. Resultado del dia 27: 1.54 kWh nuestros contra
+    # 0.16 medidos por el Shelly -- un orden de magnitud, en un numero que se
+    # presenta al lado de los medidos y no se distingue de ellos.
+    #
+    # El modo lo eliges tu: "combinado" (un sensor con signo da las dos
+    # direcciones) o "separados" (un sensor por direccion). Si no has
+    # declarado vertido es que no lo quieres contabilizar -- no que quieras
+    # que lo adivinemos. Sin sensor, el acumulado de vertido no avanza.
+    grid_totals = grid_energy_store.accumulate(
+        now, grid_total_w, vertido_now_w if vertido_now_w is not None else None,
+    )
     # Mismo mecanismo YA PROBADO que sensor.battery_orchestrator_solar_energy
     # (ver _live_sensor_loop mas abajo) -- REST directo a HA
     # (ha_client.publish_sensor), no MQTT: mas simple, sin conexion nueva
     # que mantener, mismo patron de nombres "battery_orchestrator_*".
     try:
         _publish_sensor_throttled(
-            "sensor.battery_orchestrator_grid_imported_energy", round(grid_totals["imported_kwh"], 3),
+            "sensor.battery_orchestrator_grid_imported_energy",
+            round(monotonic_sensor.publishable(
+                "sensor.battery_orchestrator_grid_imported_energy", grid_totals["imported_kwh"]), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "friendly_name": "Battery Orchestrator Energía importada de red",
             },
         )
         _publish_sensor_throttled(
-            "sensor.battery_orchestrator_grid_exported_energy", round(grid_totals["exported_kwh"], 3),
+            "sensor.battery_orchestrator_grid_exported_energy",
+            round(monotonic_sensor.publishable(
+                "sensor.battery_orchestrator_grid_exported_energy", grid_totals["exported_kwh"]), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "friendly_name": "Battery Orchestrator Energía vertida a red",
@@ -1020,7 +1094,11 @@ def run_cycle():
             min_interval=15,
         )
         _publish_sensor_throttled(
-            "sensor.battery_orchestrator_grid_exported_power", round(vertido_now_w),
+            # Sin sensor de vertido no se publica nada: publicar la
+            # estimacion la dejaria en HA indistinguible de una medida.
+            # `_publish_sensor_throttled` ignora un None.
+            "sensor.battery_orchestrator_grid_exported_power",
+            round(vertido_now_w) if vertido_now_w is not None else None,
             {
                 "device_class": "power", "state_class": "measurement",
                 "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Potencia vertida a red",
@@ -1050,7 +1128,11 @@ def run_cycle():
         # cuenta en `load_w`/`grid_w` ni en el margen de potencia contratada,
         # justo porque el excedente vertido no pasa por esa linea. `None`
         # si no hay sensor de vertido declarado (no un 0 inventado).
-        "vertido_w": round(vertido_now_w) if vertido_now_w is not None else None,
+        "vertido_w": round(vertido_now_w) if vertido_now_w is not None
+                     else round(vertido_estimado_w),
+        # El diagrama pinta el excedente aunque no haya sensor -- pero dice
+        # que es una estimacion, para no confundirlo con una medida.
+        "vertido_estimado": vertido_now_w is None,
         # Acumulados desde que el addon lleva funcionando (o desde que se
         # reinicio, ver grid_energy_store.py) -- lo mismo que se publica
         # por MQTT como sensor.*_grid_imported/_grid_exported.
@@ -1089,6 +1171,7 @@ def run_cycle():
         if elapsed_h > 0:
             live_now = _live_battery_totals(cfg)
             live_by_id = {entry["id"]: entry for entry in live_now["battery_live"]}
+            acumulado_algo = False
             for b in batteries:
                 entry = live_by_id.get(b.id)
                 net_power = entry.get("net_power_w") if entry else None
@@ -1097,6 +1180,7 @@ def run_cycle():
                 wh = abs(net_power) * elapsed_h
                 if wh <= 0:
                     continue
+                acumulado_algo = True
                 key = _stable_battery_key(b)
                 action = "charge" if net_power > 0 else "discharge"
                 if action == "charge":
@@ -1104,6 +1188,25 @@ def run_cycle():
                 else:
                     lifetime_store.accumulate(key, b.name, charged_wh=0, discharged_wh=wh, legacy_id=b.id)
                 capacity_store.update(key, b.name, socs.get(b.id), action, wh, legacy_id=b.id)
+            # BUG REAL, confirmado contra la instalacion del usuario: si NINGUNA
+            # bateria aporta potencia, este bucle no acumula nada y se va sin
+            # decir ni pio. Los sensores de energia cargada/descargada se
+            # quedaron congelados durante dias mientras la potencia agregada si
+            # se publicaba -- y desde fuera parecia que todo iba bien.
+            #
+            # Un contador que no avanza cuando deberia es un fallo, no un
+            # estado normal: se avisa (una vez cada tanto, no en cada ciclo).
+            if not acumulado_algo:
+                global _sin_acumular_avisado_ts
+                if (_sin_acumular_avisado_ts is None
+                        or now_ts - _sin_acumular_avisado_ts > SIN_ACUMULAR_AVISO_SEGUNDOS):
+                    _sin_acumular_avisado_ts = now_ts
+                    log.warning(
+                        "Ninguna bateria ha reportado potencia en este ciclo: la energia "
+                        "cargada/descargada NO avanza. Potencias leidas: %s. Si esto se "
+                        "repite, los sensores de energia se quedaran congelados.",
+                        {e["id"]: e.get("net_power_w") for e in live_now["battery_live"]},
+                    )
     _energy_accumulate_last_ts = now_ts
 
     # Registrar la decision REAL de esta hora en el historico (se
@@ -1231,7 +1334,8 @@ def run_cycle():
         totals = lifetime_store.get_aggregate_totals([_stable_battery_key(b) for b in batteries])
         _publish_sensor_throttled(
             "sensor.battery_orchestrator_energy_charged",
-            round(totals["charged_wh"] / 1000, 3),
+            round(monotonic_sensor.publishable(
+                "sensor.battery_orchestrator_energy_charged", totals["charged_wh"] / 1000), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "since": totals["since"],
@@ -1240,7 +1344,8 @@ def run_cycle():
         )
         _publish_sensor_throttled(
             "sensor.battery_orchestrator_energy_discharged",
-            round(totals["discharged_wh"] / 1000, 3),
+            round(monotonic_sensor.publishable(
+                "sensor.battery_orchestrator_energy_discharged", totals["discharged_wh"] / 1000), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "since": totals["since"],
@@ -1403,7 +1508,9 @@ def _live_sensor_loop():
                         solar_energy_store.accumulate(solar_w * elapsed_s / 3600)
                 total = solar_energy_store.get_total_wh()
                 _publish_sensor_throttled(
-                    "sensor.battery_orchestrator_solar_energy", round(total["wh"] / 1000, 3),
+                    "sensor.battery_orchestrator_solar_energy",
+                    round(monotonic_sensor.publishable(
+                        "sensor.battery_orchestrator_solar_energy", total["wh"] / 1000), 3),
                     {
                         "device_class": "energy", "state_class": "total_increasing",
                         "unit_of_measurement": "kWh", "since": total["since"],
@@ -1627,6 +1734,7 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
     live_discharge_w = 0.0
     live_battery_data_ok = False
     ecoflow_main_sns_counted: set[str] = set()
+    group_owners = _ecoflow_group_owners(cfg["batteries"])
     for b in cfg["batteries"]:
         source = b.get("source") or "ha"
 
@@ -1669,7 +1777,13 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                         # potencia individual) y evita multiplicar el total.
                         if state.get("battery_power") is not None:
                             group_key = _ecoflow_group_key(b, address)
-                            if group_key not in ecoflow_main_sns_counted:
+                            # Solo la unidad DUEÑA del grupo se queda con la
+                            # potencia -- ver _ecoflow_group_owners: antes se
+                            # la quedaba la primera de la lista, o sea que el
+                            # orden de alta decidia a quien se le atribuia la
+                            # energia de todo el grupo.
+                            if (group_key not in ecoflow_main_sns_counted
+                                    and group_owners.get(group_key) == b.get("id")):
                                 net_power = float(state["battery_power"])
                                 ecoflow_main_sns_counted.add(group_key)
                             ecoflow_source = ecoflow_source or "bluetooth"

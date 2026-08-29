@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.77.0
+
+**El Panel de Energía contaba muchísimo más consumo del real.** Medido contra un Shelly Pro 3EM: el día 27 el panel decía 29,8 kWh y el medidor 14,5. Algunos días llegaban a ×15.
+
+`total_increasing` es un contrato: ese número no baja nunca. Si baja, HA entiende que el contador se reinició y cuenta el valor **nuevo entero** como consumo de esa hora. Y nuestros acumulados internos sí bajan — la reconstrucción del histórico los recalcula y los deja más bajos, que es lo correcto. Publicar esa corrección tal cual inyectaba, medido: **+181 kWh** el día 25, **+189** el 26 y **+206** el 28. El día 27 fue el único sin ninguna bajada, y el único que cuadraba con el medidor.
+
+Ahora lo que se publica es un contador propio que solo acumula los incrementos positivos del total interno: nunca baja, y no pierde consumo futuro — tras una corrección sigue subiendo desde donde estaba. Corregir el pasado es cosa de las estadísticas, no del contador en vivo.
+
+**El vertido se inventaba.** Sin sensor de vertido declarado se derivaba de `solar − consumo − carga`, y ese número entraba al contador como si fuera una medida: 1,54 kWh nuestros contra 0,16 medidos. El modo lo elige el usuario — un sensor con signo, o uno por dirección. Si no ha declarado vertido, es que no quiere contabilizarlo, no que lo adivinemos. Ahora sin sensor el contador no avanza, no se publica potencia vertida a HA, y el diagrama sigue pintando el excedente pero marcado como estimación.
+
+De paso: un `None` ya no se trata como un cero. "No hay sensor" y "hay sensor y marca 0 W" son cosas distintas.
+
+**Una publicación fallida se llevaba por delante a las siguientes.** Cuatro publicaciones compartían un `try`, y `publish_sensor` lanza al fallar: un timeout o un 500 de HA en la primera dejaba sin publicar las otras tres, con su valor ya calculado. Y el log no decía cuál había fallado. Ahora cada sensor es independiente, el aviso nombra la entidad, y al fallar no se marca la hora — así el ciclo siguiente reintenta en vez de callarse el intervalo entero.
+
+**La potencia de grupo se atribuía por orden de lista.** La que reportan BLE y Cloud es la del grupo entero y solo puede contarse una vez; se la quedaba la primera batería del array, así que el orden de alta decidía a cuál se le atribuía toda la energía — y reordenar la lista la movía de una unidad a otra. Ahora se la queda la unidad principal, que es determinista.
+
+**La energía de batería podía dejar de avanzar en silencio.** Si ninguna batería reporta potencia, el acumulador no suma nada y antes se iba sin decir nada: los sensores de energía cargada y descargada se quedaron congelados días mientras la potencia agregada sí se publicaba. Ahora se avisa, con las potencias que se leyeron.
+
 ## 0.76.2
 
 **Arreglo urgente de una regresión que introduje en 0.76.0.** El ciclo de Energy abortaba en **cada** ejecución:
