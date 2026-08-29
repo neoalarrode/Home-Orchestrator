@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.2
+
+**El histórico propio del add-on ya se puede consultar**, en `GET /api/energy/history`. Solo lee.
+
+Hasta ahora esos datos únicamente los tocaba el botón de reconstruir, que además **escribe** — así que no había forma de mirarlos sin efectos secundarios. Y son la única fuente propia que sobrevive cuando la lectura de potencia falla: guardan por hora lo que el planificador aplicó de verdad y el SOC medido, que son independientes entre sí y se pueden contrastar.
+
+Sirvió justo para eso. Con el contador de energía congelado durante días (ver 0.77.1), la suma de `charge_w` de un día y el salto de SOC de ese mismo día coincidieron dentro del 5% — 791 Wh contra 749 —, lo que permite recuperar lo que el contador no registró.
+
 ## 0.77.1
 
 **La energía de una unidad esclava tapaba la de la principal, y el contador de carga se quedaba parado.**

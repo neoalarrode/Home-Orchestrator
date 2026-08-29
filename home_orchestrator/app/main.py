@@ -2081,6 +2081,33 @@ def _grid_flows_for_hour(entry: dict) -> tuple[float, float]:
     return grid_to_casa + grid_to_batt, max(0.0, surplus - solar_to_batt)
 
 
+@app.get("/api/energy/history")
+def api_energy_history():
+    """El historico horario propio del addon, tal cual (`history_store`).
+
+    Solo LEE. Hasta ahora estos datos solo los tocaba el boton de reconstruir,
+    que ademas ESCRIBE -- asi que no habia forma de mirarlos sin efectos.
+    Y son la unica fuente propia que sobrevive cuando la lectura de potencia
+    falla: guardan por hora lo que el planificador aplico de verdad y el SOC
+    medido, que son independientes entre si y se pueden contrastar.
+
+    Sirvio exactamente para eso: recuperar la carga de unos dias en los que el
+    contador de energia se quedo congelado (ver el arreglo de la potencia de
+    grupo en 0.77.1) -- la suma de `charge_w` de un dia y el salto de SOC de
+    ese mismo dia coincidieron dentro del 5%.
+    """
+    try:
+        entries = history_store.get_all()
+    except Exception:
+        log.exception("Fallo leyendo el historico propio")
+        return flask.jsonify({"error": "no se ha podido leer el historico"}), 500
+    return flask.jsonify({
+        "count": len(entries),
+        "capacity_wh": sum(float(b.get("capacity_wh") or 0) for b in config_store.load_config()["batteries"]),
+        "entries": entries,
+    })
+
+
 @app.post("/api/energy/backfill_history")
 def api_energy_backfill_history():
     """
