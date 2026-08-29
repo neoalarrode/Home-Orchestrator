@@ -200,8 +200,8 @@ PLUGIN_CATALOG = {
         "description": "Baterías, solar y cargas diferibles — carga y descarga adaptativa por precio, sol y consumo real",
         "version": "0.11.93",
         "downloadable": True,
-        "tag": "v0.76.2",
-        "sha256": "5b372a6c1dc792dc4c73eb0e3cde693914156e05d2eef2fa2354694a00d66008",  # sha256 real del tarball de v0.76.2, verificado contra una descarga real antes de fijarlo aqui (arregla el TypeError de fechas con y sin huso que abortaba run_cycle en cada ejecucion)
+        "tag": "v0.77.0",
+        "sha256": "91a9e77b0e7333fe3393c234b5ee8214883e2191ae8bcde75c8a864e636755ea",  # sha256 real del tarball de v0.77.0, verificado contra una descarga real antes de fijarlo aqui (el Panel de Energia contaba de mas: acumulados que ya no bajan y vertido que no se inventa)
         "files": [
             "main.py", "battery_plugin.py", "battery_exec.py", "anomaly_store.py",
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",
@@ -209,7 +209,7 @@ PLUGIN_CATALOG = {
             "ecoflow_cloud.py", "ecoflow_login.py", "energy_recovery.py", "forecast_store.py",
             "grid_energy_store.py",
             "ha_client.py", "ha_statistics.py", "history_store.py", "lifetime_store.py",
-            "pv_source.py",
+            "monotonic_sensor.py", "pv_source.py",
             "savings_store.py", "scheduler.py", "solar_energy_store.py", "tariff_source.py",
             "templates",
         ],
