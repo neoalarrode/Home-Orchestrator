@@ -198,10 +198,10 @@ PLUGIN_CATALOG = {
     "battery": {
         "name": "Energy Orchestrator",
         "description": "Baterías, solar y cargas diferibles — carga y descarga adaptativa por precio, sol y consumo real",
-        "version": "0.11.97",
+        "version": "0.11.98",
         "downloadable": True,
-        "tag": "v0.77.10",
-        "sha256": "9704bbbdc5df3bd7a4066c552cdb75d25b7b32e896ff41112982bb588518ac25",  # sha256 real del tarball de v0.77.10, verificado contra una descarga real antes de fijarlo aqui (cargas diferibles descartan sesiones de duracion imposible)
+        "tag": "v0.77.12",
+        "sha256": "f126dc23385742cf85b8fd621b9ce2fdf1ec643e44465797190b715d824cb0d0",  # sha256 real del tarball de v0.77.12, verificado contra una descarga real antes de fijarlo aqui (primera publicacion de un contador total_increasing tambien blindada)
         "files": [
             "main.py", "battery_plugin.py", "battery_exec.py", "anomaly_store.py",
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",
