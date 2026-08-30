@@ -66,6 +66,25 @@ DEFAULT_TARGET_HUMIDITY = 45.0
 DEFAULT_MIN_HUMIDITY = 20.0
 DEFAULT_MAX_HUMIDITY = 80.0
 
+# Extractor de vapor (baño): a diferencia del humidificador/deshumidificador
+# de arriba (un delegado con SU PROPIA histeresis, aqui solo se le manda un
+# objetivo y se confia en el), un extractor es un actuador tonto -- switch.*
+# o fan.* sin ninguna logica propia, asi que la histeresis hay que
+# implementarla aqui: enciende al llegar a `extractor_humidity_threshold`,
+# apaga al bajar de threshold - `extractor_dead_band`, y se queda como esta
+# entre medias. Deliberadamente INDEPENDIENTE del hvac_mode/pausa por
+# ventana de la zona (un extractor de baño tiene que poder ventilar el
+# vapor de una ducha aunque la zona este con la climatizacion apagada) --
+# ver `_extractor_desired_on`/`_drive_extractor` en zone_runner.py. Requiere
+# `humidity_sensor` declarado; sin el, estos actuadores simplemente nunca
+# se encienden solos.
+CONF_EXTRACTOR_SWITCHES = "extractor_switches"
+CONF_EXTRACTOR_FANS = "extractor_fans"
+CONF_EXTRACTOR_HUMIDITY_THRESHOLD = "extractor_humidity_threshold"
+CONF_EXTRACTOR_DEAD_BAND = "extractor_dead_band"
+DEFAULT_EXTRACTOR_HUMIDITY_THRESHOLD = 65.0
+DEFAULT_EXTRACTOR_DEAD_BAND = 5.0
+
 # Presets con nombre en vez de horario (ver presets.py: se elimino la
 # franja horaria fija a proposito — no sabe si hay alguien de verdad en
 # la habitacion). "Nombre: temperatura, Nombre: temperatura..." declarado

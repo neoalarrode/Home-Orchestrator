@@ -207,6 +207,29 @@
       <label for="zf-humidifiers">Humidificadores/deshumidificadores (opcional)</label>
       <input id="zf-humidifiers" placeholder="humidifier.salon">
 
+      <p class="help" style="margin-top:14px">Extractor de vapor (opcional) — a diferencia de arriba, no es un delegado inteligente: se enciende/apaga aquí por umbral de humedad, sea cual sea el modo de la zona (incluso apagada).</p>
+      <div class="grid2">
+        <div>
+          <label for="zf-extractor-switches">Switches extractores</label>
+          <input id="zf-extractor-switches" placeholder="switch.extractor_bano">
+        </div>
+        <div>
+          <label for="zf-extractor-fans">Ventiladores extractores (fan.*)</label>
+          <input id="zf-extractor-fans" placeholder="fan.extractor_bano">
+        </div>
+      </div>
+      <div class="grid2">
+        <div>
+          <label for="zf-extractor-threshold">Enciende a partir de (% humedad)</label>
+          <input id="zf-extractor-threshold" type="number" step="1" value="65">
+        </div>
+        <div>
+          <label for="zf-extractor-dead-band">Zona muerta (%)</label>
+          <input id="zf-extractor-dead-band" type="number" step="1" value="5">
+          <p class="help">Apaga al bajar de (umbral − zona muerta). Con los valores de ejemplo: enciende al 65%, apaga al 60%.</p>
+        </div>
+      </div>
+
       <p class="help" style="margin-top:14px">Presencia y ventanas (opcional).</p>
       <div class="grid2">
         <div>
@@ -681,6 +704,10 @@ function readZoneForm() {
     cool_switches: csvToList("zf-cool"),
     climate_entities: csvToList("zf-climate"),
     humidifier_entities: csvToList("zf-humidifiers"),
+    extractor_switches: csvToList("zf-extractor-switches"),
+    extractor_fans: csvToList("zf-extractor-fans"),
+    extractor_humidity_threshold: parseFloat(document.getElementById("zf-extractor-threshold").value) || 65,
+    extractor_dead_band: parseFloat(document.getElementById("zf-extractor-dead-band").value) || 5,
     presence_entities: csvToList("zf-presence"),
     door_window_entities: csvToList("zf-doors"),
     auto_window_detection: document.getElementById("zf-auto-window").checked,
@@ -708,6 +735,10 @@ function fillZoneForm(cfg) {
   document.getElementById("zf-cool").value = listToCsv(cfg.cool_switches);
   document.getElementById("zf-climate").value = listToCsv(cfg.climate_entities);
   document.getElementById("zf-humidifiers").value = listToCsv(cfg.humidifier_entities);
+  document.getElementById("zf-extractor-switches").value = listToCsv(cfg.extractor_switches);
+  document.getElementById("zf-extractor-fans").value = listToCsv(cfg.extractor_fans);
+  document.getElementById("zf-extractor-threshold").value = cfg.extractor_humidity_threshold ?? 65;
+  document.getElementById("zf-extractor-dead-band").value = cfg.extractor_dead_band ?? 5;
   document.getElementById("zf-presence").value = listToCsv(cfg.presence_entities);
   document.getElementById("zf-doors").value = listToCsv(cfg.door_window_entities);
   document.getElementById("zf-auto-window").checked = !!cfg.auto_window_detection;

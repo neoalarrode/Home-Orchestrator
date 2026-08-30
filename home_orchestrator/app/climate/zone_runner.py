@@ -36,6 +36,10 @@ from .const import (
     CONF_DEADBAND,
     CONF_DOOR_WINDOW_ENTITIES,
     CONF_DRY_HUMIDITY_THRESHOLD,
+    CONF_EXTRACTOR_DEAD_BAND,
+    CONF_EXTRACTOR_FANS,
+    CONF_EXTRACTOR_HUMIDITY_THRESHOLD,
+    CONF_EXTRACTOR_SWITCHES,
     CONF_FORECAST_REFRESH_MINUTES,
     CONF_HEAT_SWITCHES,
     CONF_HISTORY_DAYS_FOR_INERTIA,
@@ -60,6 +64,8 @@ from .const import (
     CONF_WEATHER_ENTITY,
     DEFAULT_DEADBAND,
     DEFAULT_DRY_HUMIDITY_THRESHOLD,
+    DEFAULT_EXTRACTOR_DEAD_BAND,
+    DEFAULT_EXTRACTOR_HUMIDITY_THRESHOLD,
     DEFAULT_FORECAST_REFRESH_MINUTES,
     DEFAULT_HISTORY_DAYS_FOR_INERTIA,
     DEFAULT_MAX_HUMIDITY,
@@ -260,6 +266,14 @@ class ZoneRunner:
         self._delegate_overshoot_strikes: dict[str, int] = {}
         self._delegate_needs_explicit_off: set[str] = set()
         self._last_active_hvac_mode: str | None = self.hvac_mode if self.hvac_mode != "off" else None
+        # Histeresis del extractor de vapor -- a diferencia de
+        # `_delegate_*`/preset/modo, no se restaura tras un reinicio del
+        # plugin: arranca en False y se ratchetea sola al valor real en el
+        # primer ciclo salvo que la humedad este justo dentro de la zona
+        # muerta, en cuyo caso tarda un ciclo mas en detectar que deberia
+        # seguir encendido -- riesgo bajo, un extractor fisico normalmente
+        # no sigue encendido mucho rato tras un reinicio del addon.
+        self._extractor_active = False
 
         self._temp_ema = ema_module.Ema(TEMP_EMA_HALFLIFE_SECONDS)
         self._sensor_stale = False
@@ -377,6 +391,7 @@ class ZoneRunner:
             "equipment_failure_suspected": self._equipment_failure_suspected,
             "zone_power_w": zone_power_w,
             "zone_power_breakdown": zone_power_breakdown,
+            "extractor_active": self._extractor_active,
             "climate_orchestrator_zone": True,
             **{f"grid_{k}": v for k, v in grid_signal.read(self.ws).items() if k != "forecast"},
             "tpi_heat_on_percent": self._last_heat_on_percent,
@@ -1167,6 +1182,11 @@ class ZoneRunner:
 
         humidify_active = self.hvac_mode != "off" and not force_off
         self._drive_humidifiers(humidify_active)
+        # El extractor va DELIBERADAMENTE fuera de la comprobacion de arriba
+        # (hvac_mode/force_off): es un actuador de ventilacion de baño, no de
+        # confort termico -- tiene que poder seguir ventilando vapor aunque
+        # la zona este apagada o en pausa por ventana. Ver const.py.
+        self._drive_extractor(self._extractor_desired_on())
 
         self._maybe_publish_state()
 
@@ -1467,6 +1487,44 @@ class ZoneRunner:
                     self.ws.call_service("humidifier", "set_humidity", service_data={"humidity": self.target_humidity}, target={"entity_id": entity_id})
             elif state is not None and state.get("state") != "off":
                 self.ws.call_service("humidifier", "turn_off", target={"entity_id": entity_id})
+
+    def _extractor_desired_on(self) -> bool:
+        """Histeresis simple anclada en el umbral: enciende al llegar o
+        superar `extractor_humidity_threshold`, apaga al bajar de
+        threshold - `extractor_dead_band`, se queda como esta entre medias.
+        Sin lectura de humedad (sin sensor declarado, o sensor caido) se
+        conserva el ultimo estado conocido -- no tiene sentido apagar a
+        ciegas un extractor que puede seguir haciendo falta."""
+        if not (self.zone.get(CONF_EXTRACTOR_SWITCHES) or self.zone.get(CONF_EXTRACTOR_FANS)):
+            return False
+        if self.current_humidity is None:
+            return self._extractor_active
+        threshold = float(self.zone.get(CONF_EXTRACTOR_HUMIDITY_THRESHOLD, DEFAULT_EXTRACTOR_HUMIDITY_THRESHOLD))
+        dead_band = float(self.zone.get(CONF_EXTRACTOR_DEAD_BAND, DEFAULT_EXTRACTOR_DEAD_BAND))
+        if self.current_humidity >= threshold:
+            self._extractor_active = True
+        elif self.current_humidity <= threshold - dead_band:
+            self._extractor_active = False
+        return self._extractor_active
+
+    def _drive_extractor(self, active: bool) -> None:
+        simulate = bool(self.zone.get(CONF_SIMULATE, True))
+        if simulate:
+            return
+        for entity_id in self.zone.get(CONF_EXTRACTOR_SWITCHES) or []:
+            state = self._get_state(entity_id)
+            if active:
+                if state is None or state.get("state") != "on":
+                    self.ws.call_service("switch", "turn_on", target={"entity_id": entity_id})
+            elif state is not None and state.get("state") != "off":
+                self.ws.call_service("switch", "turn_off", target={"entity_id": entity_id})
+        for entity_id in self.zone.get(CONF_EXTRACTOR_FANS) or []:
+            state = self._get_state(entity_id)
+            if active:
+                if state is None or state.get("state") != "on":
+                    self.ws.call_service("fan", "turn_on", target={"entity_id": entity_id})
+            elif state is not None and state.get("state") != "off":
+                self.ws.call_service("fan", "turn_off", target={"entity_id": entity_id})
 
     # ---------------------------------------------------------- comandos --
 

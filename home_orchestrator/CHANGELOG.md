@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.4
+
+**Climate: control de extractor de vapor de baño (plugin Climate 0.5.0).**
+
+Nueva pareja de campos por zona, aparte de los actuadores de climatización: `extractor_switches` (`switch.*`) y `extractor_fans` (`fan.*`). A diferencia del humidificador/deshumidificador (un delegado con su propia inteligencia, al que solo se le manda un objetivo), un extractor es un actuador tonto — la histéresis hay que implementarla aquí: enciende al llegar a `extractor_humidity_threshold` (65% por defecto), apaga al bajar de threshold − `extractor_dead_band` (5% por defecto), y no toca nada entre medias.
+
+Deliberadamente independiente del `hvac_mode`/pausa por ventana de la zona — un extractor de baño tiene que poder ventilar el vapor de una ducha aunque la climatización esté apagada. Requiere `humidity_sensor` declarado; sin él, estos actuadores nunca se encienden solos. Nuevo atributo de diagnóstico `extractor_active`.
+
 ## 0.77.3
 
 **TP-Link/Tapo: descubrimiento automático y reconexión automática por DHCP (plugin TP-Link 0.2.0).**
