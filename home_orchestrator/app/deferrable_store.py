@@ -32,6 +32,19 @@ MAX_SESSIONS = 12  # activaciones pasadas guardadas, para la mediana de energia
 # "activa" en disco).
 MAX_ACCUMULATE_GAP_SECONDS = 300
 
+# BUG REAL, confirmado en produccion: una activacion registro 5406.9
+# minutos (90 horas) de duracion para el Lavavajillas -- con solo 311 Wh
+# medidos en todo ese tiempo (~3.4W de media, consumo de reposo, no de un
+# ciclo de lavado de verdad). `end_session` no comprobaba la duracion en
+# absoluto, solo que la energia fuera > 1 Wh -- una sola muestra asi
+# contamina para siempre la mediana que usa `get_estimated_duration_hours`
+# (con una unica muestra en el historico, la mediana ES esa muestra). Ni
+# una lavadora ni un lavavajillas tienen un programa de mas de unas pocas
+# horas; una activacion mas larga que esto no es un ciclo real, es una
+# ventana que nunca se cerro bien (p.ej. tras un reinicio del addon con
+# una sesion que se quedo "activa" en disco).
+MAX_PLAUSIBLE_SESSION_MINUTES = 360  # 6h, generoso para cualquier programa domestico real
+
 _lock = threading.RLock()
 
 
@@ -183,7 +196,11 @@ def end_session(load_id: str, now: datetime) -> float | None:
     sess["active_energy_wh"] = 0.0
     sess["no_surplus_streak"] = 0
     sess["last_accumulate_ts"] = None
-    if energy > 1:  # ignora sesiones vacias/ruido de sensor
+    # `energy > 1` ignora sesiones vacias/ruido de sensor; el tope de
+    # duracion ignora una ventana que nunca se cerro a tiempo -- ver
+    # MAX_PLAUSIBLE_SESSION_MINUTES. Ambos deben cumplirse para que la
+    # muestra sea real y merezca entrar en el historico.
+    if energy > 1 and duration_min <= MAX_PLAUSIBLE_SESSION_MINUTES:
         history_wh = sess.setdefault("history_wh", [])
         history_min = sess.setdefault("history_minutes", [])
         history_wh.append(round(energy))

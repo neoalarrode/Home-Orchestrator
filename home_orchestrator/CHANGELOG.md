@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.10
+
+**Una sesión corrupta de 90 horas dejó el Lavavajillas sin programarse nunca más.**
+
+Confirmado en producción: una activación quedó registrada con 5406,9 minutos de duración (90 horas) y solo 311 Wh medidos (~3,4 W de media — consumo de reposo, no un ciclo de lavado real). `end_session` no comprobaba la duración, solo que la energía fuera > 1 Wh, así que esa única muestra contaminó para siempre la mediana (`get_estimated_duration_hours`). Con una duración estimada de 90h, la ventana que reserva la carga (91h redondeando hacia arriba) supera cualquier horizonte de planificación posible — el planificador nunca encontraba hueco y la carga llevaba semanas sin programarse (`schedule: null`) sin ningún aviso.
+
+Ahora `end_session` también descarta una activación de más de 6 horas (generoso para cualquier programa doméstico real) antes de guardarla en el histórico. Limpiada la muestra corrupta ya guardada.
+
 ## 0.77.9
 
 **Una zona sin ningún actuador de calor/frío/humidificador declarado se quedaba "no disponible" para siempre (plugin Climate 0.6.1).**
