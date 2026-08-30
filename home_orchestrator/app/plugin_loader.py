@@ -198,10 +198,10 @@ PLUGIN_CATALOG = {
     "battery": {
         "name": "Energy Orchestrator",
         "description": "Baterías, solar y cargas diferibles — carga y descarga adaptativa por precio, sol y consumo real",
-        "version": "0.11.93",
+        "version": "0.11.94",
         "downloadable": True,
-        "tag": "v0.77.1",
-        "sha256": "23b0d4fbac1a37a26232de851fbceb998884a12d7637ca19969510d3c1fb6ecd",  # sha256 real del tarball de v0.77.1, verificado contra una descarga real antes de fijarlo aqui (el camino de Cloud tambien respeta al dueño del grupo: en modo hibrido la esclava se quedaba la potencia y el contador de carga se paraba)
+        "tag": "v0.77.5",
+        "sha256": "8b60ac3f300f0ef1ad73cca96fb26729a5e46130f3e698a47d1dc0eec1463e66",  # sha256 real del tarball de v0.77.5, verificado contra una descarga real antes de fijarlo aqui (history_store guardaba la prevision de carga en vez del consumo real, inflando ~2x el backfill del Panel de Energia; arrastra tambien v0.77.2-v0.77.4, sin re-pinear hasta ahora)
         "files": [
             "main.py", "battery_plugin.py", "battery_exec.py", "anomaly_store.py",
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",

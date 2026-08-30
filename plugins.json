@@ -8,10 +8,10 @@
       "description": "Baterias, solar y cargas diferibles -- carga y descarga adaptativa por precio, sol y consumo real",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.11.93",
+      "version": "0.11.94",
       "downloadable": true,
-      "tag": "v0.77.1",
-      "sha256": "23b0d4fbac1a37a26232de851fbceb998884a12d7637ca19969510d3c1fb6ecd",
+      "tag": "v0.77.5",
+      "sha256": "8b60ac3f300f0ef1ad73cca96fb26729a5e46130f3e698a47d1dc0eec1463e66",
       "files": [
         "main.py",
         "battery_plugin.py",
