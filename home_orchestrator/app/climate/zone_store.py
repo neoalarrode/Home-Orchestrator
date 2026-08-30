@@ -48,6 +48,7 @@ DEFAULT_ZONE_CONFIG = {
     "target_humidity": 45,
     "priority": "confort",
     "simulate": True,
+    "expose_to_ha": True,
     "min_on_seconds": 300,
     "min_off_seconds": 300,
     "tpi_cycle_minutes": 15,

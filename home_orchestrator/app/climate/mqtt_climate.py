@@ -28,10 +28,15 @@ log = logging.getLogger("climate.mqtt")
 
 
 class MqttClimateZone:
-    def __init__(self, mqtt_client, zone_id: str, zone: dict) -> None:
+    def __init__(self, mqtt_client, zone_id: str, zone: dict, enabled: bool = True) -> None:
         self._mqtt = mqtt_client
         self.zone_id = zone_id
         self.zone_name = zone.get("name") or zone_id
+        # Si la zona no se expone a HA (ver CONF_EXPOSE_TO_HA), este objeto
+        # sigue existiendo (ZoneRunner necesita algo a lo que llamar
+        # publish_state cada ciclo) pero cada metodo se convierte en un
+        # no-op -- mas simple que esparcir el `if` en cada sitio que llama.
+        self._enabled = enabled
         self._base = f"{DISCOVERY_PREFIX}/climate/{NODE_ID}/{zone_id}"
         self._runner = None  # asignado por ClimatePlugin tras crear el ZoneRunner (dependencia circular si no)
         # Ver `_dispatch` y ha_mqtt.MqttCommandWorker.
@@ -74,6 +79,8 @@ class MqttClimateZone:
     # ---------------------------------------------------------- discovery -
 
     def publish_discovery(self, min_temp: float, max_temp: float) -> None:
+        if not self._enabled:
+            return
         t = self._base
         # `modes`/`fan_modes`: los REALES de la zona (ver ZoneRunner.hvac_modes/
         # .fan_modes), no una lista fija -- bug real, confirmado en produccion:
@@ -165,12 +172,17 @@ class MqttClimateZone:
 
     def remove_discovery(self) -> None:
         """Retira la entidad de HA (payload de config vacio, ver
-        convencion de MQTT Discovery) -- para cuando se borra una zona."""
+        convencion de MQTT Discovery) -- para cuando se borra una zona, o
+        cuando una zona existente desactiva CONF_EXPOSE_TO_HA (hay que
+        RETIRAR lo que ya se habia publicado, no basta con dejar de
+        publicar cosas nuevas)."""
         self._mqtt.publish(f"{self._base}/config", "", retain=True)
 
     # ------------------------------------------------------------ estado --
 
     def publish_state(self, runner) -> None:
+        if not self._enabled:
+            return
         t = self._base
         self._mqtt.publish(f"{t}/availability", "online" if runner.available else "offline", retain=True)
         self._mqtt.publish(f"{t}/mode/state", runner.hvac_mode, retain=True)

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.8
+
+**Climate: control de extractor independiente de la temperatura, y exposición a HA opcional (plugin Climate 0.6.0).**
+
+El extractor de vapor (v0.77.4) estaba atado sin necesidad a que la zona tuviera lectura de temperatura válida — una zona pensada solo para humedad/extractor (sin calor/frío) se quedaba "no disponible" y el extractor nunca se evaluaba, aunque su sensor de humedad funcionase perfectamente. Ahora el extractor se evalúa ANTES de comprobar la temperatura: humedad y temperatura son capacidades independientes de una zona Climate, no una condición de la otra.
+
+Nuevo campo por zona, `expose_to_ha` (activado por defecto, no cambia ninguna zona existente): controla si la zona publica su `climate.*` por MQTT Discovery. Pensado para una zona sin calor/frío real, donde un termostato que solo puede estar "Apagado" no aporta nada en HA — el resto de la lógica (extractor incluido) funciona igual, exponerlo o no es cosmético.
+
 ## 0.77.7
 
 **Límite de sensatez en los contadores publicados (`monotonic_sensor.py`): un salto imposible entre dos ciclos ya no se publica.**

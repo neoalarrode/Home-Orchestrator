@@ -152,6 +152,16 @@ CONF_HISTORY_DAYS_FOR_INERTIA = "history_days_for_inertia"
 CONF_FORECAST_REFRESH_MINUTES = "forecast_refresh_minutes"
 CONF_SIMULATE = "simulate"                     # modo simulacion: calcula y muestra, nunca actua de verdad
 
+# Exponer la zona a HA (climate.* por MQTT Discovery) es el comportamiento
+# de siempre y sigue siendolo por defecto -- pero no toda zona tiene una
+# entidad de termostato que tenga sentido mostrar (p.ej. una zona de solo
+# humedad/extractor, sin capacidad de calor/frio: un climate.* que solo
+# puede estar "off" no aporta nada en el Panel de HA). Desactivable por
+# zona para ese caso, sin tocar el comportamiento de ninguna zona ya
+# existente (por eso el default es True).
+CONF_EXPOSE_TO_HA = "expose_to_ha"
+DEFAULT_EXPOSE_TO_HA = True
+
 # Deteccion de ventana/puerta abierta SIN sensor dedicado (ver
 # window_algorithm.py) — RESPALDO opcional (desactivado por defecto, no
 # cambia nada en una zona existente hasta que se active a proposito) de

@@ -305,6 +305,12 @@
       </div>
       <p class="help warn" id="zf-simulate-warn" style="display:none;color:var(--red)">⚠ Con la simulación desactivada esta zona accionará switches/climates reales en cuanto se guarde.</p>
 
+      <div class="checkline">
+        <input type="checkbox" id="zf-expose-to-ha" checked>
+        <label for="zf-expose-to-ha">Exponer un termostato (climate.*) a Home Assistant</label>
+      </div>
+      <p class="help">Desactívalo si la zona no tiene calor/frío de verdad (p.ej. solo humedad/extractor) y un termostato que solo puede estar "Apagado" no aporta nada — el extractor y el resto de la lógica siguen funcionando igual, solo deja de aparecer la entidad en HA.</p>
+
       <div class="actions">
         <button type="submit" id="zf-submit-btn">Crear zona</button>
         <button type="button" class="ghost" onclick="cancelZoneForm()">Cancelar</button>
@@ -722,6 +728,7 @@ function readZoneForm() {
     home_power_sensor: document.getElementById("zf-home-power").value.trim(),
     max_power_w: parseFloat(document.getElementById("zf-max-power").value) || 0,
     simulate: document.getElementById("zf-simulate").checked,
+    expose_to_ha: document.getElementById("zf-expose-to-ha").checked,
   };
 }
 
@@ -753,6 +760,7 @@ function fillZoneForm(cfg) {
   document.getElementById("zf-home-power").value = cfg.home_power_sensor || "";
   document.getElementById("zf-max-power").value = cfg.max_power_w ?? 0;
   document.getElementById("zf-simulate").checked = cfg.simulate !== false;
+  document.getElementById("zf-expose-to-ha").checked = cfg.expose_to_ha !== false;
 }
 
 function editZone(id) {

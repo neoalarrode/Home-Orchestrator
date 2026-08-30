@@ -1003,6 +1003,14 @@ class ZoneRunner:
             self.temp_history.append(current_temp)
         humidity = self._read_humidity_now()
         self.current_humidity = round(humidity) if humidity is not None else None
+        # El extractor va ANTES del corte por falta de temperatura a
+        # proposito: humedad y temperatura son dos capacidades
+        # independientes de la zona (Climate no es solo calor/frio) -- una
+        # zona sin sensor de temperatura declarado (solo humedad +
+        # extractor, p.ej. un bano sin calefaccion propia) no tiene por
+        # que quedarse "no disponible" ni dejar de ventilar solo porque no
+        # hay nada que climatizar termicamente ahi.
+        self._drive_extractor(self._extractor_desired_on())
         if current_temp is None:
             self.available = False
             sensor = self.zone.get(CONF_CURRENT_TEMP_SENSOR) or "(sin sensor declarado)"
@@ -1182,11 +1190,9 @@ class ZoneRunner:
 
         humidify_active = self.hvac_mode != "off" and not force_off
         self._drive_humidifiers(humidify_active)
-        # El extractor va DELIBERADAMENTE fuera de la comprobacion de arriba
-        # (hvac_mode/force_off): es un actuador de ventilacion de baño, no de
-        # confort termico -- tiene que poder seguir ventilando vapor aunque
-        # la zona este apagada o en pausa por ventana. Ver const.py.
-        self._drive_extractor(self._extractor_desired_on())
+        # El extractor ya se evaluo mas arriba, ANTES incluso de saber si
+        # hay temperatura disponible -- ver el comentario junto a esa
+        # llamada. No repetir aqui.
 
         self._maybe_publish_state()
 

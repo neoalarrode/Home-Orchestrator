@@ -35,7 +35,7 @@ REACTIVE_MIN_INTERVAL_SECONDS = 5
 class ClimatePlugin(Plugin):
     slug = "climate"
     name = "Climate Orchestrator"
-    version = "0.5.0"
+    version = "0.6.0"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
@@ -309,7 +309,7 @@ class ClimatePlugin(Plugin):
         state = zone.get("state") or None
         all_zone_configs = [z["config"] for z in zone_store.load_zones()]
 
-        mqtt_zone = MqttClimateZone(self._mqtt, zone_id, cfg)
+        mqtt_zone = MqttClimateZone(self._mqtt, zone_id, cfg, enabled=cfg.get("expose_to_ha", True))
         runner = ZoneRunner(zone_id, cfg, self._ws, mqtt_zone, all_zone_configs, state=state, bridges=self)
         # Un comando llegado por MQTT persiste el estado igual que el endpoint
         # HTTP equivalente (`_zone_command`) -- antes solo lo hacia el HTTP, asi
