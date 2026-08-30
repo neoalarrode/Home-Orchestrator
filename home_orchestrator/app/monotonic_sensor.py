@@ -82,11 +82,17 @@ def _save(data: dict) -> None:
     os.replace(tmp, STORE_PATH)
 
 
-def publishable(entity_id: str, total: float) -> float:
+def publishable(entity_id: str, total: float, get_known_ha_state=None) -> float:
     """Valor que se puede publicar como `total_increasing` sin mentirle a HA.
 
     `total` es el acumulado interno, que puede corregirse a la baja. Lo que
     sale de aqui solo sube.
+
+    `get_known_ha_state`, si se pasa, es una funcion SIN argumentos que lee
+    el estado que HA ya tiene para `entity_id` (una llamada de red) --
+    deliberadamente perezosa: solo se invoca en la rama de "primera vez" de
+    abajo, nunca en un ciclo normal, para no pagar una llamada extra por
+    ciclo cuando no hace ninguna falta.
     """
     if total is None:
         return total
@@ -97,9 +103,36 @@ def publishable(entity_id: str, total: float) -> float:
         publicado = float(estado.get("published") or 0.0)
 
         if anterior_total is None:
-            # Primera vez: se arranca desde el total actual, sin inventar
-            # historia previa.
-            publicado = float(total)
+            # BUG REAL, confirmado en produccion: esta rama ("primera vez que
+            # se ve esta entidad, sin `last_total` en el fichero") no
+            # comprobaba nada -- publicaba `total` tal cual, sin ningun
+            # blindaje, justo la unica rama de esta funcion sin red de
+            # seguridad. Si `total` llega mal por la razon que sea (un fichero
+            # de acumulado propio corrupto o resincronizado a destiempo, una
+            # edicion manual a medias...) ese valor malo se acepta como
+            # arranque legitimo y HA lo integra igual que cualquier otro
+            # salto -- el mismo "+N kWh fantasma" que el resto del modulo
+            # existe para evitar, solo que sin ninguna comprobacion posible
+            # porque no habia con que comparar.
+            #
+            # Ahora, si el llamante puede decirnos lo que HA YA tiene
+            # registrado para esta entidad, se usa como suelo de sensatez:
+            # partir de mucho mas abajo que lo que HA ya sabe (un
+            # `total_increasing` real) es la misma señal de alarma que un
+            # salto entre dos ciclos, aunque sea la primera vez que la vemos.
+            known = get_known_ha_state() if get_known_ha_state is not None else None
+            if known is not None and float(total) < float(known) - MAX_PLAUSIBLE_DELTA_KWH:
+                log.warning(
+                    "%s: primera vez que se publica, pero el acumulado interno (%.3f) esta muy "
+                    "por debajo de lo que HA ya tiene registrado (%.3f) -- se descarta como dato "
+                    "de arranque poco fiable y se parte del valor que ya conoce HA, no del interno.",
+                    entity_id, float(total), float(known),
+                )
+                publicado = float(known)
+            else:
+                # Primera vez de verdad (o el interno ya es plausible): se
+                # arranca desde el total actual, sin inventar historia previa.
+                publicado = float(total)
         else:
             delta = float(total) - float(anterior_total)
             if delta > MAX_PLAUSIBLE_DELTA_KWH:

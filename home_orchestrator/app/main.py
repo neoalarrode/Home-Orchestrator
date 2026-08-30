@@ -1060,7 +1060,10 @@ def run_cycle():
         _publish_sensor_throttled(
             "sensor.battery_orchestrator_grid_imported_energy",
             round(monotonic_sensor.publishable(
-                "sensor.battery_orchestrator_grid_imported_energy", grid_totals["imported_kwh"]), 3),
+                "sensor.battery_orchestrator_grid_imported_energy", grid_totals["imported_kwh"],
+                get_known_ha_state=lambda: ha_client.get_numeric_state(
+                    "sensor.battery_orchestrator_grid_imported_energy", default=None),
+            ), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "friendly_name": "Battery Orchestrator Energía importada de red",
@@ -1069,7 +1072,10 @@ def run_cycle():
         _publish_sensor_throttled(
             "sensor.battery_orchestrator_grid_exported_energy",
             round(monotonic_sensor.publishable(
-                "sensor.battery_orchestrator_grid_exported_energy", grid_totals["exported_kwh"]), 3),
+                "sensor.battery_orchestrator_grid_exported_energy", grid_totals["exported_kwh"],
+                get_known_ha_state=lambda: ha_client.get_numeric_state(
+                    "sensor.battery_orchestrator_grid_exported_energy", default=None),
+            ), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "friendly_name": "Battery Orchestrator Energía vertida a red",
@@ -1352,7 +1358,10 @@ def run_cycle():
         _publish_sensor_throttled(
             "sensor.battery_orchestrator_energy_charged",
             round(monotonic_sensor.publishable(
-                "sensor.battery_orchestrator_energy_charged", totals["charged_wh"] / 1000), 3),
+                "sensor.battery_orchestrator_energy_charged", totals["charged_wh"] / 1000,
+                get_known_ha_state=lambda: ha_client.get_numeric_state(
+                    "sensor.battery_orchestrator_energy_charged", default=None),
+            ), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "since": totals["since"],
@@ -1362,7 +1371,10 @@ def run_cycle():
         _publish_sensor_throttled(
             "sensor.battery_orchestrator_energy_discharged",
             round(monotonic_sensor.publishable(
-                "sensor.battery_orchestrator_energy_discharged", totals["discharged_wh"] / 1000), 3),
+                "sensor.battery_orchestrator_energy_discharged", totals["discharged_wh"] / 1000,
+                get_known_ha_state=lambda: ha_client.get_numeric_state(
+                    "sensor.battery_orchestrator_energy_discharged", default=None),
+            ), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "since": totals["since"],
@@ -1527,7 +1539,10 @@ def _live_sensor_loop():
                 _publish_sensor_throttled(
                     "sensor.battery_orchestrator_solar_energy",
                     round(monotonic_sensor.publishable(
-                        "sensor.battery_orchestrator_solar_energy", total["wh"] / 1000), 3),
+                        "sensor.battery_orchestrator_solar_energy", total["wh"] / 1000,
+                        get_known_ha_state=lambda: ha_client.get_numeric_state(
+                            "sensor.battery_orchestrator_solar_energy", default=None),
+                    ), 3),
                     {
                         "device_class": "energy", "state_class": "total_increasing",
                         "unit_of_measurement": "kWh", "since": total["since"],

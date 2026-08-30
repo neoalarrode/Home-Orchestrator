@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.12
+
+**Blindaje adicional: la primera publicación de un contador `total_increasing` tampoco se fiaba de nada (plugin Energy 0.11.98).**
+
+Confirmado como hueco real tras revisar el incidente de la noche del 30/08 (un salto fantasma de varios miles de kWh en importación/exportación de red, carga/descarga de batería y solar, todos en la misma hora): `monotonic_sensor.publishable()` tenía una rama — "primera vez que se ve esta entidad" — sin ninguna comprobación de sensatez, a diferencia de cualquier otro caso del módulo. Si el acumulado interno llega mal en ese instante concreto (fichero propio corrupto, resincronización manual a medio hacer, lo que sea), se publicaba tal cual, con el mismo "kWh fantasma" que el resto del módulo existe para evitar.
+
+Ahora, en esa rama, si el llamante puede decir lo que HA ya tiene registrado para esa entidad, un `total` muy por debajo de eso se descarta como dato de arranque poco fiable y se parte del valor que ya conoce HA. Aplicado a los 5 contadores de energía del panel (importación, exportación, carga, descarga, solar).
+
 ## 0.77.11
 
 **El WebSocket de HA no se recuperaba solo tras un reinicio de Home Assistant — se quedaba reconectando en bucle para siempre (`ha_websocket.py`, núcleo).**
