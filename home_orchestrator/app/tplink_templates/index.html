@@ -67,13 +67,13 @@
 </div>
 
 <div class="card">
-  <h2><span>Escanear la red</span> <span class="hint">solo informativo — tú decides si añadir alguno</span></h2>
-  <p class="help">Envía un broadcast a la LAN y espera unos segundos las respuestas — no es un listener permanente, pulsa "Escanear" cada vez que quieras ver qué hay.</p>
+  <h2><span>Detectados en la red</span> <span class="hint">solo informativo — tú decides si añadir alguno</span></h2>
+  <p class="help">Se escanea la LAN solo, cada pocos minutos, sin que tengas que pulsar nada — esta lista también es lo que se usa para reconectar automáticamente a un dispositivo ya dado de alta si le cambia la IP (renovación de DHCP). Si acabas de enchufar algo y tienes prisa, "Escanear ahora" lo adelanta.</p>
   <div class="actions">
     <button type="button" id="scan-btn" onclick="scanNow()">Escanear ahora</button>
   </div>
   <div id="discovered-grid" class="device-grid" style="margin-top:14px"></div>
-  <div id="discovered-empty" class="empty" style="display:none">Nada visto todavía — pulsa "Escanear ahora".</div>
+  <div id="discovered-empty" class="empty" style="display:none">Nada visto todavía.</div>
 </div>
 
 <div class="card">
@@ -221,6 +221,14 @@ function renderDiscovered(devices) {
     </div>`).join("");
 }
 
+async function loadDiscovered() {
+  try {
+    const r = await fetch(`${API}/discovered`);
+    lastDiscovered = await r.json();
+    renderDiscovered(lastDiscovered);
+  } catch (e) { /* red temporalmente caida */ }
+}
+
 async function scanNow() {
   const btn = document.getElementById("scan-btn");
   btn.disabled = true; btn.textContent = "Escaneando…";
@@ -304,9 +312,11 @@ async function submitDeviceForm(ev) {
 loadDevices();
 loadStatus();
 loadAccount();
+loadDiscovered();
 renderPluginSwitch("tplink");
 setInterval(loadDevices, 8000);
 setInterval(loadStatus, 8000);
+setInterval(loadDiscovered, 15000);
 </script>
 </body>
 </html>

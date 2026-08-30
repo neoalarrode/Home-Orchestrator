@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.77.3
+
+**TP-Link/Tapo: descubrimiento automático y reconexión automática por DHCP (plugin TP-Link 0.2.0).**
+
+El plugin dependía por completo de que el usuario pulsara "Escanear" — sin eso, un dispositivo que aún no estaba dado de alta no aparecía nunca solo, y uno ya dado de alta al que el router le cambiaba la IP se quedaba desconectado para siempre, sin ningún mecanismo para volver a localizarlo (a diferencia de Tuya, que sí reconecta solo cuando un dispositivo se anuncia).
+
+`python-kasa` no tiene un anuncio periódico que escuchar de forma pasiva (a diferencia del protocolo LAN de Tuya) — su descubrimiento es siempre un escaneo activo por broadcast. Así que "automático" aquí es repetir ese mismo escaneo cada 5 minutos en segundo plano, sin que el usuario tenga que pulsar nada: alimenta una nueva lista pasiva (`GET /api/discovered`, igual que Tuya) además del botón "Escanear ahora", y de paso cruza la MAC (estable, no cambia con la IP) de cada dispositivo ya dado de alta y desconectado contra lo que ese escaneo encuentra — si aparece en otra IP, se reconecta solo y se guarda la IP nueva en el almacén, sin intervención manual.
+
+Se retira de paso un hilo por dispositivo que se creaba en cada alta y no hacía nada (`_background_reconnect_watch`, un marcador que quedó huérfano de una refactorización anterior).
+
 ## 0.77.2
 
 **El histórico propio del add-on ya se puede consultar**, en `GET /api/energy/history`. Solo lee.

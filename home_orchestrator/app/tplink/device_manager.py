@@ -14,6 +14,18 @@ para tener un estado fresco, exactamente igual que hace el propio
 componente real: `timedelta(seconds=5)`, ver comentario ahi mismo). Este
 modulo hace lo mismo: un bucle de sondeo cada `POLL_INTERVAL_SECONDS`
 (mismo valor que HA), no un callback reactivo de verdad.
+
+Descubrimiento y actualizacion de IP por DHCP, a diferencia de Tuya: el
+protocolo de `python-kasa` no tiene un broadcast periodico que un
+dispositivo emita por su cuenta (no hay nada persistente que escuchar,
+ver `tplink_plugin.py`) -- es puramente ACTIVO, un broadcast de consulta
+que se manda y se espera respuesta unos segundos (`Discover.discover()`,
+ya usado por `discover()`/`_discover()` mas abajo). Asi que "descubrimiento
+automatico" aqui es repetir ESE MISMO escaneo cada cierto tiempo en vez de
+solo cuando el usuario pulsa el boton -- no un listener aparte -- y
+"actualizacion de IP por DHCP" es cruzar la MAC (estable, la misma pase lo
+que pase con la IP) de cada dispositivo ya dado de alta y desconectado
+contra lo que ese escaneo periodico encuentra, ver `rediscover_now()`.
 """
 
 from __future__ import annotations
@@ -36,6 +48,16 @@ POLL_INTERVAL_SECONDS = 5  # igual que TPLinkDataUpdateCoordinator de HA
 UNAVAILABLE_AFTER_SECONDS = POLL_INTERVAL_SECONDS * 6
 
 
+def _normalize_mac(mac: str | None) -> str | None:
+    """`device.mac` viene formateada con separadores ("AA:BB:...") y no
+    hay garantia de que dos lecturas del mismo dispositivo usen siempre el
+    mismo separador/caja -- normalizar es lo que hace que comparar dos MAC
+    para saber si son "el mismo aparato" sea fiable."""
+    if not mac:
+        return None
+    return mac.replace(":", "").replace("-", "").lower()
+
+
 class TplinkDeviceManager:
     """`on_any_change(device_id)`, si se da, se llama desde el hilo del
     event loop tras cada sondeo CON EXITO de cualquier dispositivo -- un
@@ -43,12 +65,28 @@ class TplinkDeviceManager:
     distinguir "cambio de verdad" de "sondeo sin novedad", asi que aqui
     se avisa siempre que el sondeo responde)."""
 
-    def __init__(self, on_any_change: Callable[[str], None] | None = None) -> None:
+    def __init__(
+        self,
+        on_any_change: Callable[[str], None] | None = None,
+        on_address_change: Callable[[str, str], None] | None = None,
+    ) -> None:
         self._on_any_change = on_any_change
+        # Persistir la IP nueva es cosa de la capa de arriba (tplink_plugin,
+        # que es quien conoce el almacen) -- mismo criterio que
+        # `on_address_change` de TuyaDeviceManager.
+        self._on_address_change = on_address_change
         self._devices: dict[str, Device] = {}
         # device_id -> time.time() del ultimo sondeo CON EXITO. Es la señal de
         # disponibilidad real (ver `connected`).
         self._last_poll_ok: dict[str, float] = {}
+        # device_id -> MAC normalizada, en cuanto se conoce (un sondeo o alta
+        # con exito). Es la clave que permite reconocer a un dispositivo ya
+        # dado de alta cuando reaparece en otra IP -- ver `rediscover_now()`.
+        self._known_macs: dict[str, str] = {}
+        # host -> info del ultimo escaneo (manual o periodico). Puramente
+        # informativo para la interfaz ("detectado en la red" sin que el
+        # usuario tenga que pulsar nada) -- ver `get_discovered_devices()`.
+        self._discovered: dict[str, dict] = {}
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_ready = threading.Event()
@@ -108,6 +146,7 @@ class TplinkDeviceManager:
                     continue
                 # Sondeo con exito: esta es la señal de disponibilidad real.
                 self._last_poll_ok[device_id] = time.time()
+                self._remember_mac(device_id, device)
                 if self._on_any_change:
                     try:
                         self._on_any_change(device_id)
@@ -137,6 +176,7 @@ class TplinkDeviceManager:
                     "model": device.model,
                     "device_type": str(device.device_type),
                     "needs_auth": not device.alias,
+                    "mac": _normalize_mac(getattr(device, "mac", None)),
                 }
             except Exception:
                 # Una camara Tapo (SMART.IPCAMERA) responde al broadcast
@@ -164,7 +204,89 @@ class TplinkDeviceManager:
         return {host: info for host, info in results if info is not None}
 
     def discover(self, credentials: Credentials | None) -> dict[str, dict]:
-        return self._run_coro(self._discover(credentials), timeout=30)
+        found = self._run_coro(self._discover(credentials), timeout=30)
+        with self._lock:
+            self._discovered = found
+        return found
+
+    def get_discovered_devices(self) -> dict[str, dict]:
+        """Snapshot de lo visto en el ultimo escaneo (manual o periodico) --
+        puramente informativo, mismo espiritu que
+        `TuyaDeviceManager.get_discovered_devices()`: el usuario decide si
+        añade algo, esto nunca lo hace por su cuenta."""
+        with self._lock:
+            return dict(self._discovered)
+
+    async def _reconnect_device(self, device_id: str, new_host: str, credentials: Credentials | None) -> None:
+        """Reapunta un dispositivo ya dado de alta a una IP nueva, tras
+        reconocerlo por MAC en un escaneo (ver `_reconcile_known_devices`).
+        A diferencia de Tuya (que reasigna `device.address` en el MISMO
+        objeto), un `Device` de `python-kasa` queda ligado a su host desde
+        que se construye -- no hay "reapuntar", hay que descubrir y conectar
+        uno nuevo en la IP nueva y sustituirlo."""
+        try:
+            device, primed = await self._discover_and_connect(new_host, credentials)
+        except Exception:
+            log.debug("TP-Link %s: fallo reconectando en %s", device_id, new_host, exc_info=True)
+            return
+        old_device = self._devices.get(device_id)
+        with self._lock:
+            self._devices[device_id] = device
+            if primed:
+                self._last_poll_ok[device_id] = time.time()
+            else:
+                self._last_poll_ok.pop(device_id, None)
+        if primed:
+            self._remember_mac(device_id, device)
+        if old_device is not None:
+            try:
+                await old_device.disconnect()
+            except Exception:
+                pass
+        log.info(
+            "TP-Link %s: localizado en %s (antes %s) -- reconectado automaticamente tras un "
+            "cambio de IP", device_id, new_host, getattr(old_device, "host", "?"),
+        )
+        if self._on_address_change:
+            try:
+                self._on_address_change(device_id, new_host)
+            except Exception:
+                log.exception("TP-Link %s: fallo guardando la IP nueva", device_id)
+
+    async def _reconcile_known_devices(self, found: dict[str, dict], credentials: Credentials | None) -> None:
+        """Cruza MAC de dispositivos ya dados de alta y desconectados contra
+        lo que un escaneo acaba de encontrar -- si alguno reaparece en una IP
+        distinta a la que tenemos, es una renovacion de DHCP, no un aparato
+        nuevo."""
+        for device_id, mac in list(self._known_macs.items()):
+            if self.connected(device_id):
+                continue
+            match_host = next((host for host, info in found.items() if info.get("mac") == mac), None)
+            if match_host is None:
+                continue
+            current = self._devices.get(device_id)
+            if current is not None and getattr(current, "host", None) == match_host:
+                continue
+            await self._reconnect_device(device_id, match_host, credentials)
+
+    async def _rediscover_once(self, credentials: Credentials | None) -> None:
+        try:
+            found = await self._discover(credentials)
+        except Exception:
+            log.debug("TP-Link: fallo en el escaneo periodico de la LAN", exc_info=True)
+            return
+        with self._lock:
+            self._discovered = found
+        await self._reconcile_known_devices(found, credentials)
+
+    def rediscover_now(self, credentials: Credentials | None) -> None:
+        """Escaneo activo bajo demanda que, ademas de devolver lo
+        encontrado (como `discover()`), reconecta automaticamente cualquier
+        dispositivo ya dado de alta que reaparezca en otra IP -- pensado
+        para llamarse periodicamente desde un hilo de fondo (ver
+        `tplink_plugin.py::_rediscover_loop`), no solo cuando el usuario
+        pulsa el boton."""
+        self._run_coro(self._rediscover_once(credentials), timeout=30)
 
     # --------------------------------------------------------- dispositivos
 
@@ -212,11 +334,19 @@ class TplinkDeviceManager:
                 # dira que no esta disponible hasta que un sondeo funcione de
                 # verdad, que es la verdad.
                 self._last_poll_ok[device_id] = time.time()
+        if primed:
+            self._remember_mac(device_id, device)
 
     def remove_device(self, device_id: str) -> None:
         with self._lock:
             self._devices.pop(device_id, None)
             self._last_poll_ok.pop(device_id, None)
+            self._known_macs.pop(device_id, None)
+
+    def _remember_mac(self, device_id: str, device: Device) -> None:
+        mac = _normalize_mac(getattr(device, "mac", None))
+        if mac:
+            self._known_macs[device_id] = mac
 
     def get_device(self, device_id: str) -> Device | None:
         return self._devices.get(device_id)

@@ -8,10 +8,15 @@ modulos tiene cada uno (`device.modules`).
 
 A diferencia de Tuya (deteccion pasiva por broadcast continuo, algunos
 dispositivos solo emiten de cuando en cuando), el descubrimiento de
-`python-kasa` es un escaneo ACTIVO bajo demanda (`Discover.discover()`
-manda un broadcast y recoge respuestas durante unos segundos) -- no hace
-falta un listener de fondo persistente como `PersistentDiscovery` de
-Tuya, ver `/api/discover`.
+`python-kasa` es un escaneo ACTIVO (`Discover.discover()` manda un
+broadcast y recoge respuestas durante unos segundos) -- no hay nada que un
+dispositivo anuncie por su cuenta, asi que no existe un listener de fondo
+persistente como `PersistentDiscovery` de Tuya. En su lugar, `_rediscover_loop`
+repite ESE MISMO escaneo cada `REDISCOVER_INTERVAL_SECONDS` sin que el
+usuario tenga que pulsar nada -- alimenta `/api/discovered` (lo visto hasta
+ahora, lectura pasiva) ademas del `/api/discover` bajo demanda, y de paso
+reconecta solo cualquier dispositivo ya dado de alta cuya IP haya cambiado
+por DHCP (se reconoce por MAC, ver `tplink/device_manager.py`).
 
 Dos formas de usar un dispositivo dado de alta, no excluyentes (mismo
 criterio que Tuya):
@@ -38,17 +43,28 @@ from tplink.mqtt_tplink import MqttTplinkDevice
 
 log = logging.getLogger("tplink_plugin")
 
+# Espera inicial antes del primer escaneo periodico -- da tiempo a que los
+# dispositivos ya dados de alta terminen de conectar en el arranque, para no
+# lanzar un escaneo (y un posible reconectar) contra algo que solo estaba
+# tardando un poco. Mismo criterio que IDENTIFY_FIRST_DELAY_SECONDS de Tuya.
+REDISCOVER_FIRST_DELAY_SECONDS = 60
+REDISCOVER_INTERVAL_SECONDS = 5 * 60
+
 
 class TplinkPlugin(Plugin):
     slug = "tplink"
     name = "TP-Link Orchestrator"
-    version = "0.1.13"
+    version = "0.2.0"
 
     def __init__(self) -> None:
-        self._manager = TplinkDeviceManager(on_any_change=self._on_device_change)
+        self._manager = TplinkDeviceManager(
+            on_any_change=self._on_device_change,
+            on_address_change=self._persist_address,
+        )
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_tplink")
         self._mqtt_devices: dict[str, MqttTplinkDevice] = {}
         self._app = flask.Flask("tplink_plugin", template_folder="tplink_templates")
+        self._stop_rediscover = threading.Event()
         self._register_routes()
 
     def _credentials(self) -> Credentials | None:
@@ -130,18 +146,17 @@ class TplinkPlugin(Plugin):
             return flask.jsonify({"linked": True})
 
         # ------------------------------------------------ descubrimiento -
-        # Escaneo ACTIVO bajo demanda (ver docstring del modulo) -- nunca
-        # añade nada por su cuenta, solo enseña lo que ha respondido.
+        # Escaneo ACTIVO (ver docstring del modulo) -- nunca añade nada por
+        # su cuenta, solo enseña lo que ha respondido. `/api/discover` lo
+        # lanza al momento (boton "Buscar ahora"); `/api/discovered` lee sin
+        # bloquear lo que el escaneo periodico de fondo ya tiene acumulado --
+        # mismo par de rutas y mismo criterio que Tuya (`/api/scan` +
+        # `/api/discovered`), para que la interfaz de ambos plugins se
+        # comporte igual.
 
-        @app.post("/api/discover")
-        def _discover():
+        def _describe_found(found: dict[str, dict]) -> list[dict]:
             added_hosts = {d["config"]["host"] for d in tplink_store.load_devices()}
-            try:
-                found = self._manager.discover(self._credentials())
-            except Exception:
-                log.exception("Fallo escaneando la LAN en busca de dispositivos TP-Link")
-                return flask.jsonify({"error": "fallo escaneando la LAN"}), 502
-            out = [
+            return [
                 {
                     "host": host,
                     "alias": info.get("alias"),
@@ -152,7 +167,45 @@ class TplinkPlugin(Plugin):
                 }
                 for host, info in found.items()
             ]
-            return flask.jsonify(out)
+
+        @app.post("/api/discover")
+        def _discover():
+            try:
+                found = self._manager.discover(self._credentials())
+            except Exception:
+                log.exception("Fallo escaneando la LAN en busca de dispositivos TP-Link")
+                return flask.jsonify({"error": "fallo escaneando la LAN"}), 502
+            return flask.jsonify(_describe_found(found))
+
+        @app.get("/api/discovered")
+        def _list_discovered():
+            return flask.jsonify(_describe_found(self._manager.get_discovered_devices()))
+
+    # --------------------------------------------- localizar lo que se movio
+
+    def _persist_address(self, device_id: str, new_host: str) -> None:
+        """Guarda la IP nueva de un dispositivo que se ha movido (DHCP).
+        Sin esto el cambio se perderia en el siguiente reinicio: arrancaria
+        otra vez contra la IP vieja. Mismo criterio que
+        `tuya_plugin.py::_persist_address`."""
+        updated = tplink_store.update_device(device_id, {"host": new_host})
+        if updated:
+            log.info("TP-Link %s: IP actualizada a %s en el almacen", device_id, new_host)
+        else:
+            log.warning("TP-Link %s: no se encontro en el almacen para guardar la IP nueva", device_id)
+
+    def _rediscover_loop(self) -> None:
+        """Escanea la LAN periodicamente sin que el usuario tenga que pulsar
+        nada -- alimenta `/api/discovered` y reconecta solo lo que haya
+        cambiado de IP (ver `TplinkDeviceManager.rediscover_now`). Mismo
+        patron de hilo cancelable que `tuya_plugin.py::_identify_loop`."""
+        while not self._stop_rediscover.wait(REDISCOVER_FIRST_DELAY_SECONDS):
+            try:
+                self._manager.rediscover_now(self._credentials())
+            except Exception:
+                log.exception("Fallo en el escaneo periodico de TP-Link")
+            if self._stop_rediscover.wait(REDISCOVER_INTERVAL_SECONDS - REDISCOVER_FIRST_DELAY_SECONDS):
+                return
 
     # ------------------------------------------------------------- arranque
 
@@ -162,6 +215,9 @@ class TplinkPlugin(Plugin):
         devices = tplink_store.load_devices()
         for device in devices:
             self._start_device(device)
+        threading.Thread(
+            target=self._rediscover_loop, name="tplink-rediscover", daemon=True,
+        ).start()
         log.info("Plugin TP-Link arrancado con %d dispositivo(s)", len(devices))
 
     def _start_device(self, device: dict) -> None:
@@ -196,17 +252,6 @@ class TplinkPlugin(Plugin):
             # sondeo periodico (hasta POLL_INTERVAL_SECONDS de retraso).
             mqtt_dev.publish_state()
             self._mqtt_devices[device["id"]] = mqtt_dev
-
-        threading.Thread(
-            target=self._background_reconnect_watch, name=f"tplink-{device['id']}", daemon=True,
-        ).start()
-
-    def _background_reconnect_watch(self) -> None:
-        """Marcador de hilo por dispositivo, mismo criterio que
-        tuya_plugin.py -- el sondeo/reconexion real ya lo hace
-        TplinkDeviceManager._poll_loop, para todos los dispositivos a la
-        vez."""
-        return
 
     def _stop_device(self, device_id: str) -> None:
         mqtt_dev = self._mqtt_devices.pop(device_id, None)
