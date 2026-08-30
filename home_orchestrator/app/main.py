@@ -2146,6 +2146,29 @@ def api_energy_backfill_history():
     battery_keys = [_stable_battery_key(b) for b in batteries]
     entries = history_store.get_all()
 
+    # BUG REAL, confirmado en produccion: pulsar este boton con `history_store`
+    # recien estrenado (o vacio por cualquier otro motivo) reconstruye un
+    # total de 0 kWh -- no porque no se haya cargado/descargado nada, sino
+    # porque no hay historico del que partir. Y ese 0 se aplicaba igual via
+    # `set_totals`/`rescale_to_aggregate` mas abajo, BORRANDO de un plumazo
+    # el acumulado real que hubiera hasta entonces (visto tal cual: 129.44 kWh
+    # cargados y 93.98 descargados reales, reemplazados por 0 el 21 de agosto
+    # a las 19:00, la primera vez que se peino con `history_store` todavia sin
+    # ni una hora de detalle). Con menos de un dia de detalle no hay reparto
+    # fiable que hacer -- se rechaza aqui, antes de tocar nada, en vez de
+    # reconstruir con lo que hay y confiar en que nadie pulse el boton
+    # demasiado pronto.
+    MIN_ENTRIES_FOR_BACKFILL = 24
+    if len(entries) < MIN_ENTRIES_FOR_BACKFILL:
+        return jsonify({
+            "error": (
+                f"histórico insuficiente para reconstruir con garantías "
+                f"({len(entries)} hora(s) de detalle, hacen falta al menos "
+                f"{MIN_ENTRIES_FOR_BACKFILL}) — reconstruir ahora pondría los "
+                "acumulados a cero en vez de dejarlos como están"
+            ),
+        }), 409
+
     results = {}
 
     # --- bateria: se reconstruye ENTERA desde el historico horario ----------

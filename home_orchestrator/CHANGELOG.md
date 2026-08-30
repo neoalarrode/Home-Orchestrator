@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.6
+
+**El backfill del Panel de Energía podía poner los acumulados de batería a cero.**
+
+Confirmado en producción: el 21 de agosto a las 19:00, `/api/energy/backfill_history` se ejecutó con `history_store` recién estrenado (todavía sin ni una hora de detalle) y reconstruyó un total de **0 kWh** — no porque no se hubiera cargado/descargado nada, sino porque no había historico del que reconstruir. Ese cero se aplicó igual a los acumulados en vivo, borrando de un plumazo 129,44 kWh cargados y 93,98 kWh descargados reales.
+
+Ahora el endpoint rechaza reconstruir (409) si `history_store` tiene menos de 24 horas de detalle, en vez de reconstruir con lo que hay y confiar en que nadie pulse el botón demasiado pronto.
+
 ## 0.77.5
 
 **El histórico propio (`history_store`) guardaba la previsión de consumo, no la medida real — el backfill del Panel de Energía la reconstruía como si fuera un hecho.**
