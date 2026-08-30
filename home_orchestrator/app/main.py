@@ -2100,8 +2100,8 @@ def api_energy_history():
         entries = history_store.get_all()
     except Exception:
         log.exception("Fallo leyendo el historico propio")
-        return flask.jsonify({"error": "no se ha podido leer el historico"}), 500
-    return flask.jsonify({
+        return jsonify({"error": "no se ha podido leer el historico"}), 500
+    return jsonify({
         "count": len(entries),
         "capacity_wh": sum(float(b.get("capacity_wh") or 0) for b in config_store.load_config()["batteries"]),
         "entries": entries,
