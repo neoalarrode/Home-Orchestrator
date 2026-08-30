@@ -110,7 +110,15 @@
   .fader:focus-within { box-shadow: inset 0 0 0 1px var(--border), 0 0 0 2px var(--accent); }
   .fader-fill { position: absolute; inset: 0; width: 50%; background: var(--accent); border-radius: inherit; pointer-events: none; }
   .fader.kelvin { background: linear-gradient(90deg, #ff9d42 0%, #ffe7c2 48%, #cfe2ff 100%); }
-  .fader-marker { position: absolute; top: 0; bottom: 0; width: 3px; background: rgba(10,10,10,.55); border-radius: 2px; transform: translateX(-50%); pointer-events: none; z-index: 2; }
+  /* BUG REAL: con el valor en un extremo (min o max -- el caso mas
+     comun, ya que sin lectura en vivo el valor por defecto ES el
+     maximo), `left:100%` + `translateX(-50%)` deja la mitad del
+     marcador fuera del contenedor, y `.fader` recorta con
+     `overflow:hidden` -- el marcador quedaba invisible justo en el
+     caso que mas se ve. El calculo en JS ya acota el porcentaje real
+     (ver `updateFaderKelvin`/`renderLightControl`) para que nunca
+     pinte mas alla de estos limites, sin tocar la cifra mostrada. */
+  .fader-marker { position: absolute; top: 3px; bottom: 3px; width: 4px; background: #0a0a0a; box-shadow: 0 0 0 1px rgba(255,255,255,.5); border-radius: 2px; transform: translateX(-50%); pointer-events: none; z-index: 2; }
   .fader-label {
     position: absolute; inset: 0; z-index: 3; pointer-events: none;
     display: flex; align-items: center; justify-content: space-between; padding: 0 14px;
@@ -378,7 +386,7 @@ function renderZones(zones) {
       </div>
       <div class="zone-meta">${metaHtml}</div>
       ${cfg.lux_sensor ? renderSparkline(live.lux_history, { colorVar: "--accent-2" }) : ""}
-      ${renderLightControl(z.id, live.group || {}, cfg)}
+      ${renderLightControl(z.id, live.group || {}, cfg, vals)}
       <div class="zone-reason">${esc(live.reason || "")}</div>
       <div class="zone-actions">
         <button class="secondary" onclick="refreshZone('${z.id}')">Forzar decisión</button>
@@ -443,11 +451,18 @@ function hexToHs(hex) {
   return [h, s];
 }
 
-function renderLightControl(id, group, cfg) {
+function renderLightControl(id, group, cfg, vals) {
   const on = !!group.on;
   const minK = cfg.min_color_temp_kelvin ?? 2200, maxK = cfg.max_color_temp_kelvin ?? 5000;
-  const brightness = group.brightness_pct ?? 50;
-  const kelvin = group.color_temp_kelvin ?? maxK;
+  // Con la luz apagada, `group` no tiene lectura real -- BUG REAL: caia
+  // en un valor fijo (50% / maxK) que no tenia nada que ver con el "1%"
+  // /"2400K" que se ve arriba en el hero (la previsión de la curva de
+  // sol, `vals`), asi que el mando manual parecia contradecir al numero
+  // grande de la misma tarjeta. Ahora, apagada, arranca desde la MISMA
+  // previsión -- se ve como un solo numero coherente hasta que se toca
+  // el mando de verdad.
+  const brightness = group.brightness_pct ?? (vals && vals.brightness_pct) ?? 50;
+  const kelvin = group.color_temp_kelvin ?? (vals && vals.color_temp_kelvin) ?? maxK;
   const kelvinPct = Math.round(((kelvin - minK) / Math.max(1, maxK - minK)) * 100);
   const colorHex = group.hs_color ? hsToHex(group.hs_color[0], group.hs_color[1]) : "#ffffff";
   return `
@@ -463,7 +478,7 @@ function renderLightControl(id, group, cfg) {
         oninput="updateFaderFill('${id}', this.value)" onchange="setZoneBrightness('${id}', this.value)">
     </div>
     <div class="fader kelvin">
-      <div class="fader-marker" id="fader-kv-mark-${id}" style="left:${kelvinPct}%"></div>
+      <div class="fader-marker" id="fader-kv-mark-${id}" style="left:${clampMarkerPct(kelvinPct)}%"></div>
       <div class="fader-label"><span class="name">Blancos</span><span class="val" id="fader-kv-val-${id}">${kelvin}K</span></div>
       <input type="range" min="${minK}" max="${maxK}" value="${kelvin}" aria-label="Temperatura de color"
         oninput="updateFaderKelvin('${id}', this.value, ${minK}, ${maxK})" onchange="setZoneColorTemp('${id}', this.value)">
@@ -481,11 +496,18 @@ function updateFaderFill(id, val) {
   if (fill) fill.style.width = val + "%";
   if (label) label.textContent = val + "%";
 }
+// Acota SOLO la posicion visual del marcador (nunca la cifra mostrada)
+// para que no quede a caballo del borde del `.fader` (overflow:hidden
+// lo recorta a la mitad ahi, casi invisible) -- ver comentario del
+// bug real junto a `.fader-marker` en el <style>.
+function clampMarkerPct(pct) {
+  return Math.max(2, Math.min(98, pct));
+}
 function updateFaderKelvin(id, val, min, max) {
   const pct = Math.round(((val - min) / Math.max(1, max - min)) * 100);
   const mark = document.getElementById(`fader-kv-mark-${id}`);
   const label = document.getElementById(`fader-kv-val-${id}`);
-  if (mark) mark.style.left = pct + "%";
+  if (mark) mark.style.left = clampMarkerPct(pct) + "%";
   if (label) label.textContent = val + "K";
 }
 

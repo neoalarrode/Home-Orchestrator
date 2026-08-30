@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.13
+
+**Lighting: el marcador de la barra de temperatura de color desaparecía justo en el caso más común, y el mando manual contradecía el número grande de la misma tarjeta (plugin Lighting 0.7.13).**
+
+Confirmado revisando la interfaz en el navegador: la barra "Blancos" pinta el marcador de posición con `left:100%` cuando el valor está en el máximo (el caso por defecto, sin lectura en vivo) — con `transform: translateX(-50%)` y el contenedor recortando con `overflow:hidden`, medio marcador queda fuera y el otro medio se pierde en el borde redondeado, invisible justo donde más se ve. Además, con la luz apagada, el mando manual (brillo/color) arrancaba en un valor fijo (50%/máximo) sin relación con la previsión de la curva de sol que muestra el número grande de arriba, dando la sensación de que la tarjeta se contradecía a sí misma.
+
+Ahora el marcador nunca pinta más allá del 2-98% (solo la posición visual, la cifra mostrada no cambia), y el mando manual arranca desde la misma previsión de la curva de sol mientras la luz esté apagada — un único número coherente hasta que se toca el mando de verdad.
+
 ## 0.77.12
 
 **Blindaje adicional: la primera publicación de un contador `total_increasing` tampoco se fiaba de nada (plugin Energy 0.11.98).**
