@@ -369,6 +369,21 @@ class HAWebSocketClient:
         Si HA no lo admite (version antigua) se cae a la suscripcion de
         siempre: peor, pero funcionando.
         """
+        # BUG REAL, confirmado en produccion: tras CUALQUIER reconexion (HA
+        # se reinicia, un blip de red...) esto mandaba `unsubscribe_events`
+        # con el id de suscripcion de la conexion ANTERIOR -- que en la
+        # conexion NUEVA no significa nada, HA responde con error ("Subscription
+        # not found") -- pero la respuesta nunca se leia del socket. Ese
+        # mensaje sin consumir quedaba esperando en el buffer y era LO
+        # PRIMERO que devolvia el siguiente `recv()`, el de la respuesta real
+        # a `subscribe_entities` de la resuscripcion de abajo -- asi que esa
+        # resuscripcion siempre se leia como rechazada (aunque HA la hubiera
+        # aceptado de verdad) y, peor, dejaba desalineada la cola de
+        # respuesta para el resto de la conexion. El resultado: cada intento
+        # de reconexion se caia solo, para siempre, tras un reinicio de HA --
+        # el addon nunca volvia a levantar el WebSocket sin un restart manual
+        # del propio addon. Hay que leer (y descartar) esa respuesta antes de
+        # mandar nada mas por el mismo socket.
         objetivo = self._subscription_entities()
         if self._subscribed is not None:
             anterior_id = self._sub_id
@@ -378,6 +393,7 @@ class HAWebSocketClient:
                         "id": self._next_msg_id(), "type": "unsubscribe_events",
                         "subscription": anterior_id,
                     }))
+                    self._ws.recv()  # descartar el ack -- ver bug real arriba
                 except Exception:
                     log.debug("No se ha podido cancelar la suscripcion anterior", exc_info=True)
 

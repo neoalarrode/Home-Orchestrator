@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.11
+
+**El WebSocket de HA no se recuperaba solo tras un reinicio de Home Assistant — se quedaba reconectando en bucle para siempre (`ha_websocket.py`, núcleo).**
+
+Confirmado en producción: tras reiniciar HA (o cualquier corte breve de la conexión), cada intento de reconexión mandaba `unsubscribe_events` con el id de suscripción de la conexión ANTERIOR — en la conexión nueva ese id no significa nada, HA responde con error ("Subscription not found") — pero esa respuesta nunca se leía del socket. El mensaje sin consumir quedaba en el buffer y era lo primero que devolvía el siguiente `recv()`, el de la respuesta real a la resuscripción — así que la resuscripción siempre se leía como rechazada (aunque HA la hubiera aceptado) y, peor, dejaba desalineada la cola de respuestas para el resto de la conexión. Resultado: cada intento de reconexión se caía solo, para siempre, hasta reiniciar el addon a mano — exactamente lo que se observó tras el reinicio de HA de esta noche (WebSocket desconectado más de una hora, con las dos zonas de calefacción migradas y el resto de plugins funcionando a ciegas sobre estados de HA obsoletos o inexistentes).
+
+Ahora se lee (y descarta) la respuesta a esa desuscripción antes de mandar nada más por el mismo socket, tanto si HA la acepta como si la rechaza por no existir ya.
+
 ## 0.77.10
 
 **Una sesión corrupta de 90 horas dejó el Lavavajillas sin programarse nunca más.**
