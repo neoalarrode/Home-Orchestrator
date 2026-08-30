@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.77.5
+
+**El histórico propio (`history_store`) guardaba la previsión de consumo, no la medida real — el backfill del Panel de Energía la reconstruía como si fuera un hecho.**
+
+Medido contra un Shelly Pro3EM real: el día 29, `/api/energy/backfill_history` reconstruyó **25,4 kWh** importados; el Shelly registró **13,2 kWh** reales — casi el doble, y se repetía todos los días.
+
+Causa: `history_store.record(...)` guardaba `now_hp.pv_w`/`now_hp.load_w` — la previsión que usa el planificador para decidir carga/descarga, no una lectura en vivo. De madrugada esa previsión se quedaba clavada en ~2,2-2,4 kW muy por encima del consumo real, y el backfill la trataba como "lo que pasó de verdad" porque los otros dos campos del mismo registro (`charge_w`/`discharge_w`) sí lo son (eso es lo que de verdad se manda a las baterías). Ahora se guarda `flow_pv_w`/`flow_load_w` — el dato EN VIVO ya calculado para el diagrama de "Estado actual", que solo cae a la previsión cuando de verdad no hay lectura disponible.
+
+Solo corrige lo que se registra desde ahora. Las estadísticas ya escritas para los días anteriores se corrigen aparte, contra el histórico real del Shelly Pro3EM del usuario.
+
 ## 0.77.4
 
 **Climate: control de extractor de vapor de baño (plugin Climate 0.5.0).**

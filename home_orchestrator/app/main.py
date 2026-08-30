@@ -1214,11 +1214,26 @@ def run_cycle():
     # Registrar la decision REAL de esta hora en el historico (se
     # sobreescribe con cada ciclo hasta que la hora termine, quedando la
     # ultima decision tomada como "lo que paso" esa hora).
+    #
+    # BUG REAL, confirmado en produccion (dia 29: 25,4 kWh de importacion
+    # "reconstruidos" por /api/energy/backfill_history contra 13,2 kWh
+    # reales de un Shelly Pro3EM -- ratio ~1.9x, y se repetia todos los
+    # dias). `pv_w`/`load_w` se guardaban como `now_hp.pv_w`/`now_hp.load_w`
+    # -- la PREVISION que usa el planificador para decidir, no una medida.
+    # De madrugada esa prevision se quedaba clavada en ~2.2-2.4 kW (muy por
+    # encima del consumo real) y el backfill la trataba como si fuera "lo
+    # que paso de verdad", inflando el importe reconstruido. `charge_w`/
+    # `discharge_w` no tienen este problema (SI es lo que se manda de
+    # verdad a las baterias), pero pv/load son solo entrada de la
+    # planificacion, nunca una salida controlada -- aqui hace falta el dato
+    # EN VIVO (`flow_pv_w`/`flow_load_w`, ya calculados mas arriba para el
+    # diagrama de "Estado actual"), que solo cae a la prevision cuando de
+    # verdad no hay lectura en vivo disponible.
     try:
         history_store.record(now, {
             "dt": now.replace(minute=0, second=0, microsecond=0).isoformat(),
             "price": now_hp.price, "tier": now_hp.tier,
-            "pv_w": round(now_hp.pv_w), "load_w": round(now_hp.load_w),
+            "pv_w": round(flow_pv_w), "load_w": round(flow_load_w),
             "charge_w": round(now_hp.charge_w), "discharge_w": round(now_hp.discharge_w),
             "soc_pct": current_soc_pct,
             "reason": now_hp.reason,
