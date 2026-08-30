@@ -44,6 +44,23 @@ log = logging.getLogger("monotonic_sensor")
 
 STORE_PATH = os.environ.get("MONOTONIC_SENSOR_PATH", "/data/monotonic_sensors.json")
 
+# BUG REAL, confirmado en produccion: un reinicio del addon podia hacer que
+# `total` (el acumulado interno que llega aqui) diera un salto de mas de
+# 100 kWh de golpe entre dos llamadas -- causa exacta sin confirmar del
+# todo (sospecha: identidad de bateria EcoFlow resuelta de forma distinta
+# justo tras reconectar), pero el sintoma es siempre el mismo: un `delta`
+# fisicamente imposible para el hueco real entre dos ciclos (`run_cycle`
+# llama a `publishable()` cada CYCLE_SECONDS, no cada `min_interval` de
+# publicacion -- ver `_publish_sensor_throttled`). Con la instalacion mas
+# exigente de este proyecto (~5 kW contratados, ~4.8 kW combinados de
+# bateria), ni un apagon de varias horas justifica mas de esto entre dos
+# lecturas. Un delta que lo supera se trata igual que uno negativo: no se
+# publica, solo se actualiza `last_total` para que el SIGUIENTE ciclo
+# calcule bien desde ahi -- la alternativa (publicarlo) es exactamente el
+# mismo "+206 kWh fantasma" que este modulo ya existe para evitar, solo
+# que en sentido positivo en vez de por una bajada.
+MAX_PLAUSIBLE_DELTA_KWH = 15.0
+
 _lock = threading.RLock()
 
 
@@ -85,7 +102,16 @@ def publishable(entity_id: str, total: float) -> float:
             publicado = float(total)
         else:
             delta = float(total) - float(anterior_total)
-            if delta > 0:
+            if delta > MAX_PLAUSIBLE_DELTA_KWH:
+                log.warning(
+                    "%s: el acumulado interno ha subido de %.3f a %.3f (+%.3f) entre dos "
+                    "ciclos -- fisicamente imposible para el hueco real, se descarta como "
+                    "un salto espureo (reinicio del addon, identidad de bateria resuelta "
+                    "distinta...). El contador publicado se queda en %.3f y sigue subiendo "
+                    "desde ahi, igual que con una bajada.",
+                    entity_id, float(anterior_total), float(total), delta, publicado,
+                )
+            elif delta > 0:
                 publicado += delta
             elif delta < 0:
                 log.info(

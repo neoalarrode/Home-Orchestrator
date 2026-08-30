@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.77.7
+
+**Límite de sensatez en los contadores publicados (`monotonic_sensor.py`): un salto imposible entre dos ciclos ya no se publica.**
+
+Confirmado en producción: reiniciar el addon podía hacer que el acumulado interno de energía cargada/descargada de batería subiera de golpe más de 100 kWh entre dos ciclos de 30s — físicamente imposible con ~4,8 kW combinados de batería. La causa exacta no se ha podido confirmar del todo (sospecha: la identidad de una batería EcoFlow se resuelve de forma distinta justo tras reconectar), pero el síntoma es el mismo sea cual sea la causa.
+
+Ahora un `delta` de más de 15 kWh entre dos lecturas se trata igual que uno negativo: no se publica (evita el mismo "kWh fantasma" que ya se evitaba para las bajadas, esta vez en sentido positivo), solo se actualiza el acumulado interno para que el siguiente ciclo calcule bien desde ahí.
+
+De paso, limpieza de datos: `lifetime.json` tenía 4 claves huérfanas de una migración de identidad de batería anterior (formato hash antiguo, sin usar desde el 13 de agosto) — eliminadas.
+
 ## 0.77.6
 
 **El backfill del Panel de Energía podía poner los acumulados de batería a cero.**
