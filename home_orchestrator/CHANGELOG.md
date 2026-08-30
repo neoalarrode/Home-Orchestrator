@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.9
+
+**Una zona sin ningún actuador de calor/frío/humidificador declarado se quedaba "no disponible" para siempre (plugin Climate 0.6.1).**
+
+`_capability_still_pending` trataba "capacidad total vacía" como "pendiente, reintentar más tarde" sin distinguir dos casos: una zona con `climate_entities` de otro plugin que aún no ha conectado (correcto esperar) de una zona que deliberadamente no declara ningún actuador de calor/frío (p.ej. una zona solo de extractor de vapor, ver v0.77.4/v0.77.8) — para esta segunda no hay nada que vaya a resolverse nunca, y se quedaba bloqueada permanentemente, con el extractor sin evaluarse.
+
+Ahora solo se considera "pendiente" cuando la zona SÍ ha declarado alguna fuente de capacidad (`heat_switches`/`cool_switches`/`climate_entities`/`humidifier_entities`) y aun así la capacidad sale vacía.
+
 ## 0.77.8
 
 **Climate: control de extractor independiente de la temperatura, y exposición a HA opcional (plugin Climate 0.6.0).**

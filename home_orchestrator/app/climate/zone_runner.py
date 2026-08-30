@@ -532,8 +532,26 @@ class ZoneRunner:
         `climate_entities` todavia no se ha podido resolver (ver
         `_compute_capability`). NUNCA solo "capacidad vacia": una zona con
         cualquier otra fuente de capacidad (heat_switches, humidificador...)
-        enmascararia para siempre un actuador de Tuya que aun no conecto."""
-        return not capability or self._climate_entities_unresolved
+        enmascararia para siempre un actuador de Tuya que aun no conecto.
+
+        BUG REAL, confirmado en produccion: "capacidad vacia" por si sola
+        se trataba SIEMPRE como "pendiente, reintentar mas tarde" -- pero
+        una zona pensada para funcionar SOLO con el extractor de vapor (sin
+        heat_switches/cool_switches/climate_entities/humidifier_entities
+        declarados en absoluto, ver CONF_EXTRACTOR_SWITCHES en const.py:
+        el extractor es una capacidad aparte, no entra en este `capability`)
+        tiene una capacidad vacia LEGITIMA y PERMANENTE -- no hay ningun
+        actuador que vaya a resolverse mas tarde. Se quedaba "no disponible"
+        para siempre, y el extractor (que ya no depende de `available`, ver
+        decide_and_act) tampoco llegaba a evaluarse porque nunca se salia
+        de este bloqueo. Solo tiene sentido esperar cuando la zona SI ha
+        declarado alguna fuente de capacidad -- si no ha declarado ninguna,
+        no hay nada pendiente que esperar."""
+        declared_sources = bool(
+            self.zone.get(CONF_HEAT_SWITCHES) or self.zone.get(CONF_COOL_SWITCHES)
+            or self.zone.get(CONF_CLIMATE_ENTITIES) or self.zone.get(CONF_HUMIDIFIER_ENTITIES)
+        )
+        return (not capability and declared_sources) or self._climate_entities_unresolved
 
     def _reconcile_hvac_mode(self, capability: set[str]) -> None:
         if self._capability_pending and not self._capability_still_pending(capability):
