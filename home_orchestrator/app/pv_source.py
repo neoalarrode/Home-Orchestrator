@@ -90,12 +90,12 @@ def fetch_forecast_solar_api(array_id: str, api_key: str, lat: float, lon: float
     vez, para no agotar la cuota gratuita aunque el ciclo de decision se
     ejecute mucho mas a menudo.
     """
-    now = time.time()
+    now_ts = time.time()
     cached = _cache.get(array_id)
-    if cached is None or (now - cached["fetched_at"]) > refresh_seconds:
+    if cached is None or (now_ts - cached["fetched_at"]) > refresh_seconds:
         try:
             watts = _fetch_raw(api_key, lat, lon, declination, azimuth, kwp)
-            _cache[array_id] = {"fetched_at": now, "watts": watts}
+            _cache[array_id] = {"fetched_at": now_ts, "watts": watts}
         except (requests.RequestException, ValueError):
             if cached is None:
                 return [0.0] * horizon_hours
