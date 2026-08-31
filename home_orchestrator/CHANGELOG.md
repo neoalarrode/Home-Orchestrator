@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.77.19
+
+**Autoconfigurador del dashboard de Grafana + previsión solar propia en vez de una integración ajena (plugin Energy 0.12.4).**
+
+A petición expresa del usuario, dos piezas relacionadas:
+
+- **Nuevo `grafana_sync.py`**: nueva sección "Dashboard de Grafana" en Configuración (URL + token de una *service account* de Grafana, rol Editor) con un botón "Sincronizar dashboard ahora", y sincronización automática cada vez que se añade/edita/borra un array solar. Deliberadamente NUNCA toca el datasource de Grafana (solo comprueba que existe) — solo regenera los pocos elementos del dashboard "Energía — Centro de Control" que de verdad dependen de la config: el panel "Generación solar por panel/array declarado" tenía el id de un array concreto QUEMADO en su query (si se añadía/quitaba un array, el panel se quedaba desfasado sin que nadie lo notara), ahora se reconstruye desde `cfg["pv_arrays"]` en cada sincronización.
+- **Previsión solar hoy/mañana ya no depende de una integración ajena**: el mismo panel consultaba `sensor.estimacion_solar_total_hoy`/`sensor.estimacion_solar_manana`, sensores de OTRA integración de Home Assistant, inconsistente con el resto del dashboard (alimentado entero por este plugin). Ahora `run_cycle()` publica sus propios `sensor.battery_orchestrator_solar_forecast_today` (resto del día, nunca "todo el día" para no inventar lo que ya pasó) y `..._solar_forecast_tomorrow` (solo si el horizonte de planificación llega a cubrir sus 24h enteras) a partir de la misma previsión ya corregida con el histórico real de cada array que usa el motor de decisión -- y el panel se reescribe para consultarlos, la próxima vez que se sincronice.
+
 ## 0.77.18
 
 **Hotfix critico de v0.77.17: el ciclo de planificacion entero se caia al arrancar (plugin Energy 0.12.3).**

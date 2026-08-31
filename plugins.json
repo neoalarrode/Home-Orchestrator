@@ -27,6 +27,7 @@
         "ecoflow_login.py",
         "energy_recovery.py",
         "forecast_store.py",
+        "grafana_sync.py",
         "grid_energy_store.py",
         "ha_client.py",
         "ha_statistics.py",

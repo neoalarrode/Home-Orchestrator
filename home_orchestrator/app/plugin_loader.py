@@ -207,7 +207,7 @@ PLUGIN_CATALOG = {
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",
             "deferrable_scheduler.py", "deferrable_store.py", "ecoflow_ble.py",
             "ecoflow_cloud.py", "ecoflow_login.py", "energy_recovery.py", "forecast_store.py",
-            "grid_energy_store.py",
+            "grafana_sync.py", "grid_energy_store.py",
             "ha_client.py", "ha_statistics.py", "history_store.py", "lifetime_store.py",
             "monotonic_sensor.py", "pv_source.py",
             "savings_store.py", "scheduler.py", "solar_energy_store.py", "tariff_source.py",

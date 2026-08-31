@@ -86,6 +86,16 @@ DEFAULT_CONFIG = {
     "ecoflow_access_key": "",   # modo cloud/hybrid — developer-eu.ecoflow.com (ver ecoflow_cloud.py)
     "ecoflow_secret_key": "",
     "ecoflow_user_id": "",      # modo bluetooth/hybrid — userId de la cuenta (no la contraseña), ver ecoflow_ble.py
+    # Autoconfigurador del dashboard de Grafana (ver grafana_sync.py) --
+    # "grafana_url" debe apuntar al puerto PROPIO de Grafana (3000 dentro
+    # de su contenedor), nunca al 8080 de "acceso directo" (mismo problema
+    # de nginx/CSRF ya documentado). "grafana_token" es el de una service
+    # account con rol Editor. Vacios = autoconfigurador desactivado, el
+    # dashboard sigue existiendo pero no se sincroniza solo.
+    "grafana_url": "",
+    "grafana_token": "",
+    "grafana_last_sync": None,      # ISO 8601 de la ultima sincronizacion CON EXITO, o None si nunca
+    "grafana_last_sync_error": None,  # mensaje del ultimo intento fallido, o None -- se limpia en cuanto uno tiene exito
     "general": {
         "horizon_hours": 48,  # menos de esto y, segun la hora del dia, el plan puede no llegar a ver la punta del dia siguiente y no cargar en la madrugada que toca (ver CHANGELOG v0.11.6)
         "cycle_seconds": 60,

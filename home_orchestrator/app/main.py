@@ -23,6 +23,7 @@ import ecoflow_ble
 import ecoflow_cloud
 import ecoflow_login
 import forecast_store
+import grafana_sync
 import grid_energy_store
 import ha_client
 import ha_statistics
@@ -803,6 +804,44 @@ def run_cycle():
             }
             for i in range(horizon)
         ]
+
+        # A peticion expresa del usuario: el dashboard de Grafana mostraba la
+        # previsión solar de hoy/mañana desde una integración de HA ajena a
+        # este plugin (p.ej. Forecast.Solar nativo) -- inconsistente con el
+        # resto del panel, que se alimenta entero de sensores propios. Aqui
+        # ya se tiene la MISMA previsión horaria (`pv_forecast`, ya corregida
+        # con el historico real de cada array, ver pv_source.py) que decide
+        # las cargas/descargas -- se publica tal cual, sin volver a pedir
+        # nada a ningun sitio externo.
+        #
+        # OJO con la semantica: `pv_forecast[0]` es la hora ACTUAL en curso,
+        # nunca el principio del dia -- "resto de hoy" (no "hoy completo",
+        # que exigiria inventar lo que ya paso) y "mañana completo" (solo si
+        # el horizonte llega a cubrir sus 24h enteras; si no, no se publica
+        # ESTE ciclo -- mismo criterio de "nunca un dato a medias sin avisar"
+        # que el resto del modulo, `_publish_sensor_throttled` conserva el
+        # ultimo valor bueno en vez de pisarlo con uno parcial).
+        hours_left_today = 24 - now.hour
+        solar_forecast_today_wh = sum(pv_forecast[:min(hours_left_today, horizon)])
+        _publish_sensor_throttled(
+            "sensor.battery_orchestrator_solar_forecast_today",
+            round(solar_forecast_today_wh / 1000, 2),
+            {
+                "unit_of_measurement": "kWh",
+                "friendly_name": "Battery Orchestrator Previsión solar (resto de hoy)",
+            },
+        )
+        tomorrow_end = hours_left_today + 24
+        if horizon >= tomorrow_end:
+            solar_forecast_tomorrow_wh = sum(pv_forecast[hours_left_today:tomorrow_end])
+            _publish_sensor_throttled(
+                "sensor.battery_orchestrator_solar_forecast_tomorrow",
+                round(solar_forecast_tomorrow_wh / 1000, 2),
+                {
+                    "unit_of_measurement": "kWh",
+                    "friendly_name": "Battery Orchestrator Previsión solar (mañana)",
+                },
+            )
         # Hueco de descarga de bateria DISPONIBLE AHORA MISMO (rating maximo
         # declarado menos lo que ya estan descargando de verdad, medido en
         # vivo, nunca la previsión del planificador) -- para que Climate
@@ -1688,10 +1727,37 @@ def _force_hybrid_if_ecoflow(array: dict) -> dict:
     return array
 
 
+def _grafana_sync_best_effort(cfg: dict) -> None:
+    """Sincronizacion AUTOMATICA tras un cambio en los arrays solares (ver
+    grafana_sync.py: el panel de generación por array queda desfasado si no
+    se hace). Nunca debe tumbar la peticion que la dispara -- si Grafana no
+    esta configurado, o esta caido, o lo que sea, se registra el motivo en
+    la propia config (para que la interfaz lo pueda mostrar) y en el log,
+    y la peticion original (guardar un array) sigue devolviendo 200/201
+    igual. El resync MANUAL de la interfaz llama a grafana_sync.sync()
+    directamente y SI devuelve el error al usuario (ver api_grafana_sync)."""
+    if not cfg.get("grafana_url") or not cfg.get("grafana_token"):
+        return
+    try:
+        result = grafana_sync.sync(cfg["grafana_url"], cfg["grafana_token"], cfg.get("pv_arrays", []))
+    except Exception as e:  # nunca dejar que esto tumbe el guardado del array
+        log.exception("Fallo inesperado sincronizando el dashboard de Grafana")
+        result = {"ok": False, "error": str(e)}
+    fresh_cfg = config_store.load_config()
+    if result["ok"]:
+        fresh_cfg["grafana_last_sync"] = datetime.now().isoformat()
+        fresh_cfg["grafana_last_sync_error"] = None
+    else:
+        fresh_cfg["grafana_last_sync_error"] = result["error"]
+        log.warning("Sincronización automática de Grafana fallida: %s", result["error"])
+    config_store.save_config(fresh_cfg)
+
+
 @app.post("/api/pv_arrays")
 def api_add_pv_array():
     cfg = config_store.load_config()
     array = config_store.add_pv_array(cfg, _force_hybrid_if_ecoflow(request.get_json(force=True)))
+    _grafana_sync_best_effort(cfg)
     return jsonify(array), 201
 
 
@@ -1701,6 +1767,7 @@ def api_update_pv_array(array_id):
     updated = config_store.update_pv_array(cfg, array_id, _force_hybrid_if_ecoflow(request.get_json(force=True)))
     if updated is None:
         return jsonify({"error": "no encontrado"}), 404
+    _grafana_sync_best_effort(cfg)
     return jsonify(updated)
 
 
@@ -1708,7 +1775,25 @@ def api_update_pv_array(array_id):
 def api_delete_pv_array(array_id):
     cfg = config_store.load_config()
     ok = config_store.delete_pv_array(cfg, array_id)
+    if ok:
+        _grafana_sync_best_effort(cfg)
     return jsonify({"deleted": ok})
+
+
+@app.post("/api/grafana/sync")
+def api_grafana_sync():
+    """Resync MANUAL desde el boton de la interfaz -- a diferencia de
+    _grafana_sync_best_effort (automatico, silencioso en el log), este SI
+    devuelve el resultado/error tal cual a quien pulso el boton."""
+    cfg = config_store.load_config()
+    result = grafana_sync.sync(cfg.get("grafana_url", ""), cfg.get("grafana_token", ""), cfg.get("pv_arrays", []))
+    if result["ok"]:
+        cfg["grafana_last_sync"] = datetime.now().isoformat()
+        cfg["grafana_last_sync_error"] = None
+    else:
+        cfg["grafana_last_sync_error"] = result["error"]
+    config_store.save_config(cfg)
+    return jsonify(result), (200 if result["ok"] else 502)
 
 
 @app.get("/api/entity_types")

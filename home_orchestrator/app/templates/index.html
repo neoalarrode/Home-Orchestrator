@@ -755,6 +755,25 @@
 </div>
 
 <div class="card">
+  <h2 data-i18n="card_grafana_title">Dashboard de Grafana</h2>
+  <p class="help" data-i18n-html="help_grafana">Mantiene sincronizado el dashboard "Energía — Centro de Control" con tu configuración actual (arrays solares declarados). Necesita una <em>service account</em> con rol Editor creada en tu Grafana (Administration → Users and access → Service accounts) y la URL desde la que el propio add-on puede alcanzarlo — normalmente el puerto propio de Grafana (3000), nunca el puerto de "acceso directo".</p>
+  <div class="grid2">
+    <div>
+      <label data-i18n="label_grafana_url">URL de Grafana</label><input id="grafana-url" placeholder="http://172.30.33.x:3000">
+    </div>
+    <div>
+      <label data-i18n="label_grafana_token">Token (service account, rol Editor)</label><input id="grafana-token" type="password" placeholder="glsa_...">
+    </div>
+  </div>
+  <div class="actions">
+    <button type="button" onclick="saveGrafanaConfig()" data-i18n="btn_save_grafana">Guardar</button>
+    <button class="secondary" type="button" onclick="syncGrafanaDashboard()" id="grafana-sync-btn" data-i18n="btn_sync_grafana">Sincronizar dashboard ahora</button>
+  </div>
+  <p class="help" id="grafana-sync-result"></p>
+  <p class="help" id="grafana-sync-last" style="display:none"></p>
+</div>
+
+<div class="card">
   <h2 data-i18n="card_backup_title">Copia de seguridad</h2>
   <p class="help" data-i18n="help_backup">Descarga toda tu configuración (baterías, tarifa, solar, consumo) en un archivo, o restáurala si reinstalas el add-on.</p>
   <div class="actions">
@@ -1022,6 +1041,14 @@ es: {
   label_cycle: "Intervalo entre decisiones (segundos)", label_pv_refresh: "Refresco de previsión solar (segundos)",
   help_pv_refresh: "Sepáralo del intervalo de decisión para no agotar la cuota gratuita de la API.",
   label_dry_run: "Modo simulación (no toca las baterías de verdad)", btn_save_config: "Guardar configuración",
+
+  card_grafana_title: "Dashboard de Grafana",
+  help_grafana: "Mantiene sincronizado el dashboard \"Energía — Centro de Control\" con tu configuración actual (arrays solares declarados). Necesita una <em>service account</em> con rol Editor creada en tu Grafana (Administration → Users and access → Service accounts) y la URL desde la que el propio add-on puede alcanzarlo — normalmente el puerto propio de Grafana (3000), nunca el puerto de \"acceso directo\".",
+  label_grafana_url: "URL de Grafana", label_grafana_token: "Token (service account, rol Editor)",
+  btn_save_grafana: "Guardar", btn_sync_grafana: "Sincronizar dashboard ahora",
+  grafana_sync_ok: "Sincronizado correctamente.", grafana_sync_error: "Error: {msg}",
+  grafana_last_sync: "Última sincronización: {when}", grafana_never_synced: "Todavía no se ha sincronizado.",
+  grafana_not_configured: "Configura la URL y el token de Grafana antes de sincronizar.",
 
   card_backup_title: "Copia de seguridad",
   help_backup: "Descarga toda tu configuración (baterías, tarifa, solar, consumo) en un archivo, o restáurala si reinstalas el add-on.",
@@ -1348,6 +1375,14 @@ en: {
   label_cycle: "Interval between decisions (seconds)", label_pv_refresh: "Solar forecast refresh (seconds)",
   help_pv_refresh: "Keep it separate from the decision interval so you don't burn through the API's free quota.",
   label_dry_run: "Simulation mode (doesn't touch the real batteries)", btn_save_config: "Save configuration",
+
+  card_grafana_title: "Grafana dashboard",
+  help_grafana: "Keeps the \"Energía — Centro de Control\" dashboard synced with your current configuration (declared solar arrays). Needs an Editor-role <em>service account</em> created in your Grafana (Administration → Users and access → Service accounts) and the URL the add-on itself can reach it on — usually Grafana's own port (3000), never the \"direct access\" port.",
+  label_grafana_url: "Grafana URL", label_grafana_token: "Token (service account, Editor role)",
+  btn_save_grafana: "Save", btn_sync_grafana: "Sync dashboard now",
+  grafana_sync_ok: "Synced successfully.", grafana_sync_error: "Error: {msg}",
+  grafana_last_sync: "Last sync: {when}", grafana_never_synced: "Not synced yet.",
+  grafana_not_configured: "Set the Grafana URL and token before syncing.",
 
   card_backup_title: "Backup",
   help_backup: "Download your whole configuration (batteries, tariff, solar, consumption) as a file, or restore it if you reinstall the add-on.",
@@ -1828,6 +1863,9 @@ async function loadConfig() {
   document.getElementById('g-paced').checked = !!cfg.general.paced_charging;
   document.getElementById('g-reserve-margin').value = cfg.general.reserve_safety_margin_pct ?? 15;
   updatePriorityHelp();
+  document.getElementById('grafana-url').value = cfg.grafana_url || '';
+  document.getElementById('grafana-token').value = cfg.grafana_token || '';
+  renderGrafanaSyncState(cfg.grafana_last_sync || null, cfg.grafana_last_sync_error || null);
   const backfillLast = document.getElementById('energy-backfill-last');
   if (cfg._energy_history_backfilled_at) {
     backfillLast.style.display = 'block';
@@ -1855,6 +1893,53 @@ async function backfillEnergyHistory() {
     await loadConfig();
   } catch (err) {
     result.textContent = t('energy_history_failed');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderGrafanaSyncState(lastSync, lastError) {
+  const el = document.getElementById('grafana-sync-last');
+  if (lastError) {
+    el.style.display = 'block';
+    el.textContent = t('grafana_sync_error', { msg: lastError });
+  } else if (lastSync) {
+    el.style.display = 'block';
+    el.textContent = t('grafana_last_sync', { when: new Date(lastSync).toLocaleString() });
+  } else {
+    el.style.display = 'block';
+    el.textContent = t('grafana_never_synced');
+  }
+}
+
+async function saveGrafanaConfig() {
+  cfg.grafana_url = document.getElementById('grafana-url').value.trim();
+  cfg.grafana_token = document.getElementById('grafana-token').value.trim();
+  try {
+    const res = await fetch('api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg) });
+    if (!res.ok) { toast(t('toast_server_error_save', { status: res.status })); return; }
+  } catch (err) {
+    toast(t('error_connect', { msg: err.message })); return;
+  }
+  toast(t('toast_config_saved'));
+}
+
+async function syncGrafanaDashboard() {
+  const btn = document.getElementById('grafana-sync-btn');
+  const result = document.getElementById('grafana-sync-result');
+  if (!document.getElementById('grafana-url').value.trim() || !document.getElementById('grafana-token').value.trim()) {
+    result.textContent = t('grafana_not_configured');
+    return;
+  }
+  btn.disabled = true;
+  result.textContent = '';
+  try {
+    const res = await fetch('api/grafana/sync', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    result.textContent = data.ok ? t('grafana_sync_ok') : t('grafana_sync_error', { msg: data.error || '?' });
+    await loadConfig();
+  } catch (err) {
+    result.textContent = t('grafana_sync_error', { msg: String(err) });
   } finally {
     btn.disabled = false;
   }
