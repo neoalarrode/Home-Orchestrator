@@ -198,10 +198,10 @@ PLUGIN_CATALOG = {
     "battery": {
         "name": "Energy Orchestrator",
         "description": "Baterías, solar y cargas diferibles — carga y descarga adaptativa por precio, sol y consumo real",
-        "version": "0.12.3",
+        "version": "0.12.4",
         "downloadable": True,
-        "tag": "v0.77.18",
-        "sha256": "9e21b8b1d2a889076dd36c05332d19d672dc6bd7b139ece45e744327d9b37016",  # sha256 real del tarball de v0.77.18, verificado contra una descarga real antes de fijarlo aqui (hotfix critico: now local pisaba el parametro now en fetch_forecast_solar_api, tiraba el ciclo entero)
+        "tag": "v0.77.19",
+        "sha256": "b2047f0edf9197920d898442fb27151c9f75027e1a99f8a3af6fae4883229fc3",  # sha256 real del tarball de v0.77.19, verificado contra una descarga real antes de fijarlo aqui (autoconfigurador del dashboard de Grafana + previsión solar propia en vez de una integración ajena)
         "files": [
             "main.py", "battery_plugin.py", "battery_exec.py", "anomaly_store.py",
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",
