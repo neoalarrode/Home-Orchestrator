@@ -292,6 +292,40 @@ def _ecoflow_group_owners(batteries_cfg: list[dict]) -> dict[str, str]:
     return owners
 
 
+# Techo de sensatez para CUALQUIER lectura de potencia en vivo (red, batería,
+# solar) ANTES de dejarla entrar en una integración de energía -- ver los
+# incidentes reales del 27/08 y de la noche del 30-31/08: un glitch puntual
+# de un sensor de origen (Shelly, puente BLE/Cloud de una batería EcoFlow...)
+# devolvió un valor absurdamente alto UNA sola vez, y como nada lo frenaba se
+# integró tal cual -- saltos de miles de kWh en acumulados `total_increasing`
+# que HA nunca corrige solo (se arrastran para siempre en el histórico). No
+# es un límite de lo que esta instalación puede dar de verdad (la potencia
+# contratada es mucho menor) -- es deliberadamente holgado, solo para
+# atrapar valores que NINGÚN sensor real de esta instalación podría reportar.
+# Se DESCARTA el ciclo entero para esa lectura (como si el sensor no hubiera
+# respondido) -- nunca se recorta ("clampea") al techo: un valor recortado
+# seguiría siendo un dato inventado, solo que una mentira más pequeña.
+IMPLAUSIBLE_POWER_CEILING_W = 30000.0
+
+
+def _plausible_power_w(
+    value: float | None, context: str, ceiling_w: float = IMPLAUSIBLE_POWER_CEILING_W,
+) -> float | None:
+    """Filtro de última línea contra lecturas de potencia disparatadas antes
+    de que lleguen a cualquier integración de energía -- ver
+    `IMPLAUSIBLE_POWER_CEILING_W` arriba para el porqué. `context` es solo
+    para el log (qué sensor/batería era), no cambia el comportamiento."""
+    if value is None:
+        return None
+    if abs(value) > ceiling_w:
+        log.warning(
+            f"Lectura de potencia descartada por inverosímil ({context}): "
+            f"{value} W (techo {ceiling_w} W) -- se trata como sensor sin dato este ciclo"
+        )
+        return None
+    return value
+
+
 def _live_battery_charge_discharge_w(batteries_cfg: list[dict], cfg: dict) -> tuple[float, float, bool]:
     """
     Carga y descarga TOTAL de todas las baterias AHORA MISMO, leido en vivo
@@ -381,6 +415,7 @@ def _live_battery_charge_discharge_w(batteries_cfg: list[dict], cfg: dict) -> tu
                 power = ha_client.get_numeric_state(b.get("power_sensor"), default=None) if b.get("power_sensor") else None
                 if charge is not None or power is not None:
                     net_power = abs(charge or 0.0) - abs(power or 0.0)
+        net_power = _plausible_power_w(net_power, f"batería {b.get('name', b.get('id'))}")
         if net_power is None:
             continue
         any_data = True
@@ -409,10 +444,12 @@ def _live_export_w(cfg: dict, known_net_grid_w: float | None = None) -> float | 
     """
     mode = cfg.get("load_sensor_mode") or "separate"
     if mode == "combined" and cfg.get("net_grid_sensor"):
-        net = known_net_grid_w if known_net_grid_w is not None else ha_client.get_numeric_state(cfg.get("net_grid_sensor"), default=None)
+        net = known_net_grid_w if known_net_grid_w is not None else _plausible_power_w(
+            ha_client.get_numeric_state(cfg.get("net_grid_sensor"), default=None), "net_grid_sensor (vertido)")
         return max(0.0, -net) if net is not None else None
     if cfg.get("export_sensor"):
-        return ha_client.get_numeric_state(cfg.get("export_sensor"), default=None)
+        return _plausible_power_w(
+            ha_client.get_numeric_state(cfg.get("export_sensor"), default=None), "export_sensor")
     return None
 
 
@@ -579,7 +616,7 @@ def _ecoflow_pv_channels_now_w(cfg: dict, battery_id: str, channels: list[str]) 
     """
     state = _ecoflow_pv_channels_state(cfg, battery_id)
     vals = [state[str(ch)] for ch in channels if str(ch) in state]
-    return sum(vals) if vals else None
+    return _plausible_power_w(sum(vals), f"canales MPPT {channels} de {battery_id}") if vals else None
 
 
 def _ecoflow_pv_live_overrides(cfg: dict) -> dict[str, float]:
@@ -695,7 +732,8 @@ def run_cycle():
             net_grid_sensor, solar_sensors_for_load, horizon, days=history_days,
             battery_power_sensor=battery_power_sensor,
         )
-        net_grid_now_w = ha_client.get_numeric_state(net_grid_sensor, default=None)
+        net_grid_now_w = _plausible_power_w(
+            ha_client.get_numeric_state(net_grid_sensor, default=None), "net_grid_sensor")
         if net_grid_now_w is not None and pv_now_actual is not None and live_battery_data_ok:
             live_base_load_w = max(0.0, pv_now_actual + net_grid_now_w + live_discharge_w - live_charge_w)
         else:
@@ -1752,7 +1790,8 @@ def _live_solar_now_w(cfg: dict) -> float | None:
         if a["id"] in ecoflow_pv_overrides:
             pv_vals.append(ecoflow_pv_overrides[a["id"]])
         elif a.get("current_sensor"):
-            v = ha_client.get_numeric_state(a["current_sensor"], default=None)
+            v = _plausible_power_w(
+                ha_client.get_numeric_state(a["current_sensor"], default=None), f"array solar {a.get('name', a['id'])}")
             if v is not None:
                 pv_vals.append(v)
     return round(sum(pv_vals)) if pv_vals else None
@@ -1773,7 +1812,8 @@ def _live_solar_per_array_w(cfg: dict) -> list[tuple[str, str, float]]:
         if a["id"] in ecoflow_pv_overrides:
             out.append((a["id"], a.get("name") or a["id"], ecoflow_pv_overrides[a["id"]]))
         elif a.get("current_sensor"):
-            v = ha_client.get_numeric_state(a["current_sensor"], default=None)
+            v = _plausible_power_w(
+                ha_client.get_numeric_state(a["current_sensor"], default=None), f"array solar {a.get('name', a['id'])}")
             if v is not None:
                 out.append((a["id"], a.get("name") or a["id"], v))
     return out
@@ -1893,6 +1933,7 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                             ecoflow_main_sns_counted.add(main_sn)
                             ecoflow_source = ecoflow_source or "cloud"
 
+            net_power = _plausible_power_w(net_power, f"batería {b.get('name', b.get('id'))} (EcoFlow)")
             if net_power is not None:
                 power = abs(net_power) if net_power < 0 else None  # power_w = solo descarga, mismo criterio que el resto
         else:
@@ -1921,6 +1962,7 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                 if charge is not None or power is not None:
                     net_power = abs(charge or 0.0) - abs(power or 0.0)
 
+        net_power = _plausible_power_w(net_power, f"batería {b.get('name', b.get('id'))}")
         battery_live.append({
             "id": b["id"], "name": b["name"], "soc_pct": soc, "power_w": power, "net_power_w": net_power,
             "ecoflow_source": ecoflow_source if source == "ecoflow" else None,
@@ -1974,7 +2016,8 @@ def api_live():
     net_grid_sensor = cfg.get("net_grid_sensor")
     net_grid_now_w = None
     if load_sensor_mode == "combined" and net_grid_sensor:
-        net_grid_now_w = ha_client.get_numeric_state(net_grid_sensor, default=None)
+        net_grid_now_w = _plausible_power_w(
+            ha_client.get_numeric_state(net_grid_sensor, default=None), "net_grid_sensor")
         load_now_w = None
         if net_grid_now_w is not None and pv_now_w is not None and live_battery_data_ok:
             load_now_w = max(0.0, pv_now_w + net_grid_now_w + live_discharge_w - live_charge_w)

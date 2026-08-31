@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.15
+
+**Blindaje real contra los saltos de miles de kWh: ninguna lectura de potencia disparatada vuelve a integrarse (plugin Energy 0.12.0).**
+
+Reaparecido en la noche del 30 al 31/08 (import/vertido de red y carga de batería, todos a la vez sobre las 00:00) pese al blindaje de `monotonic_sensor.py` de la versión anterior — porque ese blindaje solo cubría la PRIMERA publicación de un contador, y este incidente no era ese caso: era un valor de POTENCIA instantánea disparatado (un glitch puntual del sensor de origen — Shelly, o el puente BLE/Cloud de una batería EcoFlow) entrando SIN NINGÚN FILTRO en la integración de energía de un ciclo normal, en pleno funcionamiento. Un solo valor así, multiplicado por el tiempo transcurrido, basta para meter miles de kWh de golpe en un contador `total_increasing` — y ese tipo de contador nunca se corrige solo en Home Assistant, el salto se queda para siempre en el histórico.
+
+Ahora hay un techo de sensatez (`IMPLAUSIBLE_POWER_CEILING_W`, deliberadamente muy holgado: ningún sensor real de esta instalación puede dar más) aplicado en TODOS los puntos donde una lectura de potencia en vivo entra al sistema antes de tocar cualquier acumulado: el sensor de red combinado, el de vertido, los dos sitios que leen potencia de batería (EcoFlow por BLE, por Cloud, y sensor de HA combinado o separado) y los sensores de generación solar (MPPT de EcoFlow y sensor de HA declarado). Un valor por encima del techo se descarta ENTERO ese ciclo -- se trata como "sensor sin dato ahora mismo" (nunca se recorta al techo, que seguiría siendo un dato inventado) -- y queda registrado en el log para poder auditar cuándo y en qué sensor pasó, si vuelve a pasar.
+
 ## 0.77.14
 
 **Un sensor de potencia solar por cada panel/array declarado, además del agregado (plugin Energy 0.11.99).**
