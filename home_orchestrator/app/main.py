@@ -1528,6 +1528,20 @@ def _live_sensor_loop():
                     },
                     min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
                 )
+                # Un sensor MAS por cada array/panel declarado en
+                # Configuración → Solar, ademas del agregado de arriba --
+                # a peticion expresa del usuario, para poder comparar
+                # paneles/tejados entre si en vez de solo ver el total.
+                for array_id, array_name, array_w in _live_solar_per_array_w(cfg):
+                    _publish_sensor_throttled(
+                        f"sensor.battery_orchestrator_solar_{array_id}", round(array_w),
+                        {
+                            "device_class": "power", "state_class": "measurement",
+                            "unit_of_measurement": "W",
+                            "friendly_name": f"Battery Orchestrator Potencia solar — {array_name}",
+                        },
+                        min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
+                    )
                 # Energia ACUMULADA (kWh, total_increasing) -- distinta del
                 # sensor de potencia de arriba: la pide el Panel de Energia
                 # oficial de HA para "Produccion de energia solar".
@@ -1742,6 +1756,27 @@ def _live_solar_now_w(cfg: dict) -> float | None:
             if v is not None:
                 pv_vals.append(v)
     return round(sum(pv_vals)) if pv_vals else None
+
+
+def _live_solar_per_array_w(cfg: dict) -> list[tuple[str, str, float]]:
+    """
+    Igual que `_live_solar_now_w`, pero SIN sumar: un (id, nombre, watts)
+    por cada array de Configuración → Solar que tenga dato en vivo ahora
+    mismo (misma fuente por array que ya usa el total, EcoFlow MPPT o
+    sensor de HA declarado) — para poder publicar un sensor por panel/
+    tejado declarado, a peticion expresa del usuario, ademas del agregado
+    que ya se publica en `sensor.battery_orchestrator_solar_power`.
+    """
+    ecoflow_pv_overrides = _ecoflow_pv_live_overrides(cfg)
+    out = []
+    for a in cfg["pv_arrays"]:
+        if a["id"] in ecoflow_pv_overrides:
+            out.append((a["id"], a.get("name") or a["id"], ecoflow_pv_overrides[a["id"]]))
+        elif a.get("current_sensor"):
+            v = ha_client.get_numeric_state(a["current_sensor"], default=None)
+            if v is not None:
+                out.append((a["id"], a.get("name") or a["id"], v))
+    return out
 
 
 def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:

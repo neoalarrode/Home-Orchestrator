@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.14
+
+**Un sensor de potencia solar por cada panel/array declarado, además del agregado (plugin Energy 0.11.99).**
+
+A petición expresa del usuario: hasta ahora `sensor.battery_orchestrator_solar_power` solo publicaba la suma de todos los arrays de Configuración → Solar, sin forma de comparar paneles/tejados entre sí desde Home Assistant aunque el dato en vivo de cada uno (sensor de HA declarado, o puerto MPPT de una batería EcoFlow) ya se estaba leyendo internamente para calcular ese total.
+
+Ahora, en el mismo bucle que publica el agregado, se publica también `sensor.battery_orchestrator_solar_<id_del_array>` por cada array con dato en vivo — mismo criterio de "nunca un cero inventado" que el resto del módulo: si un array no tiene dato ahora mismo, simplemente no se publica ese ciclo, no se pisa con un 0.
+
 ## 0.77.13
 
 **Lighting: el marcador de la barra de temperatura de color desaparecía justo en el caso más común, y el mando manual contradecía el número grande de la misma tarjeta (plugin Lighting 0.7.13).**
