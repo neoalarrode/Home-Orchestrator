@@ -198,10 +198,10 @@ PLUGIN_CATALOG = {
     "battery": {
         "name": "Energy Orchestrator",
         "description": "Baterías, solar y cargas diferibles — carga y descarga adaptativa por precio, sol y consumo real",
-        "version": "0.12.2",
+        "version": "0.12.3",
         "downloadable": True,
-        "tag": "v0.77.17",
-        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (auditoria completa: doble lectura de SOC, rama de descarga bloqueada sin desactivar carga, reloj interno inconsistente, lock en stores JSON y en _last_published_at)
+        "tag": "v0.77.18",
+        "sha256": "9e21b8b1d2a889076dd36c05332d19d672dc6bd7b139ece45e744327d9b37016",  # sha256 real del tarball de v0.77.18, verificado contra una descarga real antes de fijarlo aqui (hotfix critico: now local pisaba el parametro now en fetch_forecast_solar_api, tiraba el ciclo entero)
         "files": [
             "main.py", "battery_plugin.py", "battery_exec.py", "anomaly_store.py",
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",

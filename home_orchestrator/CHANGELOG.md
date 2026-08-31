@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.77.18
+
+**Hotfix critico de v0.77.17: el ciclo de planificacion entero se caia al arrancar (plugin Energy 0.12.3).**
+
+Confirmado en produccion nada mas desplegar v0.77.17: `fetch_forecast_solar_api` ya tenia una variable local `now = time.time()` (para comprobar si toca refrescar la cache de Forecast.Solar) antes de que el fix del "reloj unico" de esta misma version le añadiera un parametro `now: datetime` -- la asignacion local pisaba el parametro, y `_hourly_from_watts` recibia un `float` en vez de un `datetime` (`AttributeError: 'float' object has no attribute 'replace'`), tirando `run_cycle()` en cada ejecucion, con y sin trigger reactivo. Renombrada la variable local a `now_ts`.
+
 ## 0.77.17
 
 **Auditoría completa del repositorio: incongruencias y condiciones de carrera reales en Energy, Climate, Lighting, TP-Link, Shelly y Govee (plugins Energy 0.12.2, Climate 0.6.2, Lighting 0.7.14, TP-Link 0.2.1, Shelly 0.1.3, Govee 0.1.1).**
