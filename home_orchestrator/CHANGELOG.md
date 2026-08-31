@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.77.20
+
+**Hotfix de v0.77.19: el panel de previsión solar apuntaba al nombre de métrica equivocado (plugin Energy 0.12.5).**
+
+Detectado en la propia verificación en vivo tras desplegar v0.77.19, ANTES de sincronizar por primera vez el dashboard real: los dos sensores nuevos (`sensor.battery_orchestrator_solar_forecast_today/tomorrow`) se publican sin `device_class` a propósito (son una previsión, no un contador real) -- y el exporter de Prometheus de Home Assistant solo usa el nombre de métrica `hass_sensor_energy_kwh` para sensores CON `device_class: "energy"`; sin él, exporta `hass_sensor_unit_kwh` (mismo criterio que el resto de sensores "solo unidad" del dashboard, p.ej. el precio de la luz). `grafana_sync._fix_solar_forecast_panel` tenía la primera query, que habría dejado el panel en "No data" tras la primera sincronización. Corregido antes de que nadie pulsara el botón.
+
 ## 0.77.19
 
 **Autoconfigurador del dashboard de Grafana + previsión solar propia en vez de una integración ajena (plugin Energy 0.12.4).**

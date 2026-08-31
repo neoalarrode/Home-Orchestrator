@@ -77,13 +77,22 @@ def _rebuild_array_panel_targets(panel: dict, pv_arrays: list[dict]) -> None:
 
 
 def _fix_solar_forecast_panel(panel: dict) -> None:
+    # OJO: "hass_sensor_unit_kwh", NO "hass_sensor_energy_kwh" -- ese
+    # segundo nombre lo usa el exporter de Prometheus de HA solo para
+    # sensores con device_class "energy" (un contador real, ver
+    # sensor.battery_orchestrator_solar_energy). Estos dos son una
+    # PREVISION (no acumulan, no son un contador), publicados sin
+    # device_class a proposito -- mismo criterio que el resto de sensores
+    # de "solo unidad" de este dashboard (p.ej. el precio de la luz,
+    # hass_sensor_unit_u0x20ac_per_kwh). Verificado en real contra la
+    # instalacion del usuario tras el primer despliegue de estos sensores.
     panel["targets"] = [
         {
-            "expr": 'hass_sensor_energy_kwh{entity="sensor.battery_orchestrator_solar_forecast_today"}',
+            "expr": 'hass_sensor_unit_kwh{entity="sensor.battery_orchestrator_solar_forecast_today"}',
             "legendFormat": "Resto de hoy",
         },
         {
-            "expr": 'hass_sensor_energy_kwh{entity="sensor.battery_orchestrator_solar_forecast_tomorrow"}',
+            "expr": 'hass_sensor_unit_kwh{entity="sensor.battery_orchestrator_solar_forecast_tomorrow"}',
             "legendFormat": "Mañana",
         },
     ]
