@@ -41,6 +41,7 @@ log = logging.getLogger("shelly.device_manager")
 
 REQUEST_TIMEOUT_SECONDS = 4
 POLL_INTERVAL_SECONDS = 5
+RECONNECT_INTERVAL_SECONDS = 30  # ver _reconnect_loop
 MIN_KELVIN, MAX_KELVIN = 2700, 6500  # rango tipico de los Shelly Duo/Bulb (blancos regulables)
 
 
@@ -71,6 +72,7 @@ class ShellyDeviceManager:
 
     def start(self) -> None:
         threading.Thread(target=self._poll_loop, name="shelly-poll", daemon=True).start()
+        threading.Thread(target=self._reconnect_loop, name="shelly-reconnect", daemon=True).start()
 
     def _poll_loop(self) -> None:
         while True:
@@ -203,17 +205,63 @@ class ShellyDeviceManager:
     # --------------------------------------------------------- dispositivos
 
     def add_device(self, device_id: str, host: str) -> None:
-        meta = self._detect(host)
+        """
+        BUG REAL, mismo patron ya corregido en Tuya/TP-Link/Govee: antes,
+        `_detect(host)` se llamaba ANTES de registrar nada en `_devices` --
+        si el dispositivo estaba apagado o no respondia al arrancar el
+        add-on (timeout de red, reinicio simultaneo...), la excepcion
+        escapaba sin dejar ningun rastro en `_devices`, y como `_poll_loop`
+        solo itera sobre lo que YA esta ahi, ese Shelly desaparecia para
+        siempre hasta reiniciar el add-on -- no habia ningun mecanismo que
+        lo reintentara solo. Ahora se registra SIEMPRE, con "gen"/
+        "capability" a None mientras no se sepa (ver `_reconnect_loop`,
+        que los detecta en segundo plano igual que hace Tuya con
+        `_reconnect_loop`/TP-Link con `rediscover_now`), y nunca se
+        propaga la excepcion de conexion hacia el llamante.
+        """
         with self._lock:
             self._devices[device_id] = {
-                "host": host, "gen": meta["gen"], "capability": meta["capability"],
-                "model": meta["model"], "status": None, "connected": False,
+                "host": host, "gen": None, "capability": None,
+                "model": None, "status": None, "connected": False,
             }
+        try:
+            meta = self._detect(host)
+        except requests.RequestException:
+            log.warning("Shelly %s (%s): no responde al añadirlo -- se reintentara en segundo plano", device_id, host)
+            return
+        with self._lock:
+            dev = self._devices.get(device_id)
+            if dev is not None:
+                dev.update(gen=meta["gen"], capability=meta["capability"], model=meta["model"])
         self._refresh(device_id)
 
     def remove_device(self, device_id: str) -> None:
         with self._lock:
             self._devices.pop(device_id, None)
+
+    def _reconnect_loop(self) -> None:
+        """Reintenta detectar (gen/capability/model) los dispositivos que
+        se registraron sin exito -- mismo papel que
+        `TuyaDeviceManager._reconnect_loop`/`TplinkDeviceManager.rediscover_now`:
+        sin esto, un Shelly que estaba apagado/desconectado al añadirlo se
+        quedaba sin gen/capability para siempre, incapaz de sondearse o de
+        recibir ordenes (turn_on/turn_off), aunque volviera a estar
+        disponible en la red minutos despues."""
+        while True:
+            time.sleep(RECONNECT_INTERVAL_SECONDS)
+            with self._lock:
+                pending = [(did, info["host"]) for did, info in self._devices.items() if info["gen"] is None]
+            for device_id, host in pending:
+                try:
+                    meta = self._detect(host)
+                except requests.RequestException:
+                    continue
+                with self._lock:
+                    dev = self._devices.get(device_id)
+                    if dev is not None:
+                        dev.update(gen=meta["gen"], capability=meta["capability"], model=meta["model"])
+                log.info("Shelly %s (%s): reconectado", device_id, host)
+                self._refresh(device_id)
 
     def get_device(self, device_id: str) -> dict | None:
         with self._lock:
@@ -230,7 +278,9 @@ class ShellyDeviceManager:
     def _refresh(self, device_id: str) -> None:
         with self._lock:
             info = self._devices.get(device_id)
-        if info is None:
+        if info is None or info["gen"] is None:
+            # Todavia sin detectar (ver add_device/_reconnect_loop) -- nada
+            # que sondear hasta que el reconector lo resuelva.
             return
         try:
             status = self._read_gen2_state(info) if info["gen"] >= 2 else self._read_gen1_state(info)
@@ -281,6 +331,8 @@ class ShellyDeviceManager:
         info = self.get_device(device_id)
         if info is None:
             raise KeyError(f"dispositivo Shelly desconocido: {device_id}")
+        if info["gen"] is None:
+            raise RuntimeError(f"dispositivo Shelly {device_id} aun no detectado (ver _reconnect_loop)")
         if info["gen"] >= 2:
             self._turn_on_gen2(info["host"], info["capability"], brightness_pct, hs)
         else:
@@ -291,6 +343,8 @@ class ShellyDeviceManager:
         info = self.get_device(device_id)
         if info is None:
             raise KeyError(f"dispositivo Shelly desconocido: {device_id}")
+        if info["gen"] is None:
+            raise RuntimeError(f"dispositivo Shelly {device_id} aun no detectado (ver _reconnect_loop)")
         host, gen, capability = info["host"], info["gen"], info["capability"]
         if gen >= 2:
             method = {"switch": "Switch.Set", "rgbw": "RGBW.Set", "light": "Light.Set"}[capability]

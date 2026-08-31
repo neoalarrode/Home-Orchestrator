@@ -114,26 +114,31 @@ def update(battery_id: str, battery_name: str, soc_pct: float | None,
     """
     if soc_pct is None:
         return
-    data = _load()
-    entry = data.get(battery_id)
-    if entry is None and legacy_id and legacy_id in data:
-        entry = data.pop(legacy_id)
-    if entry is None:
-        entry = _default_entry(battery_name)
-    _migrate_legacy_observations(entry)
-    entry["name"] = battery_name
+    # BUG REAL: lectura-modificacion-escritura sin `_lock` envolviendo todo
+    # el ciclo (ver el mismo arreglo en lifetime_store.accumulate) -- dos
+    # llamadas casi simultaneas pueden perder un segmento entero de
+    # observacion sin ningun error.
+    with _lock:
+        data = _load()
+        entry = data.get(battery_id)
+        if entry is None and legacy_id and legacy_id in data:
+            entry = data.pop(legacy_id)
+        if entry is None:
+            entry = _default_entry(battery_name)
+        _migrate_legacy_observations(entry)
+        entry["name"] = battery_name
 
-    if action != entry["segment_action"]:
-        _close_segment(entry, soc_pct)
-        entry["segment_action"] = action
-        entry["segment_start_soc"] = soc_pct
-        entry["segment_energy_wh"] = 0.0
+        if action != entry["segment_action"]:
+            _close_segment(entry, soc_pct)
+            entry["segment_action"] = action
+            entry["segment_start_soc"] = soc_pct
+            entry["segment_energy_wh"] = 0.0
 
-    if action in ("charge", "discharge"):
-        entry["segment_energy_wh"] += energy_wh_this_cycle
+        if action in ("charge", "discharge"):
+            entry["segment_energy_wh"] += energy_wh_this_cycle
 
-    data[battery_id] = entry
-    _save(data)
+        data[battery_id] = entry
+        _save(data)
 
 
 def get_health(battery_id: str, declared_capacity_wh: float, display_id: str | None = None) -> dict | None:

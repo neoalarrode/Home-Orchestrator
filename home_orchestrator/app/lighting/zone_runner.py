@@ -217,9 +217,12 @@ class ZoneRunner:
             self.lux_history.append(raw_lux)
 
         was_dark_enough = self._state.get("lux_dark_enough")
+        # `cfg.get(key, default)` solo cae al default si la CLAVE falta, no
+        # si esta presente pero vale `None` -- mismo bug que en schedule.py.
+        target_lux_cfg = cfg.get("target_lux")
         candidate = schedule.lux_dark_enough(
             lux_state,
-            float(cfg.get("target_lux", schedule.DEFAULT_TARGET_LUX)),
+            float(target_lux_cfg) if target_lux_cfg is not None else schedule.DEFAULT_TARGET_LUX,
             was_dark_enough,
         )
         if was_dark_enough is None or candidate == was_dark_enough:
@@ -570,7 +573,20 @@ class ZoneRunner:
             # dice exactamente esto: "cada ciclo mientras siga claro, no solo la
             # primera vez"). La regla activa pasa a ser una invariante que se
             # mantiene, no un flanco que se aplica una vez.
+            # BUG REAL: este apagado corre cada ciclo (ver el comentario de
+            # arriba) sin mirar `respect_manual_changes` -- si alguien
+            # enciende a mano una luz de la zona que no pertenece a la
+            # regla activa, se le volvia a apagar en el siguiente ciclo
+            # reactivo (a veces en menos de un segundo), justo lo que
+            # `respect_manual_changes` deberia evitar. Se reutiliza el
+            # mismo `manual_override` que ya usa el reajuste de color/
+            # brillo mas abajo -- una luz marcada ahi se deja en paz hasta
+            # que una transicion real de la zona limpie la marca.
+            respect_manual = cfg.get("respect_manual_changes", True)
+            manual_marks = self._state.get("manual_override") or {}
             for entity_id in all_zone_lights - selected_lights:
+                if respect_manual and manual_marks.get(entity_id):
+                    continue
                 if self._is_on(states, entity_id):
                     self._turn_off(entity_id)
 
@@ -579,8 +595,13 @@ class ZoneRunner:
             # zona que siga encendida, cada ciclo mientras siga claro, no
             # solo la primera vez que se detecta. Mismo alcance que el
             # apagado por "sin presencia" (auto_off): todas las luces de
-            # la zona, no solo las de la regla activa.
+            # la zona, no solo las de la regla activa. Mismo respeto por
+            # `respect_manual_changes` que el bucle de arriba.
+            respect_manual = cfg.get("respect_manual_changes", True)
+            manual_marks = self._state.get("manual_override") or {}
             for entity_id in all_zone_lights:
+                if respect_manual and manual_marks.get(entity_id):
+                    continue
                 if self._is_on(states, entity_id):
                     self._turn_off(entity_id)
             self.reason = "luz natural suficiente -> apagado"
@@ -742,5 +763,20 @@ class ZoneRunner:
                     self._state.setdefault("manual_override", {})[entity_id] = True
             else:
                 self._turn_off(entity_id)
-        self._manual_hs = hs if on else None
-        self._manual_brightness_pct = brightness_pct if on else None
+        # BUG REAL: esto sobreescribia brillo Y color manual juntos aunque
+        # el comando solo trajera uno de los dos -- `_on_brightness` ya se
+        # curaba en salud reenviando el `hs` existente para no tirarlo,
+        # pero `_on_hs`/`_on_color_temp` no hacian lo mismo al reves, asi
+        # que cambiar solo el color desde HomeKit borraba el brillo manual
+        # (la zona volvia a publicar el de la curva automatica en su
+        # lugar). Ahora, si esta parte del comando no viene informada
+        # (`None`) y la zona sigue encendida, se conserva lo que ya habia
+        # -- solo un `on=False` (apagar) limpia los dos de verdad.
+        if on:
+            if hs is not None:
+                self._manual_hs = hs
+            if brightness_pct is not None:
+                self._manual_brightness_pct = brightness_pct
+        else:
+            self._manual_hs = None
+            self._manual_brightness_pct = None

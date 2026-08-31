@@ -44,7 +44,7 @@ DEFAULT_REAPPLY_MINUTES = 5
 class LightingPlugin(Plugin):
     slug = "lighting"
     name = "Lighting Orchestrator"
-    version = "0.7.13"
+    version = "0.7.14"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
@@ -291,9 +291,15 @@ class LightingPlugin(Plugin):
         # causa de que por MQTT todo pareciera lentisimo y por la interfaz del
         # plugin fuera inmediato.
         mqtt_zone.bind(runner, after_command=self._persist_and_publish)
+        # `cfg.get(key, default)` solo cae al default si la CLAVE falta, no
+        # si esta presente pero vale `None` (p.ej. un PUT que borra el
+        # campo) -- `float(None)` reventaba aqui antes de llegar a arrancar
+        # la zona.
+        min_k_cfg = cfg.get("min_color_temp_kelvin")
+        max_k_cfg = cfg.get("max_color_temp_kelvin")
         mqtt_zone.publish_discovery(
-            min_color_temp_kelvin=float(cfg.get("min_color_temp_kelvin", 2200)),
-            max_color_temp_kelvin=float(cfg.get("max_color_temp_kelvin", 5000)),
+            min_color_temp_kelvin=float(min_k_cfg) if min_k_cfg is not None else 2200.0,
+            max_color_temp_kelvin=float(max_k_cfg) if max_k_cfg is not None else 5000.0,
         )
 
         self._runners[zone_id] = runner

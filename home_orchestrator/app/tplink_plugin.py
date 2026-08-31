@@ -54,7 +54,7 @@ REDISCOVER_INTERVAL_SECONDS = 5 * 60
 class TplinkPlugin(Plugin):
     slug = "tplink"
     name = "TP-Link Orchestrator"
-    version = "0.2.0"
+    version = "0.2.1"
 
     def __init__(self) -> None:
         self._manager = TplinkDeviceManager(

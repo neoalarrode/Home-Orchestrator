@@ -52,7 +52,7 @@ def fixed_tariff_prices(now: datetime, horizon_hours: int, cfg: FixedTariffConfi
     return [_fixed_price_for_hour(h, cfg) for h in hours]
 
 
-def _read_pvpc_hourly_prices(entity_id: str) -> dict[datetime, float]:
+def _read_pvpc_hourly_prices(entity_id: str, now: datetime) -> dict[datetime, float]:
     """
     Intenta leer el precio por hora desde los atributos habituales de las
     integraciones PVPC de HA (varian segun version/integracion). Se
@@ -64,7 +64,7 @@ def _read_pvpc_hourly_prices(entity_id: str) -> dict[datetime, float]:
     prices: dict[datetime, float] = {}
 
     # Formato tipo "price_00h".."price_23h" (integracion pvpc_hourly_pricing clasica)
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     for h in range(24):
         key = f"price_{h:02d}h"
         if key in attrs and attrs[key] is not None:
@@ -90,7 +90,7 @@ def pvpc_sensor_prices(entity_id: str, now: datetime, horizon_hours: int) -> lis
     hours = [now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=i) for i in range(horizon_hours)]
 
     try:
-        hourly = _read_pvpc_hourly_prices(entity_id)
+        hourly = _read_pvpc_hourly_prices(entity_id, now)
     except (ha_client.HAError, requests.RequestException):
         # Sensor no encontrado, o fallo de red/HA pasajero (502/503 del
         # Supervisor, timeout...) - se cae al precio actual repetido en vez

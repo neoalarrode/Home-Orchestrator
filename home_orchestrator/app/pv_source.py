@@ -57,7 +57,7 @@ def _fetch_raw(api_key: str, lat: float, lon: float, declination: float,
     return r.json().get("result", {}).get("watts", {})
 
 
-def _hourly_from_watts(watts: dict, horizon_hours: int) -> list[float]:
+def _hourly_from_watts(watts: dict, horizon_hours: int, now: datetime) -> list[float]:
     if not watts:
         return [0.0] * horizon_hours
     parsed = []
@@ -71,7 +71,7 @@ def _hourly_from_watts(watts: dict, horizon_hours: int) -> list[float]:
             # planificacion entero y dejaba las baterias sin orden. AttributeError
             # cubre una clave que no sea texto.
             continue
-    now = datetime.now().replace(minute=0, second=0, microsecond=0)
+    now = now.replace(minute=0, second=0, microsecond=0)
     out = []
     for i in range(horizon_hours):
         slot_start = now + timedelta(hours=i)
@@ -83,7 +83,7 @@ def _hourly_from_watts(watts: dict, horizon_hours: int) -> list[float]:
 
 def fetch_forecast_solar_api(array_id: str, api_key: str, lat: float, lon: float,
                               declination: float, azimuth: float, kwp: float,
-                              horizon_hours: int, refresh_seconds: int = 1800) -> list[float]:
+                              horizon_hours: int, now: datetime, refresh_seconds: int = 1800) -> list[float]:
     """
     Devuelve la previsión horaria (W) para este array, usando cache: solo
     llama a la API si han pasado mas de `refresh_seconds` desde la ultima
@@ -100,7 +100,7 @@ def fetch_forecast_solar_api(array_id: str, api_key: str, lat: float, lon: float
             if cached is None:
                 return [0.0] * horizon_hours
             # si falla la llamada, seguir usando la cache anterior aunque este vencida
-    return _hourly_from_watts(_cache[array_id]["watts"], horizon_hours)
+    return _hourly_from_watts(_cache[array_id]["watts"], horizon_hours, now)
 
 
 def _historical_actual_forecast(current_sensor: str, horizon_hours: int, days: int = 21) -> tuple[list[float], list[bool]] | None:
@@ -123,7 +123,7 @@ def _historical_actual_forecast(current_sensor: str, horizon_hours: int, days: i
     return ha_client.hourly_average_forecast_with_reliability(current_sensor, horizon_hours, days=days, default=0.0)
 
 
-def get_array_forecast(array: dict, horizon_hours: int, refresh_seconds: int) -> list[float]:
+def get_array_forecast(array: dict, horizon_hours: int, refresh_seconds: int, now: datetime) -> list[float]:
     mode = array.get("mode", "entity")
     if mode == "forecast_solar_api":
         official = fetch_forecast_solar_api(
@@ -136,6 +136,7 @@ def get_array_forecast(array: dict, horizon_hours: int, refresh_seconds: int) ->
             kwp=array.get("kwp", 1),
             horizon_hours=horizon_hours,
             refresh_seconds=refresh_seconds,
+            now=now,
         )
     else:
         entity_id = array.get("entity_id")
@@ -163,7 +164,7 @@ def get_array_forecast(array: dict, horizon_hours: int, refresh_seconds: int) ->
 
 def get_pv_forecast_total(
     pv_arrays: list[dict], horizon_hours: int, refresh_seconds: int = 1800,
-    live_now_overrides: dict[str, float] | None = None,
+    live_now_overrides: dict[str, float] | None = None, now: datetime | None = None,
 ) -> tuple[list[float], float | None, float]:
     """
     Suma la previsión de todos los arrays declarados, y corrige la hora
@@ -196,13 +197,15 @@ def get_pv_forecast_total(
     if not pv_arrays:
         return [0.0] * horizon_hours, None, 0.0
 
+    if now is None:
+        now = datetime.now()
     live_now_overrides = live_now_overrides or {}
     total = [0.0] * horizon_hours
     any_live = False
     hybrid_now = 0.0
 
     for array in pv_arrays:
-        series = get_array_forecast(array, horizon_hours, refresh_seconds)
+        series = get_array_forecast(array, horizon_hours, refresh_seconds, now)
         live_value = live_now_overrides.get(array.get("id"))
         if live_value is None:
             current_sensor = array.get("current_sensor")

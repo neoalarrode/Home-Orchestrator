@@ -40,7 +40,7 @@ log = logging.getLogger("shelly_plugin")
 class ShellyPlugin(Plugin):
     slug = "shelly"
     name = "Shelly Orchestrator"
-    version = "0.1.2"
+    version = "0.1.3"
 
     def __init__(self) -> None:
         self._manager = ShellyDeviceManager(on_any_change=self._on_device_change)
@@ -153,8 +153,19 @@ class ShellyPlugin(Plugin):
         try:
             self._manager.add_device(device["id"], cfg["host"])
         except Exception:
-            log.exception("Fallo conectando al dispositivo Shelly '%s'", cfg.get("name") or cfg["host"])
-            return
+            # BUG REAL, mismo patron ya corregido en Tuya/TP-Link/Govee: este
+            # `return` se saltaba el bloque MQTT de abajo, asi que un
+            # dispositivo apagado o que no respondia al arrancar NUNCA
+            # recibia su entidad en HA -- ni siquiera cuando el reconector de
+            # ShellyDeviceManager lo detectaba minutos despues, porque nadie
+            # volvia a publicar su discovery. `add_device` ya no propaga
+            # excepciones de conexion (ver su docstring, registra siempre y
+            # deja el reconector reintentando), asi que llegar aqui solo
+            # puede pasar por un fallo real de alta -- se sigue igual,
+            # comprobando si quedo registrado para no perder la exposicion.
+            log.exception("Fallo dando de alta el dispositivo Shelly '%s'", cfg.get("name") or cfg["host"])
+            if self._manager.get_device(device["id"]) is None:
+                return
 
         if cfg.get("expose_mqtt"):
             mqtt_dev = MqttShellyDevice(self._mqtt, self._manager, device["id"], cfg.get("name") or cfg["host"])

@@ -871,11 +871,34 @@ class ZoneRunner:
         )
 
     def _actuator_active(self, entity_id: str) -> bool:
+        # BUG REAL: un actuador puente (p.ej. "tuya:device:0", declarado en
+        # CONF_CLIMATE_ENTITIES para un aire con unidad exterior
+        # compartida) no empieza por "climate.", asi que caia en la rama
+        # `else` de aqui abajo -- que compara contra el estado "on", algo
+        # que un climate NUNCA vale (su estado es "heat"/"cool"/"off",
+        # tanto para un climate.* nativo de HA como para el sintetizado en
+        # `_get_state` a partir de `handle.hvac_mode`). Resultado: estos
+        # actuadores nunca contaban como activos, asi que `max_power_w`
+        # (proteccion de sobrecarga) nunca actuaba sobre ellos y el
+        # desglose de consumo por zona los reportaba siempre a 0W por
+        # mucho que estuvieran tirando a tope.
+        #
+        # Un climate.* real de HA SI puede traer `hvac_action` ("heating"/
+        # "cooling"/"idle"/"off"), que distingue "puesto en modo calor"
+        # de "compresor encendido ahora mismo" -- se usa si esta. Los
+        # puentes (Tuya y demas, ver TuyaClimateHandle) no exponen ese
+        # dato, asi que para esos el mejor proxy disponible es "el modo
+        # objetivo no es off" -- menos preciso que hvac_action, pero
+        # infinitamente mejor que "nunca activo".
         state = self._get_state(entity_id)
         if state is None:
             return False
-        if entity_id.startswith("climate."):
-            return (state.get("attributes") or {}).get("hvac_action") in ("heating", "cooling")
+        is_climate_like = entity_id.startswith("climate.") or self._is_bridge_ref(entity_id)
+        if is_climate_like:
+            hvac_action = (state.get("attributes") or {}).get("hvac_action")
+            if hvac_action is not None:
+                return hvac_action in ("heating", "cooling")
+            return state.get("state") not in ("off", None, "unknown", "unavailable")
         return state.get("state") == "on"
 
     def _actuator_power_w(self, entity_id: str) -> tuple[float | None, str]:
@@ -1305,7 +1328,12 @@ class ZoneRunner:
         simulate = bool(self.zone.get(CONF_SIMULATE, True))
         real_heat = real_cool = False
         real_other: str | None = None
-        target_temp = target_temp if target_temp is not None else self.current_temperature or 20.0
+        # `or 20.0` trataba una lectura real de 0.0C como "sin dato" y la
+        # sustituia por 20.0 -- justo lo contrario de "fallar seguro con
+        # lo que se sabe" cuando no hay preset resuelto.
+        target_temp = target_temp if target_temp is not None else (
+            self.current_temperature if self.current_temperature is not None else 20.0
+        )
         now = _utcnow()
 
         if capability in ("heat", "heat_cool"):
@@ -1694,4 +1722,3 @@ class ZoneRunner:
         futura proyectada EN VIVO con el mismo `scheduler.decide_action`
         que ya decide de verdad (ver decide_and_act mas arriba)."""
         return zone_forecast.build_forecast(self, hours_back=hours_back, hours_fwd=hours_fwd)
-        self.decide_and_act()

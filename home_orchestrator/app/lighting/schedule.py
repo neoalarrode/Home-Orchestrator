@@ -119,10 +119,17 @@ def value_at(cfg: dict, sun_state: dict | None, now: datetime | None = None) -> 
     if position is None:
         return None
 
-    min_b = float(cfg.get("min_brightness_pct", DEFAULT_MIN_BRIGHTNESS_PCT))
-    max_b = float(cfg.get("max_brightness_pct", DEFAULT_MAX_BRIGHTNESS_PCT))
-    min_k = float(cfg.get("min_color_temp_kelvin", DEFAULT_MIN_COLOR_TEMP_KELVIN))
-    max_k = float(cfg.get("max_color_temp_kelvin", DEFAULT_MAX_COLOR_TEMP_KELVIN))
+    # BUG REAL: `cfg.get(key, default)` solo cae al default si la CLAVE
+    # falta, no si esta presente pero vale `None` (p.ej. un PUT desde la UI
+    # que borra un campo numerico) -- `float(None)` reventaba con
+    # TypeError aqui, antes de que se evaluara presencia/apagado, dejando
+    # la zona entera congelada (ni enciende ni apaga) hasta arreglar la
+    # config a mano. Mismo criterio que ya usa `_occupied_with_delay` con
+    # `off_delay_seconds`: coger el valor y sustituir solo si es `None`.
+    min_b = float(cfg.get("min_brightness_pct") if cfg.get("min_brightness_pct") is not None else DEFAULT_MIN_BRIGHTNESS_PCT)
+    max_b = float(cfg.get("max_brightness_pct") if cfg.get("max_brightness_pct") is not None else DEFAULT_MAX_BRIGHTNESS_PCT)
+    min_k = float(cfg.get("min_color_temp_kelvin") if cfg.get("min_color_temp_kelvin") is not None else DEFAULT_MIN_COLOR_TEMP_KELVIN)
+    max_k = float(cfg.get("max_color_temp_kelvin") if cfg.get("max_color_temp_kelvin") is not None else DEFAULT_MAX_COLOR_TEMP_KELVIN)
 
     return {
         "brightness_pct": round(_brightness_pct(position, min_b, max_b)),

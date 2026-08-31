@@ -56,22 +56,31 @@ def accumulate(battery_id: str, battery_name: str, charged_wh: float, discharged
     """
     if charged_wh <= 0 and discharged_wh <= 0:
         return
-    data = _load()
-    entry = data.get(battery_id)
-    if entry is None and legacy_id and legacy_id in data:
-        entry = data.pop(legacy_id)
-    if entry is None:
-        entry = {
-            "name": battery_name,
-            "since": datetime.now().isoformat(),
-            "charged_wh": 0.0,
-            "discharged_wh": 0.0,
-        }
-    entry["name"] = battery_name  # por si cambio el nombre
-    entry["charged_wh"] += charged_wh
-    entry["discharged_wh"] += discharged_wh
-    data[battery_id] = entry
-    _save(data)
+    # BUG REAL: `_load`/`_save` solo cogen `_lock` cada uno por separado, no
+    # el ciclo completo lectura-modificacion-escritura -- dos llamadas casi
+    # simultaneas (p.ej. el ciclo de fondo y un recalculo manual desde la
+    # API) pueden leer el mismo estado en disco, sumar cada una su propio
+    # delta en memoria, y la que guarde en segundo lugar pisa a la otra sin
+    # ningun error: un incremento se pierde en silencio. Mismo patron ya
+    # correcto en `rescale_to_aggregate`/`grid_energy_store.accumulate` —
+    # aqui faltaba.
+    with _lock:
+        data = _load()
+        entry = data.get(battery_id)
+        if entry is None and legacy_id and legacy_id in data:
+            entry = data.pop(legacy_id)
+        if entry is None:
+            entry = {
+                "name": battery_name,
+                "since": datetime.now().isoformat(),
+                "charged_wh": 0.0,
+                "discharged_wh": 0.0,
+            }
+        entry["name"] = battery_name  # por si cambio el nombre
+        entry["charged_wh"] += charged_wh
+        entry["discharged_wh"] += discharged_wh
+        data[battery_id] = entry
+        _save(data)
 
 
 def rescale_to_aggregate(battery_ids: list[str], target_charged_wh: float,

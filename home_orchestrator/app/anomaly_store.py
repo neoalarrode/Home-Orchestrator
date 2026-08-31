@@ -67,33 +67,37 @@ def update(now: datetime, live_load_w: float, expected_load_w: float) -> dict:
     con "changed": True si el estado (ok/anomaly) acaba de cambiar en este
     ciclo — para saber cuando toca notificar en vez de repetir cada minuto.
     """
-    data = _load()
-    was_status = data["status"]
+    # Ciclo completo lectura-modificacion-escritura bajo el mismo lock que
+    # ya protege `_load`/`_save` por separado -- ver el mismo arreglo en
+    # lifetime_store.accumulate.
+    with _lock:
+        data = _load()
+        was_status = data["status"]
 
-    is_over = (
-        live_load_w > expected_load_w * THRESHOLD_RATIO
-        and live_load_w - expected_load_w > THRESHOLD_MIN_W
-    )
+        is_over = (
+            live_load_w > expected_load_w * THRESHOLD_RATIO
+            and live_load_w - expected_load_w > THRESHOLD_MIN_W
+        )
 
-    if is_over:
-        data["over_streak"] = data.get("over_streak", 0) + 1
-        data["under_streak"] = 0
-    else:
-        data["under_streak"] = data.get("under_streak", 0) + 1
-        data["over_streak"] = 0
+        if is_over:
+            data["over_streak"] = data.get("over_streak", 0) + 1
+            data["under_streak"] = 0
+        else:
+            data["under_streak"] = data.get("under_streak", 0) + 1
+            data["over_streak"] = 0
 
-    if data["status"] == "ok" and data["over_streak"] >= CONFIRM_CYCLES:
-        data["status"] = "anomaly"
-        data["since"] = now.isoformat()
-    elif data["status"] == "anomaly" and data["under_streak"] >= CLEAR_CYCLES:
-        data["status"] = "ok"
-        data["since"] = None
+        if data["status"] == "ok" and data["over_streak"] >= CONFIRM_CYCLES:
+            data["status"] = "anomaly"
+            data["since"] = now.isoformat()
+        elif data["status"] == "anomaly" and data["under_streak"] >= CLEAR_CYCLES:
+            data["status"] = "ok"
+            data["since"] = None
 
-    data["live_load_w"] = round(live_load_w)
-    data["expected_load_w"] = round(expected_load_w)
-    _save(data)
+        data["live_load_w"] = round(live_load_w)
+        data["expected_load_w"] = round(expected_load_w)
+        _save(data)
 
-    return {**data, "changed": data["status"] != was_status}
+        return {**data, "changed": data["status"] != was_status}
 
 
 def get_status() -> dict:

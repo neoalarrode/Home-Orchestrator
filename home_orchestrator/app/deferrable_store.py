@@ -107,17 +107,21 @@ def get_schedule(load_id: str) -> dict | None:
 
 
 def save_schedule(load_id: str, schedule: dict) -> None:
-    data = _load()
-    data["schedules"][load_id] = schedule
-    _save(data)
+    # Ciclo completo lectura-modificacion-escritura bajo el mismo lock --
+    # ver el mismo arreglo en lifetime_store.accumulate.
+    with _lock:
+        data = _load()
+        data["schedules"][load_id] = schedule
+        _save(data)
 
 
 def clear_load(load_id: str) -> None:
     """Al borrar una carga diferible desde la interfaz, limpiar tambien su estado guardado."""
-    data = _load()
-    data["schedules"].pop(load_id, None)
-    data["sessions"].pop(load_id, None)
-    _save(data)
+    with _lock:
+        data = _load()
+        data["schedules"].pop(load_id, None)
+        data["sessions"].pop(load_id, None)
+        _save(data)
 
 
 def truncate_occurrence_now(load_id: str, now: datetime) -> None:
@@ -128,34 +132,37 @@ def truncate_occurrence_now(load_id: str, now: datetime) -> None:
     resto de ciclos deja de estar "en ventana" sin tener que recalcular
     todo el dia.
     """
-    data = _load()
-    schedule = data["schedules"].get(load_id)
-    if not schedule:
-        return
-    for occ in schedule.get("occurrences", []):
-        start, end = datetime.fromisoformat(occ["start"]), datetime.fromisoformat(occ["end"])
-        if start <= now < end:
-            occ["end"] = now.isoformat()
-            occ["interrupted"] = True
-    _save(data)
+    with _lock:
+        data = _load()
+        schedule = data["schedules"].get(load_id)
+        if not schedule:
+            return
+        for occ in schedule.get("occurrences", []):
+            start, end = datetime.fromisoformat(occ["start"]), datetime.fromisoformat(occ["end"])
+            if start <= now < end:
+                occ["end"] = now.isoformat()
+                occ["interrupted"] = True
+        _save(data)
 
 
 def record_no_surplus_streak(load_id: str, has_surplus: bool) -> int:
-    data = _load()
-    sess = data["sessions"].setdefault(load_id, _default_session())
-    sess["no_surplus_streak"] = 0 if has_surplus else sess.get("no_surplus_streak", 0) + 1
-    _save(data)
-    return sess["no_surplus_streak"]
+    with _lock:
+        data = _load()
+        sess = data["sessions"].setdefault(load_id, _default_session())
+        sess["no_surplus_streak"] = 0 if has_surplus else sess.get("no_surplus_streak", 0) + 1
+        _save(data)
+        return sess["no_surplus_streak"]
 
 
 def record_session_start(load_id: str, now: datetime) -> None:
-    data = _load()
-    sess = data["sessions"].setdefault(load_id, _default_session())
-    if sess.get("active_since") is None:
-        sess["active_since"] = now.isoformat()
-        sess["active_energy_wh"] = 0.0
-        sess["last_accumulate_ts"] = now.isoformat()
-    _save(data)
+    with _lock:
+        data = _load()
+        sess = data["sessions"].setdefault(load_id, _default_session())
+        if sess.get("active_since") is None:
+            sess["active_since"] = now.isoformat()
+            sess["active_energy_wh"] = 0.0
+            sess["last_accumulate_ts"] = now.isoformat()
+        _save(data)
 
 
 def accumulate_session_energy(load_id: str, power_w: float, now: datetime) -> None:
@@ -169,46 +176,48 @@ def accumulate_session_energy(load_id: str, power_w: float, now: datetime) -> No
     (last_accumulate_ts == active_since, puesto por record_session_start)
     integra 0 Wh -- correcto, todavia no ha pasado tiempo real.
     """
-    data = _load()
-    sess = data["sessions"].setdefault(load_id, _default_session())
-    if sess.get("active_since") is None:
-        return
-    last_ts = sess.get("last_accumulate_ts")
-    if last_ts is not None:
-        elapsed_h = min((now - datetime.fromisoformat(last_ts)).total_seconds(), MAX_ACCUMULATE_GAP_SECONDS) / 3600
-        if elapsed_h > 0:
-            sess["active_energy_wh"] = sess.get("active_energy_wh", 0.0) + power_w * elapsed_h
-    sess["last_accumulate_ts"] = now.isoformat()
-    _save(data)
+    with _lock:
+        data = _load()
+        sess = data["sessions"].setdefault(load_id, _default_session())
+        if sess.get("active_since") is None:
+            return
+        last_ts = sess.get("last_accumulate_ts")
+        if last_ts is not None:
+            elapsed_h = min((now - datetime.fromisoformat(last_ts)).total_seconds(), MAX_ACCUMULATE_GAP_SECONDS) / 3600
+            if elapsed_h > 0:
+                sess["active_energy_wh"] = sess.get("active_energy_wh", 0.0) + power_w * elapsed_h
+        sess["last_accumulate_ts"] = now.isoformat()
+        _save(data)
 
 
 def end_session(load_id: str, now: datetime) -> float | None:
     """Cierra la sesion activa (si la habia) y devuelve la energia medida —
     None si no habia ninguna sesion en curso (nada que cerrar)."""
-    data = _load()
-    sess = data["sessions"].get(load_id)
-    if not sess or sess.get("active_since") is None:
-        return None
-    energy = sess.get("active_energy_wh", 0.0)
-    started = datetime.fromisoformat(sess["active_since"])
-    duration_min = max(0.0, (now - started).total_seconds() / 60)
-    sess["active_since"] = None
-    sess["active_energy_wh"] = 0.0
-    sess["no_surplus_streak"] = 0
-    sess["last_accumulate_ts"] = None
-    # `energy > 1` ignora sesiones vacias/ruido de sensor; el tope de
-    # duracion ignora una ventana que nunca se cerro a tiempo -- ver
-    # MAX_PLAUSIBLE_SESSION_MINUTES. Ambos deben cumplirse para que la
-    # muestra sea real y merezca entrar en el historico.
-    if energy > 1 and duration_min <= MAX_PLAUSIBLE_SESSION_MINUTES:
-        history_wh = sess.setdefault("history_wh", [])
-        history_min = sess.setdefault("history_minutes", [])
-        history_wh.append(round(energy))
-        history_min.append(round(duration_min, 1))
-        sess["history_wh"] = history_wh[-MAX_SESSIONS:]
-        sess["history_minutes"] = history_min[-MAX_SESSIONS:]
-    _save(data)
-    return energy
+    with _lock:
+        data = _load()
+        sess = data["sessions"].get(load_id)
+        if not sess or sess.get("active_since") is None:
+            return None
+        energy = sess.get("active_energy_wh", 0.0)
+        started = datetime.fromisoformat(sess["active_since"])
+        duration_min = max(0.0, (now - started).total_seconds() / 60)
+        sess["active_since"] = None
+        sess["active_energy_wh"] = 0.0
+        sess["no_surplus_streak"] = 0
+        sess["last_accumulate_ts"] = None
+        # `energy > 1` ignora sesiones vacias/ruido de sensor; el tope de
+        # duracion ignora una ventana que nunca se cerro a tiempo -- ver
+        # MAX_PLAUSIBLE_SESSION_MINUTES. Ambos deben cumplirse para que la
+        # muestra sea real y merezca entrar en el historico.
+        if energy > 1 and duration_min <= MAX_PLAUSIBLE_SESSION_MINUTES:
+            history_wh = sess.setdefault("history_wh", [])
+            history_min = sess.setdefault("history_minutes", [])
+            history_wh.append(round(energy))
+            history_min.append(round(duration_min, 1))
+            sess["history_wh"] = history_wh[-MAX_SESSIONS:]
+            sess["history_minutes"] = history_min[-MAX_SESSIONS:]
+        _save(data)
+        return energy
 
 
 def get_estimated_energy_wh(load_id: str) -> float | None:

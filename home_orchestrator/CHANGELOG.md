@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.77.17
+
+**Auditoría completa del repositorio: incongruencias y condiciones de carrera reales en Energy, Climate, Lighting, TP-Link, Shelly y Govee (plugins Energy 0.12.2, Climate 0.6.2, Lighting 0.7.14, TP-Link 0.2.1, Shelly 0.1.3, Govee 0.1.1).**
+
+Revisión pedida expresamente por el usuario ("revisa todo el código del proyecto en busca de errores, incongruencias y mejoras") y corregida en su totalidad, por orden de gravedad, sin repasar cada hallazgo uno a uno:
+
+- **Lighting**: un valor de configuración presente pero `None` (p.ej. tras limpiar un campo desde la interfaz) tiraba `TypeError` en `schedule.value_at()`/`zone_runner`/`lighting_plugin` (`cfg.get(clave, DEFAULT)` no cubre "presente pero None") -- congelaba la lógica reactiva ENTERA de la zona, ni encendido/apagado seguía funcionando. `manual_command()` pisaba el color manual al cambiar solo el brillo (y viceversa) por asignar los dos a la vez incondicionalmente. Y los dos bucles de "forzar apagado" (fuera de regla activa / luz de día suficiente) ignoraban `respect_manual_changes`, apagando una luz que el usuario acababa de encender a mano.
+- **Climate**: `_actuator_active()` no reconocía los actuadores "puente" (p.ej. `tuya:device:0`, aire compartido enrutado por otro plugin) como activos nunca, tratándolos siempre como climate.* nativo. Una temperatura real de 0°C se trataba como "sin dato" (`or 20.0` en vez de comprobar `is not None`). Código muerto tras un `return` en `build_forecast_chart()`.
+- **Condición de carrera sistémica en los stores JSON** (`lifetime_store`, `capacity_store`, `anomaly_store`, `forecast_store`, `history_store`, `deferrable_store`): el lock solo envolvía `_load()`/`_save()` por separado, no el ciclo completo lectura-modificación-escritura -- dos llamadas casi simultáneas podían perder un incremento/segmento entero en silencio. El caso más grave era `deferrable_store`: podía dejar una sesión de carga diferible "colgada" para siempre. Ahora todo el ciclo va bajo el mismo `with _lock:`.
+- **Baterías**: la rama de "descarga bloqueada" (batería llena + excedente solar) no desactivaba la tarea/switch de carga, dejando una orden de carga previa activa sin nada que la parara. Doble lectura de SOC por ciclo (una en `run_cycle`, otra independiente en `plan_distribution`) que podían divergir por el tiempo transcurrido entre medias -- ahora se pasa una sola lectura. El diccionario `_last_published_at` (throttle de publicación de sensores) se leía/escribía sin lock entre el ciclo de fondo y peticiones API.
+- **Un solo reloj**: `pv_source._hourly_from_watts` y `tariff_source._read_pvpc_hourly_prices` usaban `datetime.now()` interno en vez del `now` ya recibido del llamador -- inconsistente con el resto del código, que pasa siempre el mismo `now` de extremo a extremo del ciclo.
+- **EcoFlow Cloud**: `_subscribed_sns` (qué dispositivos ya están suscritos por MQTT) se mutaba sin el lock de la clase -- el ciclo de fondo y una reconexión MQTT casi simultáneos podían perder una suscripción sin ningún aviso.
+- **Shelly**: mismo patrón ya corregido en Tuya/TP-Link/Govee, que a Shelly nunca había llegado -- `add_device()` llamaba a `_detect()` ANTES de registrar nada, así que un dispositivo apagado/sin red al añadirlo desaparecía para siempre (sin ningún reconector que lo reintentara) hasta reiniciar el add-on. Ahora se registra siempre y un nuevo `_reconnect_loop` (cada 30s) reintenta detectar los pendientes, igual que ya hacían Tuya/TP-Link. `_start_device` tampoco se saltaba ya la exposición MQTT si el dispositivo quedaba registrado pese al fallo.
+- **TP-Link**: locking inconsistente en `TplinkDeviceManager` -- `_poll_loop`, `get_device`, `light_handle`, `_turn_on`/`_turn_off` y `_reconcile_known_devices` leían `self._devices`/`self._known_macs` sin el lock que sí usan `add_device`/`remove_device`/`_reconnect_device`, con riesgo de `RuntimeError: dictionary changed size during iteration` en el bucle de sondeo.
+- **Govee**: `_start_device` no envolvía el alta del dispositivo en try/except (a diferencia de Shelly/Tuya/TP-Link) -- un fallo inesperado dando de alta uno abortaba el arranque del resto.
+
 ## 0.77.16
 
 **El propio reinicio para desplegar el blindaje anterior volvió a disparar el mismo salto -- esta vez en la reconstrucción del hueco, no en el ciclo en vivo (plugin Energy 0.12.1).**

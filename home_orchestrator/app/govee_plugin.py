@@ -37,7 +37,7 @@ log = logging.getLogger("govee_plugin")
 class GoveePlugin(Plugin):
     slug = "govee"
     name = "Govee Orchestrator"
-    version = "0.1.0"
+    version = "0.1.1"
 
     def __init__(self) -> None:
         self._manager = GoveeDeviceManager(on_any_change=self._on_device_change)
@@ -163,7 +163,16 @@ class GoveePlugin(Plugin):
         if not cfg.get("host"):
             log.warning("Dispositivo Govee '%s' sin host -- no se conecta", cfg.get("name") or device["id"])
             return
-        self._manager.add_device(device["id"], cfg["host"])
+        # Mismo patron ya corregido en Shelly/Tuya/TP-Link: un fallo dando de
+        # alta UN dispositivo (poco probable aqui, `add_device` solo hace un
+        # `sendto` UDP ya protegido, pero cualquier error inesperado) no debe
+        # abortar el bucle de `start_background_threads` y dejar sin arrancar
+        # al resto de dispositivos Govee.
+        try:
+            self._manager.add_device(device["id"], cfg["host"])
+        except Exception:
+            log.exception("Fallo dando de alta el dispositivo Govee '%s'", cfg.get("name") or cfg["host"])
+            return
 
         if cfg.get("expose_mqtt"):
             mqtt_dev = MqttGoveeDevice(self._mqtt, self._manager, device["id"], cfg.get("name") or cfg["host"])

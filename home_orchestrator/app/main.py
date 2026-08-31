@@ -122,6 +122,11 @@ ANOMALY_NOTIFICATION_ID = "battery_orchestrator_anomaly"
 # vez (para no dejar al resto de HA sin dato ninguno mientras arranca).
 PUBLISH_MIN_INTERVAL_SECONDS = 120
 _last_published_at: dict[str, float] = {}
+# Ciclo de fondo y peticiones API (p.ej. un recalculo manual que tambien
+# publique sensores) pueden llamar a _publish_sensor_throttled casi a la
+# vez -- sin lock, dos hilos podian leer "toca publicar" a la vez para el
+# mismo entity_id y mandar la peticion HTTP duplicada a HA.
+_publish_lock = threading.Lock()
 
 
 def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
@@ -144,19 +149,20 @@ def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
         # Publicar un hueco deja la entidad en "None" y ensucia el historico:
         # mejor no tocarla y conservar el ultimo valor bueno.
         return
-    now_ts = time.time()
-    last = _last_published_at.get(entity_id)
-    if last is not None and (now_ts - last) < min_interval:
-        return
-    try:
-        ha_client.publish_sensor(entity_id, state, attributes)
-    except Exception:
-        log.warning(
-            "No se ha podido publicar %s en HA (se reintenta en el proximo ciclo)",
-            entity_id, exc_info=True,
-        )
-        return
-    _last_published_at[entity_id] = now_ts
+    with _publish_lock:
+        now_ts = time.time()
+        last = _last_published_at.get(entity_id)
+        if last is not None and (now_ts - last) < min_interval:
+            return
+        try:
+            ha_client.publish_sensor(entity_id, state, attributes)
+        except Exception:
+            log.warning(
+                "No se ha podido publicar %s en HA (se reintenta en el proximo ciclo)",
+                entity_id, exc_info=True,
+            )
+            return
+        _last_published_at[entity_id] = now_ts
 
 
 def _battery_from_cfg(b: dict, cfg: dict) -> battery_exec.Battery:
@@ -693,7 +699,7 @@ def run_cycle():
     # falta un sensor agregado en HA para tener varios strings/tejados.
     pv_forecast, pv_now_actual, hybrid_pv_now_w = pv_source.get_pv_forecast_total(
         cfg["pv_arrays"], horizon, refresh_seconds=cfg["general"]["pv_refresh_seconds"],
-        live_now_overrides=_ecoflow_pv_live_overrides(cfg),
+        live_now_overrides=_ecoflow_pv_live_overrides(cfg), now=now,
     )
 
     # Consumo real = consumo base (ya sin carga de baterias) + solar (de
@@ -985,7 +991,7 @@ def run_cycle():
     if now_hp.charge_source == "solar":
         ac_charge_w = max(0.0, now_hp.charge_w - hybrid_pv_now_w)
     distribution = battery_exec.plan_distribution(
-        batteries, ac_charge_w, now_hp.discharge_w, pv_surplus_w=pv_surplus_now
+        batteries, ac_charge_w, now_hp.discharge_w, pv_surplus_w=pv_surplus_now, socs=socs
     )
     log_lines = battery_exec.execute(batteries, distribution, dry_run=dry_run)
 

@@ -295,19 +295,27 @@ class EcoFlowCloudClient:
     def ensure_subscribed(self, sn: str):
         """Se suscribe a los topics de un dispositivo la primera vez que
         se declara — sin esto no llega ningun dato en vivo de el."""
-        if sn in self._subscribed_sns or self._client is None:
-            return
-        for topic in (f"/open/{self._username}/{sn}/quota", f"/open/{self._username}/{sn}/set_reply"):
-            self._client.subscribe(topic, qos=1)
-        self._subscribed_sns.add(sn)
+        # Mismo motivo que el resto de estado compartido de esta clase (ver
+        # self._lock en __init__): el ciclo de fondo y una reconexion MQTT
+        # (_on_connect, en otro hilo de paho) pueden llamar aqui casi a la
+        # vez para el mismo sn -- sin lock, las dos podian ver "no suscrito
+        # todavia" y una de las suscripciones se perdia en silencio.
+        with self._lock:
+            if sn in self._subscribed_sns or self._client is None:
+                return
+            for topic in (f"/open/{self._username}/{sn}/quota", f"/open/{self._username}/{sn}/set_reply"):
+                self._client.subscribe(topic, qos=1)
+            self._subscribed_sns.add(sn)
 
     # -- callbacks MQTT -----------------------------------------------------
 
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         if rc == 0:
             log.info("Conectado al MQTT de EcoFlow")
-            for sn in list(self._subscribed_sns):
-                self._subscribed_sns.discard(sn)
+            with self._lock:
+                pending = list(self._subscribed_sns)
+                self._subscribed_sns.clear()
+            for sn in pending:
                 self.ensure_subscribed(sn)
         else:
             log.warning(f"Conexion MQTT de EcoFlow rechazada, rc={rc}")

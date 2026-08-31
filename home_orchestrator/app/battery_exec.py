@@ -280,9 +280,17 @@ def _distribute(total_w: float, items: list[tuple[Battery, float, float]]) -> di
 
 
 def plan_distribution(batteries: list[Battery], charge_w: float, discharge_w: float,
-                       pv_surplus_w: float = 0.0) -> dict:
+                       pv_surplus_w: float = 0.0, socs: dict | None = None) -> dict:
     """
-    Lee el SOC real de cada bateria (una lectura por ciclo, todas a la vez).
+    SOC real de cada bateria. Si el llamador ya lo leyo este mismo ciclo
+    (run_cycle en main.py lo necesita antes, para el SOC agregado del
+    plan), se le pasa aqui via `socs` para no leerlo una segunda vez —
+    dos lecturas del mismo sensor separadas en el tiempo (todo lo que
+    tarda en calcularse el plan y ejecutar las cargas diferibles de por
+    medio) podian divergir y dejar la decision de bloqueo de descarga
+    basada en un SOC distinto del que ya se habia usado para calcular
+    `current_soc_pct`/la reserva. Si no se pasa (uso independiente,
+    p.ej. tests), se lee aqui como antes.
 
     - Baterias cuyo sensor de SOC este 'unavailable'/'unknown': se excluyen
       de este ciclo por completo (ni cargan ni descargan), para no asumir
@@ -297,7 +305,8 @@ def plan_distribution(batteries: list[Battery], charge_w: float, discharge_w: fl
       para no dejarla autodescargarse sin necesidad mientras el sol ya
       cubre el consumo.
     """
-    socs = {b.id: b.read_soc_pct() for b in batteries}
+    if socs is None:
+        socs = {b.id: b.read_soc_pct() for b in batteries}
     unavailable = [b for b in batteries if socs[b.id] is None]
     available = [b for b in batteries if socs[b.id] is not None]
 
@@ -431,12 +440,19 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
                         ha_client.set_number(b.discharge_power_limit_entity, power)
         elif action == "discharge" and not entry["enabled"]:
             line = f"[{b.name}] descarga BLOQUEADA a 0W ({entry['note']}, SOC {soc_txt})"
+            # Misma exclusividad que la rama "sin accion" de abajo: bloquear
+            # la descarga no debe dejar la carga activa de una orden previa
+            # (p.ej. si el ciclo anterior estaba cargando y este bloquea la
+            # descarga por bateria llena + excedente, sin esto la tarea/switch
+            # de carga seguia encendida sin que nada la desactivara).
             if is_ecoflow:
                 def apply(b=b):
+                    b.ecoflow_set_charging_task(enable=False)
                     if not b.ecoflow_set_discharging_task(enable=True, power_limit_w=0):
                         raise RuntimeError("EcoFlow no confirmo el bloqueo de descarga")
             else:
                 def apply(b=b):
+                    ha_client.turn_off(b.charge_switch)
                     if b.discharge_power_limit_entity:
                         ha_client.turn_on(b.discharge_switch)
                         ha_client.set_number(b.discharge_power_limit_entity, 0)

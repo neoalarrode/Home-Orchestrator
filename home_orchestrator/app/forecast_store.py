@@ -77,25 +77,28 @@ def record_and_compare(now: datetime, predicted_end_of_hour_soc_pct: float, actu
     o None si todavia no ha pasado ninguna hora completa desde que arranco
     el add-on.
     """
-    data = _load()
-    key = _hour_key(now)
-    if data.get("current_hour") != key:
-        prev_key = data.get("current_hour")
-        prev_pred = data.get("predicted_pct")
-        prev_start = data.get("start_pct")
-        if prev_key is not None and prev_pred is not None:
-            predicted_delta = prev_pred - prev_start if prev_start is not None else 0.0
-            data["last_result"] = {
-                "hour": prev_key,
-                "predicted_pct": prev_pred,
-                "actual_pct": round(actual_soc_pct_now, 1),
-                "deviation_pct": round(actual_soc_pct_now - prev_pred, 1),
-                "predicted_delta_pct": round(predicted_delta, 1),
-            }
-        data["current_hour"] = key
-        data["predicted_pct"] = round(predicted_end_of_hour_soc_pct, 1)
-        # SOC real justo al empezar esta hora — referencia para calcular
-        # cuanto preveia moverse la bateria (ver predicted_delta_pct arriba).
-        data["start_pct"] = round(actual_soc_pct_now, 1)
-        _save(data)
-    return data.get("last_result")
+    # Ciclo completo lectura-modificacion-escritura bajo el mismo lock --
+    # ver el mismo arreglo en lifetime_store.accumulate.
+    with _lock:
+        data = _load()
+        key = _hour_key(now)
+        if data.get("current_hour") != key:
+            prev_key = data.get("current_hour")
+            prev_pred = data.get("predicted_pct")
+            prev_start = data.get("start_pct")
+            if prev_key is not None and prev_pred is not None:
+                predicted_delta = prev_pred - prev_start if prev_start is not None else 0.0
+                data["last_result"] = {
+                    "hour": prev_key,
+                    "predicted_pct": prev_pred,
+                    "actual_pct": round(actual_soc_pct_now, 1),
+                    "deviation_pct": round(actual_soc_pct_now - prev_pred, 1),
+                    "predicted_delta_pct": round(predicted_delta, 1),
+                }
+            data["current_hour"] = key
+            data["predicted_pct"] = round(predicted_end_of_hour_soc_pct, 1)
+            # SOC real justo al empezar esta hora — referencia para calcular
+            # cuanto preveia moverse la bateria (ver predicted_delta_pct arriba).
+            data["start_pct"] = round(actual_soc_pct_now, 1)
+            _save(data)
+        return data.get("last_result")

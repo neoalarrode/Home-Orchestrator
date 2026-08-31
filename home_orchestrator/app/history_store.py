@@ -50,13 +50,16 @@ def _save(data: dict) -> None:
 
 def record(now: datetime, entry: dict) -> None:
     """Guarda/actualiza la entrada de la hora actual con la decision real tomada."""
-    data = _load()
-    data[_hour_key(now)] = entry
+    # Ciclo completo lectura-modificacion-escritura bajo el mismo lock --
+    # ver el mismo arreglo en lifetime_store.accumulate.
+    with _lock:
+        data = _load()
+        data[_hour_key(now)] = entry
 
-    cutoff = now - timedelta(hours=MAX_AGE_HOURS)
-    data = {k: v for k, v in data.items() if k >= _hour_key(cutoff)}
+        cutoff = now - timedelta(hours=MAX_AGE_HOURS)
+        data = {k: v for k, v in data.items() if k >= _hour_key(cutoff)}
 
-    _save(data)
+        _save(data)
 
 
 def get_all() -> list[dict]:

@@ -116,7 +116,14 @@ class TplinkDeviceManager:
     async def _poll_loop(self) -> None:
         while True:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
-            for device_id, device in list(self._devices.items()):
+            # `add_device`/`remove_device` (llamados desde el hilo de Flask,
+            # bajo `self._lock`) pueden mutar `self._devices` mientras este
+            # bucle (en el hilo del event loop) lo recorre -- sin el mismo
+            # lock aqui, un alta/baja a mitad de la copia podia lanzar
+            # "dictionary changed size during iteration".
+            with self._lock:
+                snapshot = list(self._devices.items())
+            for device_id, device in snapshot:
                 try:
                     await device.update()
                 except AuthenticationError:
@@ -229,7 +236,8 @@ class TplinkDeviceManager:
         except Exception:
             log.debug("TP-Link %s: fallo reconectando en %s", device_id, new_host, exc_info=True)
             return
-        old_device = self._devices.get(device_id)
+        with self._lock:
+            old_device = self._devices.get(device_id)
         with self._lock:
             self._devices[device_id] = device
             if primed:
@@ -258,13 +266,16 @@ class TplinkDeviceManager:
         lo que un escaneo acaba de encontrar -- si alguno reaparece en una IP
         distinta a la que tenemos, es una renovacion de DHCP, no un aparato
         nuevo."""
-        for device_id, mac in list(self._known_macs.items()):
+        with self._lock:
+            known_macs_snapshot = list(self._known_macs.items())
+        for device_id, mac in known_macs_snapshot:
             if self.connected(device_id):
                 continue
             match_host = next((host for host, info in found.items() if info.get("mac") == mac), None)
             if match_host is None:
                 continue
-            current = self._devices.get(device_id)
+            with self._lock:
+                current = self._devices.get(device_id)
             if current is not None and getattr(current, "host", None) == match_host:
                 continue
             await self._reconnect_device(device_id, match_host, credentials)
@@ -346,10 +357,12 @@ class TplinkDeviceManager:
     def _remember_mac(self, device_id: str, device: Device) -> None:
         mac = _normalize_mac(getattr(device, "mac", None))
         if mac:
-            self._known_macs[device_id] = mac
+            with self._lock:
+                self._known_macs[device_id] = mac
 
     def get_device(self, device_id: str) -> Device | None:
-        return self._devices.get(device_id)
+        with self._lock:
+            return self._devices.get(device_id)
 
     def connected(self, device_id: str) -> bool:
         # python-kasa no expone un "connected" persistente como el LAN push de
@@ -404,7 +417,8 @@ class TplinkDeviceManager:
             raise last_exc
 
     async def _turn_on(self, device_id: str, brightness_pct: float | None, color_temp_kelvin: float | None, hs: tuple[float, float] | None) -> None:
-        device = self._devices.get(device_id)
+        with self._lock:
+            device = self._devices.get(device_id)
         if device is None:
             raise KeyError(f"dispositivo TP-Link desconocido: {device_id}")
         light = device.modules.get(Module.Light)
@@ -428,7 +442,8 @@ class TplinkDeviceManager:
             await self._with_retry(device.turn_on)
 
     async def _turn_off(self, device_id: str) -> None:
-        device = self._devices.get(device_id)
+        with self._lock:
+            device = self._devices.get(device_id)
         if device is None:
             raise KeyError(f"dispositivo TP-Link desconocido: {device_id}")
         await self._with_retry(device.turn_off)
@@ -443,7 +458,8 @@ class TplinkDeviceManager:
     # ------------------------------------------------------- fachada light
 
     def light_handle(self, device_id: str) -> "TplinkLightHandle | None":
-        device = self._devices.get(device_id)
+        with self._lock:
+            device = self._devices.get(device_id)
         if device is None or device.modules.get(Module.Light) is None:
             return None
         return TplinkLightHandle(self, device_id)
