@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.16
+
+**El propio reinicio para desplegar el blindaje anterior volvió a disparar el mismo salto -- esta vez en la reconstrucción del hueco, no en el ciclo en vivo (plugin Energy 0.12.1).**
+
+Confirmado en directo la madrugada del 31/08: al reiniciar el addon para desplegar v0.77.15, `energy_recovery.py` reconstruyó el hueco del reinicio leyendo el histórico REAL de HA para el sensor de red -- y ese histórico todavía tenía grabada, tal cual, la lectura disparatada del incidente anterior (el propio recorder de HA la había guardado en su momento, nadie la había filtrado nunca). `_plausible_power_w` (v0.77.15) protege las lecturas EN VIVO; esta reconstrucción integra historial crudo por un camino completamente distinto, sin ningún filtro propio.
+
+Mismo techo de sensatez (`IMPLAUSIBLE_POWER_CEILING_W`, duplicado en este módulo porque `main.py` lo importa y no al revés) aplicado ahora también en `integrate_series()`: cualquier muestra histórica por encima del techo se descarta antes de integrarla -- se trata como si esa lectura nunca hubiera existido, no como "el hueco no se puede reconstruir" (el resto del hueco sí se reconstruye con las muestras buenas). Corregidas además a mano, vía `recorder/import_statistics`, las estadísticas horarias que este reinicio concreto volvió a inflar.
+
 ## 0.77.15
 
 **Blindaje real contra los saltos de miles de kWh: ninguna lectura de potencia disparatada vuelve a integrarse (plugin Energy 0.12.0).**

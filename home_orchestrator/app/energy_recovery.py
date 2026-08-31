@@ -41,6 +41,19 @@ MIN_GAP_SECONDS = 120
 # apagado. Se avisa y se deja constancia, en vez de rellenar a ciegas.
 MAX_GAP_HOURS = 48.0
 
+# BUG REAL, noche del 30-31/08: un reinicio del addon (justo para desplegar el
+# blindaje de `_plausible_power_w` en main.py) volvio a disparar el mismo
+# salto de miles de kWh -- esta vez en la reconstruccion del hueco, no en el
+# ciclo en vivo. `_plausible_power_w` filtra lecturas EN VIVO, pero esta
+# funcion integra el HISTORICO CRUDO de HA (`ws.get_history`), que sigue
+# teniendo la lectura disparatada del sensor de origen tal cual la grabo el
+# propio recorder de HA en su momento -- nadie la habia filtrado nunca. Mismo
+# techo que `IMPLAUSIBLE_POWER_CEILING_W` en main.py (deliberadamente muy
+# holgado: ningun sensor real de esta instalacion puede dar mas), duplicado
+# aqui porque `main.py` importa este modulo y no al reves. Si se cambia uno,
+# cambiar el otro.
+IMPLAUSIBLE_POWER_CEILING_W = 30000.0
+
 
 def integrate_series(points: list[dict], start: datetime, end: datetime) -> float:
     """Wh integrados de una serie de potencia (W) entre `start` y `end`.
@@ -66,6 +79,13 @@ def integrate_series(points: list[dict], start: datetime, end: datetime) -> floa
             valor = float(p.get("state"))
         except (TypeError, ValueError):
             continue  # "unavailable", "unknown"... no es una lectura
+        if abs(valor) > IMPLAUSIBLE_POWER_CEILING_W:
+            log.warning(
+                "Lectura histórica descartada por inverosímil al reconstruir el hueco: "
+                "%s W a las %s (techo %s W) -- se ignora esta muestra, no se integra",
+                valor, ts.isoformat(), IMPLAUSIBLE_POWER_CEILING_W,
+            )
+            continue
         muestras.append((ts, max(0.0, valor)))
     if not muestras:
         return 0.0
