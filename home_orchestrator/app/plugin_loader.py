@@ -198,10 +198,10 @@ PLUGIN_CATALOG = {
     "battery": {
         "name": "Energy Orchestrator",
         "description": "Baterías, solar y cargas diferibles — carga y descarga adaptativa por precio, sol y consumo real",
-        "version": "0.12.1",
+        "version": "0.12.2",
         "downloadable": True,
-        "tag": "v0.77.16",
-        "sha256": "359c44cea93713e63823419e178cf72e5df90376026a0bdadaa9406770d8a91e",  # sha256 real del tarball de v0.77.16, verificado contra una descarga real antes de fijarlo aqui (mismo techo tambien al reconstruir el hueco de un reinicio)
+        "tag": "v0.77.17",
+        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (auditoria completa: doble lectura de SOC, rama de descarga bloqueada sin desactivar carga, reloj interno inconsistente, lock en stores JSON y en _last_published_at)
         "files": [
             "main.py", "battery_plugin.py", "battery_exec.py", "anomaly_store.py",
             "capacity_store.py", "climate_link.py", "deferrable_exec.py",
@@ -217,10 +217,10 @@ PLUGIN_CATALOG = {
     "climate": {
         "name": "Climate Orchestrator",
         "description": "Termostatos adaptativos por zona, expuestos como climate.* nativos de HA (HomeKit/Matter) vía MQTT Discovery",
-        "version": "0.6.1",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
+        "version": "0.6.2",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
         "downloadable": True,
-        "tag": "v0.77.9",
-        "sha256": "b0759d0f48cb678698e224af1fe081c7b95af29f0542e3f0931ce89649bb0cd1",  # sha256 real del tarball de v0.77.9, verificado contra una descarga real antes de fijarlo aqui (zona sin actuadores no se queda pendiente para siempre)
+        "tag": "v0.77.17",
+        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (actuadores puente reconocidos como activos, temperatura 0 ya no se trata como sin dato)
         "files": ["climate_plugin.py", "climate", "climate_templates"],
     },
     "tuya": {
@@ -235,19 +235,19 @@ PLUGIN_CATALOG = {
     "lighting": {
         "name": "Lighting Orchestrator",
         "description": "Iluminación adaptativa por zona — color y brillo por hora, encendido/apagado por presencia y reglas condicionales (p.ej. TV encendida -> luces laterales en vez del techo)",
-        "version": "0.7.13",
+        "version": "0.7.14",
         "downloadable": True,
-        "tag": "v0.77.13",
-        "sha256": "6473c5e04e012710447fbf04a3e3ea722a692af7b7f1f5e66b8d1862a4cffe9b",  # sha256 real del tarball de v0.77.13, verificado contra una descarga real antes de fijarlo aqui (marcador de temperatura de color invisible en los extremos)
+        "tag": "v0.77.17",
+        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (config None ya no congela la logica reactiva, manual_command ya no pisa color/brillo, respect_manual_changes respetado en los forzados de apagado)
         "files": ["lighting_plugin.py", "lighting", "lighting_templates"],
     },
     "tplink": {
         "name": "TP-Link Orchestrator",
         "description": "Puente de ingesta para dispositivos TP-Link (Kasa/Tapo) vía python-kasa (misma librería que usa Home Assistant) — consumo interno por Lighting y/o exposición opcional a HA por MQTT",
-        "version": "0.2.0",
+        "version": "0.2.1",
         "downloadable": True,
-        "tag": "v0.77.3",
-        "sha256": "b710c29f0e67488a39247d7b6d7ec3a277ab553155b9ef1211921be9d01f3f9c",  # sha256 real del tarball de v0.77.3, verificado contra una descarga real antes de fijarlo aqui (descubrimiento y reconexion automatica por MAC cuando la IP cambia por DHCP)
+        "tag": "v0.77.17",
+        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (locking consistente en todo TplinkDeviceManager, ya no hay riesgo de "dictionary changed size during iteration")
         "files": ["tplink_plugin.py", "tplink", "tplink_templates", "tplink_store.py"],
     },
     "starlink": {
@@ -262,19 +262,19 @@ PLUGIN_CATALOG = {
     "govee": {
         "name": "Govee Orchestrator",
         "description": "Puente de ingesta para bombillas Govee — LAN API local del propio dispositivo (sin cuenta ni nube) — consumo interno por Lighting y/o exposición opcional a HA por MQTT",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "downloadable": True,
-        "tag": "v0.58.0",
-        "sha256": "2cff537730f18007d10fd1d31255f4fc6c8cc4a322a9bcdee497ded22fa4e1f6",  # sha256 real del tarball de v0.58.0, verificado contra una descarga real antes de fijarlo aqui (receptor UDP que moria con un datagrama cualquiera, SO_REUSEPORT, escaneos concurrentes)
+        "tag": "v0.77.17",
+        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (alta de dispositivo envuelta en try/except, un fallo ya no aborta el arranque del resto)
         "files": ["govee_plugin.py", "govee", "govee_templates", "govee_store.py"],
     },
     "shelly": {
         "name": "Shelly Orchestrator",
         "description": "Puente de ingesta para dispositivos Shelly — API local del propio fabricante (Gen1 HTTP / Gen2+ RPC), sin cuenta ni nube — consumo interno por Lighting y/o exposición opcional a HA por MQTT",
-        "version": "0.1.2",
+        "version": "0.1.3",
         "downloadable": True,
-        "tag": "v0.58.0",
-        "sha256": "2cff537730f18007d10fd1d31255f4fc6c8cc4a322a9bcdee497ded22fa4e1f6",  # sha256 real del tarball de v0.58.0, verificado contra una descarga real antes de fijarlo aqui (el bucle de sondeo ya no muere con una respuesta no-JSON; disponibilidad MQTT revocada)
+        "tag": "v0.77.17",
+        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (nuevo _reconnect_loop, add_device ya no pierde el dispositivo para siempre si no responde al añadirlo)
         "files": ["shelly_plugin.py", "shelly", "shelly_templates", "shelly_store.py"],
     },
 }
