@@ -18,6 +18,7 @@ Starlink se configuran desde su propia página tras instalarlos — ver <a href=
   <a href="#cargas-diferibles">Cargas diferibles</a> ·
   <a href="#panel-de-solo-lectura-wallpanel">Panel de solo lectura</a> ·
   <a href="#panel-de-acceso-completo-puerto-8097">Acceso completo</a> ·
+  <a href="#dashboard-de-grafana">Dashboard de Grafana</a> ·
   <a href="#las-pestañas">Las pestañas</a> ·
   <a href="#salud-de-batería-cómo-se-calcula">Salud de batería</a> ·
   <a href="#ahorro-y-alertas-de-consumo">Ahorro y alertas</a> ·
@@ -122,6 +123,23 @@ Junto al puerto de solo lectura, el add-on expone un segundo puerto propio (por 
 Pensado para lo que el puerto de solo lectura no permite: llamar a la API desde automatizaciones o scripts externos, herramientas de administración propias, o simplemente usar la interfaz completa desde un dispositivo de la red local sin pasar por el inicio de sesión de Home Assistant.
 
 > **Aviso de seguridad.** Este puerto **no lleva ningún inicio de sesión delante**, igual que el de solo lectura — pero a diferencia de aquel, por aquí sí se puede cambiar la configuración entera, dar de alta o borrar baterías y forzar ciclos. Cualquiera que alcance el puerto tiene control total del add-on. Úsalo solo en una red en la que confíes, nunca redirigido a Internet ni accesible desde fuera de tu LAN (sin VPN). Si no lo necesitas, déjalo vacío en la configuración de red del add-on para desactivarlo.
+
+## Dashboard de Grafana
+
+Si tienes Grafana + una base de datos de series temporales (VictoriaMetrics, Prometheus...) alimentada por el exporter Prometheus nativo de Home Assistant, Energy puede mantener sincronizado con tu configuración real el dashboard de ejemplo "Energía — Centro de Control" del repositorio, en vez de tener que editarlo a mano cada vez que añades o quitas un panel/array solar.
+
+Necesitas:
+
+1. Una **service account** en tu Grafana con rol **Editor** (Administration → Users and access → Service accounts → Add service account token) — copia el token, solo se muestra una vez.
+2. La **URL desde la que el propio add-on puede alcanzar Grafana** (network_mode `host`, así que puede llegar directo a la IP del contenedor de Grafana en la red interna del Supervisor). **Importante**: tiene que ser el puerto propio de Grafana (normalmente el **3000** dentro de su contenedor), **nunca** el puerto de "acceso directo" que expone el add-on de Grafana hacia el host — ese pasa por su nginx interno, que rechaza las peticiones autenticadas por token con un error de conexión (mismo motivo por el que ese puerto tampoco funciona bien con sesiones de navegador para peticiones de datos).
+
+Con esos dos datos guardados en Configuración → "Dashboard de Grafana", el botón **"Sincronizar dashboard ahora"** sube la versión al día del dashboard. A partir de ahí, cada vez que añadas, edites o borres un array solar, la sincronización se dispara sola (en segundo plano, sin bloquear el guardado aunque Grafana esté caído en ese momento — el error, si lo hay, queda registrado junto a la fecha de la última sincronización con éxito).
+
+Qué se regenera exactamente en cada sincronización — y qué NO se toca nunca:
+
+- Se regenera el panel "Generación solar por panel/array declarado" a partir de los arrays realmente declarados (antes, añadir o quitar un array dejaba ese panel con una consulta desfasada apuntando a un array que ya no existía, o sin la del nuevo).
+- Se corrige el panel "Previsión solar hoy / mañana" para que consulte los sensores que este mismo plugin publica (`sensor.battery_orchestrator_solar_forecast_today`/`..._tomorrow`), en vez de depender de otra integración de Home Assistant ajena a Energy.
+- El **datasource** de Grafana nunca se crea ni se modifica automáticamente — solo se comprueba que sigue existiendo. Suele llevar credenciales propias (Basic Auth contra tu base de datos de series temporales) y tocarlo solo para "arreglarlo" es más riesgo que beneficio.
 
 ## Las pestañas
 

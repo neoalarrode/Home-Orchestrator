@@ -17,6 +17,7 @@ Starlink are configured from their own page after installing them — see <a hre
   <a href="#installation-type-per-panelstring">Installation type</a> ·
   <a href="#deferrable-loads">Deferrable loads</a> ·
   <a href="#read-only-panel-wallpanel">Read-only panel</a> ·
+  <a href="#grafana-dashboard">Grafana dashboard</a> ·
   <a href="#the-tabs">The tabs</a> ·
   <a href="#battery-health-how-its-calculated">Battery health</a> ·
   <a href="#savings-and-consumption-alerts">Savings and alerts</a> ·
@@ -113,6 +114,23 @@ Besides Ingress, the add-on exposes its own port (**8098** by default, configura
 Through that port the panel is **read-only**: "Current status", "Forecast" and "Battery health" show the same live data as always, but the "Settings" tab doesn't appear and neither does the "Run cycle now" button. This isn't just cosmetic — the server itself rejects (with a 403) any attempt to read or change the configuration, add/edit/delete batteries, panels or deferrable loads, or force a cycle, if the request comes in through that port, even if you bypass the UI and call the API directly. The reason is that, unlike Ingress, this port has no Home Assistant login in front of it, so it must not be able to touch anything.
 
 If you're not going to use it, you can disable it by leaving the port empty in the add-on's network settings.
+
+## Grafana dashboard
+
+If you have Grafana + a time-series database (VictoriaMetrics, Prometheus...) fed by Home Assistant's native Prometheus exporter, Energy can keep the repo's example "Energía — Centro de Control" dashboard synced with your real configuration, instead of you having to hand-edit it every time you add or remove a panel/solar array.
+
+You need:
+
+1. A **service account** in your Grafana with the **Editor** role (Administration → Users and access → Service accounts → Add service account token) — copy the token, it's only shown once.
+2. The **URL the add-on itself can reach Grafana on** (it runs with `host` network mode, so it can reach Grafana's container IP on the Supervisor's internal network directly). **Important**: it has to be Grafana's own port (usually **3000** inside its container), **never** the "direct access" port the Grafana add-on exposes to the host — that one goes through its internal nginx, which rejects token-authenticated API requests with a connection error (the same reason that port also doesn't work well with browser sessions for data requests).
+
+With those two saved under Settings → "Grafana dashboard", the **"Sync dashboard now"** button pushes the up-to-date dashboard. From then on, every time you add, edit or delete a solar array, the sync fires on its own (in the background, without blocking the save even if Grafana happens to be down — any error is recorded next to the timestamp of the last successful sync).
+
+What gets regenerated on every sync — and what's never touched:
+
+- The "Generación solar por panel/array declarado" panel is rebuilt from the arrays actually declared (before, adding or removing an array left that panel with a stale query pointing at an array that no longer existed, or missing the new one).
+- The "Previsión solar hoy / mañana" panel is fixed to query the sensors this same plugin publishes (`sensor.battery_orchestrator_solar_forecast_today`/`..._tomorrow`), instead of depending on another Home Assistant integration unrelated to Energy.
+- Grafana's **datasource** is never created or modified automatically — it's only checked that it still exists. It usually carries its own credentials (Basic Auth against your time-series database), and touching it just to "fix" it is more risk than it's worth.
 
 ## The tabs
 

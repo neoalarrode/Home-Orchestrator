@@ -111,6 +111,11 @@ solar surplus available"...).
   panels, consumption sensor — nothing hardcoded except the base URL of
   the free Forecast.Solar API. Configuration is exportable/importable as
   a file, in case you reinstall the add-on.
+- **Grafana dashboard autoconfigurator** (optional): if you have
+  Grafana + VictoriaMetrics/Prometheus, keeps the example "Energía —
+  Centro de Control" dashboard synced with your real configuration
+  (declared solar arrays) — manual button or automatic trigger on config
+  changes. See [Grafana dashboard in DOCS.en.md](home_orchestrator/DOCS.en.md#grafana-dashboard).
 
 ## Screenshots
 

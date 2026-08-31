@@ -112,6 +112,11 @@ con excedente solar"...).
   sensor de consumo — nada hardcodeado salvo la URL base de la API
   gratuita de Forecast.Solar. Configuración exportable/importable en un
   archivo, por si reinstalas el add-on.
+- **Autoconfigurador del dashboard de Grafana** (opcional): si tienes
+  Grafana + VictoriaMetrics/Prometheus, mantiene sincronizado el dashboard
+  de ejemplo "Energía — Centro de Control" con tu configuración real
+  (arrays solares declarados) — botón manual o disparo automático al
+  cambiar la config. Ver [Dashboard de Grafana en DOCS.md](home_orchestrator/DOCS.md#dashboard-de-grafana).
 
 ## Capturas
 
