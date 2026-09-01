@@ -162,9 +162,45 @@ class TplinkDeviceManager:
 
     # --------------------------------------------------------- descubrimiento
 
+    def _connected_device_by_host(self) -> dict[str, Device]:
+        """host -> Device ya conectado y sondeandose de verdad ahora mismo
+        (ver `connected()`) -- para que `_discover()` nunca vuelva a
+        tocarlo (ver comentario ahi mismo)."""
+        with self._lock:
+            devices_snapshot = dict(self._devices)
+        return {
+            device.host: device
+            for device_id, device in devices_snapshot.items()
+            if getattr(device, "host", None) and self.connected(device_id)
+        }
+
     async def _discover(self, credentials: Credentials | None) -> dict[str, dict]:
         found = await Discover.discover(credentials=credentials, discovery_timeout=8)
+        # BUG REAL, confirmado por el usuario: un dispositivo Tapo/KLAP
+        # solo admite UNA sesion autenticada a la vez (ya documentado mas
+        # abajo, en la seccion de escritura) -- pero el escaneo periodico
+        # de la LAN (ver `rediscover_now()`, cada 5 min) llamaba a
+        # `device.update()` sobre TODO lo que respondiera al broadcast,
+        # incluidos los dispositivos que YA estan dados de alta y
+        # sondeandose activamente cada `POLL_INTERVAL_SECONDS` por el
+        # bucle de fondo -- una segunda sesion concurrente y evitable al
+        # mismo aparato, la misma clase de colision que ya se documenta
+        # como causa real de "Error trying to decrypt... block length".
+        # Un dispositivo ya conectado no necesita describirse otra vez:
+        # su informacion (alias/modelo/mac) ya la tenemos fresca del
+        # ultimo sondeo, sin abrir una sesion nueva.
+        connected_by_host = self._connected_device_by_host()
+
         async def _describe(host: str, device) -> tuple[str, dict | None]:
+            already_connected = connected_by_host.get(host)
+            if already_connected is not None:
+                return host, {
+                    "alias": already_connected.alias,
+                    "model": already_connected.model,
+                    "device_type": str(already_connected.device_type),
+                    "needs_auth": not already_connected.alias,
+                    "mac": _normalize_mac(getattr(already_connected, "mac", None)),
+                }
             try:
                 # BUG REAL, confirmado en produccion: el objeto que
                 # devuelve el broadcast SOLO trae `_discovery_info` (el

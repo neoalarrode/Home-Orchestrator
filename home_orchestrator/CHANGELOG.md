@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.32
+
+**TP-Link: el escaneo periodico de la LAN ya no abre una segunda sesion KLAP contra un dispositivo ya conectado (plugin TP-Link 0.2.3).**
+
+A peticion expresa del usuario, investigando el aviso recurrente "TP-Link en X: descubierto pero la primera lectura fallo... Error trying to decrypt... block length" -- confirmado que NO viene de la integracion nativa de TP-Link de HA (que el usuario ya habia retirado), sino de una colision propia del addon: un dispositivo Tapo/KLAP solo admite UNA sesion autenticada a la vez (ya documentado en este mismo modulo para las escrituras), pero el escaneo periodico de la LAN (`rediscover_now()`, cada 5 min) llamaba a `device.update()` sobre TODO lo que respondiera al broadcast, incluidos los dispositivos que YA estan dados de alta y sondeandose activamente cada 5s por el bucle de fondo -- una segunda sesion concurrente y evitable al mismo aparato.
+
+Ahora el escaneo reconoce los hosts que ya tienen una conexion activa y reutiliza su informacion ya fresca (alias/modelo/MAC) en vez de abrir una sesion nueva. El descubrimiento de dispositivos nuevos y la reconexion automatica tras un cambio de IP por DHCP (que ya solo actuaba sobre dispositivos DESCONECTADOS) quedan intactos -- verificado con un test dirigido.
+
 ## 0.77.31
 
 **Debounce del delegado climate.* y respeto a un cambio manual hecho directamente en el actuador (plugin Climate 0.7.4).**
