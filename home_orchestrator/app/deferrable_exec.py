@@ -29,12 +29,52 @@ import ha_client
 
 INTERRUPT_CONFIRM_CYCLES = 2  # ciclos seguidos sin excedente antes de cortar una carga interrumpible
 
+# BUG REAL DE SEGURIDAD, confirmado por fuzzing adversarial: hasta ahora,
+# cuando la ventana ESTIMADA de una carga terminaba, `execute()` apagaba el
+# switch sin comprobar el flag `interruptible` en absoluto -- la unica
+# proteccion para una carga NO interrumpible (p.ej. una lavadora) era que
+# `deferrable_scheduler` calculase una ventana suficientemente larga, nunca
+# nada en el propio apagado. Si la duracion estimada (mediana de
+# activaciones pasadas, ver deferrable_store) se queda corta -- carga
+# recien dada de alta con poco historico, o un programa real mas largo que
+# de costumbre -- la app corta la corriente a mitad de un ciclo de verdad,
+# justo lo que "no interrumpible" promete no hacer nunca. Con un sensor de
+# potencia declarado, un consumo por encima de este umbral significa que
+# el electrodomestico sigue trabajando de verdad (reposo/standby de un
+# programa de lavado real esta muy por debajo de esto) -- se prorroga la
+# ventana en vez de cortar, acotado por
+# deferrable_store.MAX_PLAUSIBLE_SESSION_MINUTES (mismo tope que ya usa el
+# propio store para no aprender de una sesion que nunca se cerro bien):
+# pasado ese tope se corta igual, tratandolo como "algo va mal" en vez de
+# sostener la carga encendida para siempre.
+NOT_INTERRUPTIBLE_STILL_RUNNING_W = 50.0
+
 
 def _in_any_window(now: datetime, occurrences: list[dict]) -> dict | None:
     for occ in occurrences:
         if datetime.fromisoformat(occ["start"]) <= now < datetime.fromisoformat(occ["end"]):
             return occ
     return None
+
+
+def _still_running_past_window(load: dict, power_sensor: str | None, now: datetime) -> float | None:
+    """Ver NOT_INTERRUPTIBLE_STILL_RUNNING_W. Devuelve la potencia en vivo
+    si la carga sigue trabajando de verdad (y hay que prorrogar), o None si
+    toca apagar con normalidad. Solo aplica a cargas NO interrumpibles con
+    sensor de potencia declarado y con una sesion que la propia app tenia
+    en marcha (`active_since` no None) -- una carga encendida a mano fuera
+    de ventana no entra aqui, eso ya lo gestiona el resto de execute()."""
+    if load.get("interruptible") or not power_sensor:
+        return None
+    session = deferrable_store.get_session_info(load["id"])
+    started = session.get("active_since")
+    if started is None:
+        return None
+    elapsed_min = (now - datetime.fromisoformat(started)).total_seconds() / 60
+    if elapsed_min >= deferrable_store.MAX_PLAUSIBLE_SESSION_MINUTES:
+        return None
+    live_w = ha_client.get_numeric_state(power_sensor, default=0.0)
+    return live_w if live_w > NOT_INTERRUPTIBLE_STILL_RUNNING_W else None
 
 
 def execute(loads: list[dict], schedules: dict[str, dict], now: datetime,
@@ -91,6 +131,15 @@ def execute(loads: list[dict], schedules: dict[str, dict], now: datetime,
                     ha_client.turn_on(switch)
                 except Exception as e:
                     line += f" — AVISO: no se pudo encender en Home Assistant ({e})"
+        elif (still_running_w := _still_running_past_window(load, power_sensor, now)) is not None:
+            live_w = still_running_w
+            expected_power_now_w += live_w
+            live_power_by_id[load_id] = live_w
+            deferrable_store.accumulate_session_energy(load_id, live_w, now)
+            line = (
+                f"{prefix}[{name}] ventana estimada terminada pero sigue consumiendo "
+                f"({round(live_w)}W) -- no interrumpible, se prorroga"
+            )
         else:
             energy = deferrable_store.end_session(load_id, now)
             if energy is not None and energy > 1:

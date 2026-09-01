@@ -307,7 +307,20 @@ def load_config() -> dict:
         # completar claves que falten (por si se actualiza el esquema)
         merged = json.loads(json.dumps(DEFAULT_CONFIG))
         _deep_merge(merged, battery_cfg)
-        schema_migrated = _migrate_legacy_pv_sensor(merged)
+        # BUG REAL, confirmado por fuzzing adversarial: `_deep_merge` solo
+        # sabe fusionar un dict CONTRA otro dict -- si el JSON en disco trae
+        # una de estas listas como `null` (config editada a mano, o una
+        # migracion futura que la deje vacia sin querer), el override no es
+        # un dict, asi que `_deep_merge` lo acepta tal cual y pisa el `[]`
+        # por defecto con `None`. `load_config()` no revienta con eso, pero
+        # cualquier `cfg["batteries"].append(...)` posterior si revienta
+        # (`AttributeError: 'NoneType' object has no attribute 'append'`).
+        list_sanitized = False
+        for list_key in ("batteries", "tracked_entities", "pv_arrays", "deferrable_loads", "climate_orchestrator_zones"):
+            if merged.get(list_key) is None:
+                merged[list_key] = []
+                list_sanitized = True
+        schema_migrated = _migrate_legacy_pv_sensor(merged) or list_sanitized
         schema_migrated = _migrate_legacy_export_sensor_mode(merged) or schema_migrated
         if format_migrated or schema_migrated:
             save_config(merged)
@@ -413,104 +426,199 @@ def _deep_merge(base: dict, override: dict) -> None:
             base[k] = v
 
 
+def _atomic_update(cfg: dict, mutate) -> None:
+    """BUG REAL DE PERDIDA DE DATOS, confirmado por fuzzing adversarial: cada
+    endpoint de la API hace su propio `cfg = load_config()` al principio de
+    la peticion y guarda mucho despues (tras validar/mezclar datos) con
+    `save_config(cfg)` -- si OTRA peticion guarda algo por medio (p.ej.
+    cambiar la tarifa mientras esta se añade una bateria), el `cfg` de esta
+    peticion ya esta desfasado, y guardarlo pisa el cambio de la otra con
+    datos viejos. `transaction()` existe para esto exactamente pero no se
+    llamaba desde ningun sitio.
+
+    Aqui se cierra la ventana de raiz: la mutacion se aplica sobre una
+    copia RECIEN leida de disco (`fresh`), nunca sobre el `cfg` que trae el
+    llamante, y todo el ciclo lectura-modificacion-escritura ocurre bajo un
+    unico `transaction()` sostenido. Al final, `cfg` (el dict del llamante)
+    se actualiza in-place para reflejar el estado ya guardado -- asi
+    cualquier codigo que siga usando esa misma referencia despues (p.ej. el
+    resync automatico de Grafana tras guardar un array solar, que lee
+    `cfg["pv_arrays"]`) ve el estado real y completo, nunca su copia vieja.
+    """
+    with transaction():
+        fresh = load_config()
+        mutate(fresh)
+        save_config(fresh)
+    cfg.clear()
+    cfg.update(fresh)
+
+
+def _unique_id(existing_ids: set[str], requested_id: str | None) -> str:
+    """BUG REAL, confirmado por fuzzing adversarial: antes solo se
+    autogeneraba un id nuevo si venia VACIO -- un id explicito ya existente
+    (pasado a mano contra la API, o por un cliente que no sea la interfaz
+    propia) se aceptaba tal cual, dejando dos entradas con el mismo id.
+    Efectos reales encontrados: `update_*` solo puede tocar la PRIMERA que
+    encuentra (la segunda queda inalcanzable), `delete_*` borra las DOS de
+    golpe, y en arrays solares colisiona la cache de Forecast.Solar
+    (indexada por id) devolviendo generación equivocada en silencio."""
+    if requested_id and requested_id not in existing_ids:
+        return requested_id
+    return str(uuid.uuid4())[:8]
+
+
 def add_battery(cfg: dict, battery: dict) -> dict:
     battery = dict(battery)
-    battery["id"] = battery.get("id") or str(uuid.uuid4())[:8]
-    cfg["batteries"].append(battery)
-    save_config(cfg)
+
+    def mutate(fresh):
+        battery["id"] = _unique_id({b["id"] for b in fresh["batteries"]}, battery.get("id"))
+        fresh["batteries"].append(battery)
+
+    _atomic_update(cfg, mutate)
     return battery
 
 
 def update_battery(cfg: dict, battery_id: str, updates: dict) -> dict | None:
-    for b in cfg["batteries"]:
-        if b["id"] == battery_id:
-            b.update(updates)
-            save_config(cfg)
-            return b
-    return None
+    result: dict = {"value": None}
+
+    def mutate(fresh):
+        for b in fresh["batteries"]:
+            if b["id"] == battery_id:
+                b.update(updates)
+                result["value"] = b
+                return
+
+    _atomic_update(cfg, mutate)
+    return result["value"]
 
 
 def delete_battery(cfg: dict, battery_id: str) -> bool:
-    before = len(cfg["batteries"])
-    cfg["batteries"] = [b for b in cfg["batteries"] if b["id"] != battery_id]
-    save_config(cfg)
-    return len(cfg["batteries"]) < before
+    result = {"deleted": False}
+
+    def mutate(fresh):
+        before = len(fresh["batteries"])
+        fresh["batteries"] = [b for b in fresh["batteries"] if b["id"] != battery_id]
+        result["deleted"] = len(fresh["batteries"]) < before
+
+    _atomic_update(cfg, mutate)
+    return result["deleted"]
 
 
 def add_pv_array(cfg: dict, array: dict) -> dict:
     merged = dict(DEFAULT_PV_ARRAY)
     merged.update(array)
-    merged["id"] = merged.get("id") or str(uuid.uuid4())[:8]
-    cfg["pv_arrays"].append(merged)
-    save_config(cfg)
+
+    def mutate(fresh):
+        merged["id"] = _unique_id({a["id"] for a in fresh["pv_arrays"]}, merged.get("id"))
+        fresh["pv_arrays"].append(merged)
+
+    _atomic_update(cfg, mutate)
     return merged
 
 
 def update_pv_array(cfg: dict, array_id: str, updates: dict) -> dict | None:
-    for a in cfg["pv_arrays"]:
-        if a["id"] == array_id:
-            a.update(updates)
-            save_config(cfg)
-            return a
-    return None
+    result: dict = {"value": None}
+
+    def mutate(fresh):
+        for a in fresh["pv_arrays"]:
+            if a["id"] == array_id:
+                a.update(updates)
+                result["value"] = a
+                return
+
+    _atomic_update(cfg, mutate)
+    return result["value"]
 
 
 def delete_pv_array(cfg: dict, array_id: str) -> bool:
-    before = len(cfg["pv_arrays"])
-    cfg["pv_arrays"] = [a for a in cfg["pv_arrays"] if a["id"] != array_id]
-    save_config(cfg)
-    return len(cfg["pv_arrays"]) < before
+    result = {"deleted": False}
+
+    def mutate(fresh):
+        before = len(fresh["pv_arrays"])
+        fresh["pv_arrays"] = [a for a in fresh["pv_arrays"] if a["id"] != array_id]
+        result["deleted"] = len(fresh["pv_arrays"]) < before
+
+    _atomic_update(cfg, mutate)
+    return result["deleted"]
 
 
 def add_tracked_entity(cfg: dict, entity: dict) -> dict:
     merged = dict(DEFAULT_TRACKED_ENTITY)
     merged.update(entity)
-    merged["id"] = merged.get("id") or str(uuid.uuid4())[:8]
     if merged.get("type") not in ENTITY_TYPES:
         merged["type"] = "other"
-    cfg.setdefault("tracked_entities", []).append(merged)
-    save_config(cfg)
+
+    def mutate(fresh):
+        existing = fresh.setdefault("tracked_entities", [])
+        merged["id"] = _unique_id({e["id"] for e in existing}, merged.get("id"))
+        existing.append(merged)
+
+    _atomic_update(cfg, mutate)
     return merged
 
 
 def update_tracked_entity(cfg: dict, entity_id: str, updates: dict) -> dict | None:
-    for e in cfg.get("tracked_entities", []):
-        if e["id"] == entity_id:
-            e.update(updates)
-            if e.get("type") not in ENTITY_TYPES:
-                e["type"] = "other"
-            save_config(cfg)
-            return e
-    return None
+    result: dict = {"value": None}
+
+    def mutate(fresh):
+        for e in fresh.get("tracked_entities", []):
+            if e["id"] == entity_id:
+                e.update(updates)
+                if e.get("type") not in ENTITY_TYPES:
+                    e["type"] = "other"
+                result["value"] = e
+                return
+
+    _atomic_update(cfg, mutate)
+    return result["value"]
 
 
 def delete_tracked_entity(cfg: dict, entity_id: str) -> bool:
-    before = len(cfg.get("tracked_entities", []))
-    cfg["tracked_entities"] = [e for e in cfg.get("tracked_entities", []) if e["id"] != entity_id]
-    save_config(cfg)
-    return len(cfg["tracked_entities"]) < before
+    result = {"deleted": False}
+
+    def mutate(fresh):
+        before = len(fresh.get("tracked_entities", []))
+        fresh["tracked_entities"] = [e for e in fresh.get("tracked_entities", []) if e["id"] != entity_id]
+        result["deleted"] = len(fresh["tracked_entities"]) < before
+
+    _atomic_update(cfg, mutate)
+    return result["deleted"]
 
 
 def add_deferrable_load(cfg: dict, load: dict) -> dict:
     merged = dict(DEFAULT_DEFERRABLE_LOAD)
     merged.update(load)
-    merged["id"] = merged.get("id") or str(uuid.uuid4())[:8]
-    cfg.setdefault("deferrable_loads", []).append(merged)
-    save_config(cfg)
+
+    def mutate(fresh):
+        existing = fresh.setdefault("deferrable_loads", [])
+        merged["id"] = _unique_id({d["id"] for d in existing}, merged.get("id"))
+        existing.append(merged)
+
+    _atomic_update(cfg, mutate)
     return merged
 
 
 def update_deferrable_load(cfg: dict, load_id: str, updates: dict) -> dict | None:
-    for load in cfg.get("deferrable_loads", []):
-        if load["id"] == load_id:
-            load.update(updates)
-            save_config(cfg)
-            return load
-    return None
+    result: dict = {"value": None}
+
+    def mutate(fresh):
+        for load in fresh.get("deferrable_loads", []):
+            if load["id"] == load_id:
+                load.update(updates)
+                result["value"] = load
+                return
+
+    _atomic_update(cfg, mutate)
+    return result["value"]
 
 
 def delete_deferrable_load(cfg: dict, load_id: str) -> bool:
-    before = len(cfg.get("deferrable_loads", []))
-    cfg["deferrable_loads"] = [d for d in cfg.get("deferrable_loads", []) if d["id"] != load_id]
-    save_config(cfg)
-    return len(cfg["deferrable_loads"]) < before
+    result = {"deleted": False}
+
+    def mutate(fresh):
+        before = len(fresh.get("deferrable_loads", []))
+        fresh["deferrable_loads"] = [d for d in fresh.get("deferrable_loads", []) if d["id"] != load_id]
+        result["deleted"] = len(fresh["deferrable_loads"]) < before
+
+    _atomic_update(cfg, mutate)
+    return result["deleted"]

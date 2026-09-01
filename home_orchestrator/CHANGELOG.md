@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.77.22
+
+**QA adversarial completo del plugin Energy — Fase 1 (crítico): plantador y aprendizaje de costumbres a prueba de fallos (plugin Energy 0.13.0).**
+
+A petición expresa del usuario ("QA completo a todo, Energy... llevarlo a los extremos absolutos"): 6 agentes en paralelo sometieron `scheduler.py` a fuzzing adversarial, y otros 5 hicieron lo mismo con el resto del plugin (`battery_exec.py`, cargas diferibles, contabilidad energética, previsión solar/tarifa, config). Primera tanda de correcciones (crítico), verificada con tests dirigidos que reproducen cada fallo encontrado antes de subirla:
+
+- **`scheduler.build_plan` ya no revienta con datos de entrada raros**: horizonte vacío, o `load_forecast_w`/`prices_tiers` más cortos que `pv_forecast_w`, tiraban `IndexError` sin capturar (ciclo de planificación abortado). Ahora horizonte 0 devuelve un plan vacío con sensatez, y longitudes descuadradas dan un `ValueError` explícito.
+- **Sobre-descarga por debajo de `min_soc_wh`** cuando `max_usable_wh` queda por debajo del suelo declarado (config contradictoria plausible, p.ej. bajar el SOC máximo sin subir antes el mínimo): `_reserve_target` podía devolver un objetivo por debajo del propio suelo. Ahora nunca baja de `min_soc_wh`.
+- **`paced_charging` se anulaba justo en el caso más común** (0h de valle antes de la punta, carga de emergencia en llano): el reparto suave colapsaba a máxima potencia por confundir "hay déficit esta hora" con "hace falta la batería ya", en la propia hora en que se estaba cargando.
+- **Descarga en llano bloqueada por una comparación sin capar** en la carga de emergencia: un déficit de punta futuro sin capar a la capacidad real de la batería podía dejar una hora de llano con deficit real y batería llena sin ninguna acción, en vez de descargar.
+- **`ha_client` — aprendizaje de costumbres de consumo, dos fallos reales**: una sola lectura histórica disparatada (el mismo tipo de glitch de sensor ya corregido para lecturas EN VIVO) podía desviar la previsión hasta un 577% durante `days` días enteros, sin ningún filtro; y laborables/fines de semana se promediaban mezclados en el mismo cubo horario, sesgando ambos patrones hacia un valor intermedio que no representa a ninguno. Ahora hay un techo de sensatez en el histórico y 48 cubos (laborable/finde × hora) en vez de 24.
+- **`pv_source._fetch_raw` no capturaba el formato de error real de Forecast.Solar** (`result: null` con HTTP 200, típico al agotar cuota) — tumbaba el ciclo de planificación entero sin usar la caché de respaldo. Ahora se relanza como el mismo `ValueError` que el llamante ya capturaba.
+- **`self_consumption_share_pct`**: un 0% explícito se ignoraba (bug de "falsy zero" de Python, `0.0 or 100.0`) y contaba el 100% igual; un valor por encima de 100% amplificaba la generación sin tope. Ahora se distingue "no declarado" de "declarado a 0" y se satura a [0, 100].
+- **`deferrable_exec.execute()` podía cortar la corriente a mitad de un programa real** de una carga NO interrumpible (lavadora, lavavajillas) si la duración estimada se quedaba corta — la única protección era la propia estimación, nada en el apagado. Ahora, con sensor de potencia declarado, un consumo real por encima de 50W prorroga la ventana en vez de cortar (acotado por `MAX_PLAUSIBLE_SESSION_MINUTES`, para no sostenerla encendida para siempre si algo va mal).
+- **`monotonic_sensor.publishable` con un valor `NaN`** se congelaba sin generar ningún log (a diferencia de cualquier otro caso raro del módulo) — indetectable en producción. Corregido junto con una excepción de red sin capturar en la rama de "primera vez que se ve la entidad".
+- **La config nunca usaba `transaction()`** (existía en el código, pero no se llamaba desde ningún sitio): dos guardados casi simultáneos dentro del mismo plugin (p.ej. cambiar la tarifa mientras se añade una batería) podían perder uno de los dos. Reproducido de forma determinista y corregido: `add_battery`/`update_battery`/`delete_battery`/`add_pv_array`/`update_pv_array`/`delete_pv_array`/`add_tracked_entity`/`update_tracked_entity`/`delete_tracked_entity`/`add_deferrable_load`/`update_deferrable_load`/`delete_deferrable_load` ahora leen y escriben bajo un único lock sostenido.
+- **`id` duplicado explícito** en `add_battery`/`add_pv_array`/`add_tracked_entity`/`add_deferrable_load` se aceptaba sin comprobar unicidad, rompiendo `update`/`delete` de forma confusa (solo toca la primera / borra las dos) y, en arrays solares, colisionando la caché de Forecast.Solar. Ahora se genera un id nuevo si el solicitado ya existe.
+- **`"batteries": null`** (u otras listas del esquema) en el JSON de config ya no revienta en cuanto se usa — se sanea a `[]` al cargar.
+- **Dos baterías EcoFlow con el mismo `ecoflow_sn`** (error de copiar/pegar) fusionaban en silencio sus acumulados de por vida y salud estimada bajo una única clave. Ahora se detecta y avisa alto y claro en el log en cada ciclo mientras no se corrija.
+
 ## 0.77.21
 
 **Colores del flujo de energía indistinguibles + "Consumo casa" mostraba el sensor equivocado (plugin Energy 0.12.6).**

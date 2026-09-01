@@ -54,7 +54,28 @@ def _fetch_raw(api_key: str, lat: float, lon: float, declination: float,
     url = f"{FORECAST_SOLAR_BASE}{key_segment}/estimate/{lat}/{lon}/{declination}/{azimuth}/{kwp}"
     r = requests.get(url, timeout=TIMEOUT)
     r.raise_for_status()
-    return r.json().get("result", {}).get("watts", {})
+    # BUG REAL, confirmado por fuzzing adversarial: Forecast.Solar responde
+    # con HTTP 200 (nunca dispara `raise_for_status`) incluso cuando el
+    # cuerpo es un error -- p.ej. cuota agotada o parametros invalidos
+    # vienen como `{"message": {...}, "result": null}`. El `.get("result",
+    # {}).get("watts", {})` de antes asumia que "result" SIEMPRE es un
+    # dict si la peticion no lanzo excepcion -- con "result": null,
+    # `None.get(...)` tira `AttributeError`, que el except de quien llama
+    # (`fetch_forecast_solar_api`) NO cubre (solo captura
+    # `RequestException`/`ValueError`), tumbando el ciclo de planificacion
+    # entero sin siquiera llegar a usar la cache de respaldo. Se relanza
+    # como `ValueError` -- que quien llama YA capturaba -- en vez de
+    # devolver un diccionario vacio aqui mismo: un diccionario vacio se
+    # CACHEARIA como si fuera una respuesta valida sin datos, pisando
+    # cualquier cache anterior buena; un ValueError, en cambio, deja que
+    # `fetch_forecast_solar_api` seep con la cache anterior si la hay
+    # (mismo camino ya usado para RequestException).
+    data = r.json()
+    result = data.get("result") if isinstance(data, dict) else None
+    watts = result.get("watts") if isinstance(result, dict) else None
+    if not isinstance(watts, dict):
+        raise ValueError(f"Respuesta de Forecast.Solar sin 'result.watts' utilizable: {data!r}"[:300])
+    return watts
 
 
 def _hourly_from_watts(watts: dict, horizon_hours: int, now: datetime) -> list[float]:
@@ -222,7 +243,16 @@ def get_pv_forecast_total(
         # total: todo lo que viene después (previsión, generación en
         # vivo, hybrid_now) ya trabaja con la cuota real, sin tener que
         # tocar ningún otro sitio.
-        share_pct = float(array.get("self_consumption_share_pct", 100.0) or 100.0)
+        # BUG REAL, confirmado por fuzzing adversarial (dos fallos a la vez):
+        # (1) `... or 100.0` trataba un 0% EXPLICITO ("nada de este array es
+        # mio") como "sin declarar" por ser 0.0 un valor falsy en Python, e
+        # ignoraba la cuota contando el 100% igual. (2) un valor por encima
+        # de 100% (error de tecleo, p.ej. 150) amplificaba la generacion por
+        # encima de la real en vez de saturar -- un reparto NUNCA debe
+        # aumentar la generación, solo reducirla o dejarla igual.
+        share_pct_raw = array.get("self_consumption_share_pct")
+        share_pct = float(share_pct_raw) if share_pct_raw is not None else 100.0
+        share_pct = max(0.0, min(100.0, share_pct))
         if share_pct != 100.0:
             series = [v * share_pct / 100.0 for v in series]
         for i in range(horizon_hours):

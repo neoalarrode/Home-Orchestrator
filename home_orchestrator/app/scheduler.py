@@ -113,7 +113,28 @@ def build_plan(
     cubrir punta y llano futuros — util para mostrar "cuanto falta para
     la reserva" en la interfaz sin duplicar esta cuenta en otro sitio.
     """
+    # BUG REAL, confirmado por fuzzing adversarial: sin esta guarda, un
+    # horizonte vacio (`pv_forecast_w=[]`) o unas listas descuadradas entre
+    # si (p.ej. `load_forecast_w`/`prices_tiers` mas cortas que
+    # `pv_forecast_w`, que es quien define `horizon`) tiran `IndexError`
+    # sin capturar en tres puntos distintos mas abajo (linea 183 con
+    # horizonte 0, y dentro de las comprensiones/bucles de la Pasada A con
+    # listas descuadradas) -- el ciclo de planificacion entero se caia en
+    # vez de fallar con un mensaje claro o degradar con gracia. Horizonte 0
+    # es un caso legitimo (p.ej. una fuente de datos momentaneamente sin
+    # nada que ofrecer) y se resuelve solo, sin plan que hacer; longitudes
+    # descuadradas SON un bug de quien llama y merecen un error explicito,
+    # no un IndexError críptico. `prices_tiers` mas LARGO que el horizonte
+    # no es un problema (se ignoran los sobrantes, como ya pasaba antes).
     horizon = len(pv_forecast_w)
+    if horizon == 0:
+        return [], min_soc_wh
+    if len(load_forecast_w) < horizon or len(prices_tiers) < horizon:
+        raise ValueError(
+            "build_plan: pv_forecast_w/load_forecast_w/prices_tiers deben cubrir "
+            f"al menos el mismo horizonte ({horizon}h) -- longitudes recibidas: "
+            f"pv={horizon}, load={len(load_forecast_w)}, prices={len(prices_tiers)}."
+        )
     hours = [now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=i) for i in range(horizon)]
     ceiling_wh = max_usable_wh if max_usable_wh is not None else total_capacity_wh
     usable_capacity_wh = ceiling_wh - min_soc_wh
@@ -175,7 +196,20 @@ def build_plan(
         """
         energy_needed = min(valle_target_punta[i], usable_capacity_wh)
         energy_needed += min(valle_target_llano[i], max(0.0, usable_capacity_wh - energy_needed))
-        return min(ceiling_wh, min_soc_wh + energy_needed + reserve_safety_margin_wh)
+        # BUG REAL DE SEGURIDAD, confirmado por fuzzing adversarial: si
+        # `max_usable_wh` (via `ceiling_wh`) queda por DEBAJO de
+        # `min_soc_wh` -- config contradictoria pero perfectamente posible
+        # por error de usuario (p.ej. bajar el techo de SOC desde la
+        # interfaz sin subir antes el suelo) -- `usable_capacity_wh` sale
+        # NEGATIVO y el `min(ceiling_wh, ...)` de abajo podia devolver un
+        # objetivo de reserva por DEBAJO del propio suelo declarado. La
+        # rama 5 (descarga en valle) usa este valor tal cual como limite
+        # de cuanto puede vaciar la bateria, asi que un objetivo mal
+        # saturado la mandaba a descargar por debajo de `min_soc_wh` de
+        # verdad -- confirmado en pruebas: 200 Wh por debajo del suelo. El
+        # `max(min_soc_wh, ...)` de fuera garantiza que el objetivo NUNCA
+        # cae por debajo del suelo fisico, pase lo que pase con la config.
+        return max(min_soc_wh, min(ceiling_wh, min_soc_wh + energy_needed + reserve_safety_margin_wh))
 
     # reserve_wh (para mostrar "cuanto hace falta ahora mismo"): si la
     # hora actual es valle, usa el objetivo propagado del bloque de valle
@@ -202,7 +236,23 @@ def build_plan(
         haga falta por primera vez. Si esa necesidad es AHORA MISMO (o no
         se ve ninguna en el horizonte), no hay margen que repartir: maxima
         potencia disponible, sin rodeos."""
-        deadline = next_need_idx[i]
+        # BUG REAL, confirmado por fuzzing adversarial: mirar `next_need_idx[i]`
+        # (en vez de `[i + 1]`) hacia la propia hora `i` que se esta
+        # decidiendo AHORA MISMO -- si `i` es una hora de llano con deficit
+        # (justo el caso de la rama 2b, carga de emergencia), `needs_battery[i]`
+        # sale True para esa MISMA hora en la que se esta cargando, asi que
+        # `deadline == i`, `hours_remaining == 0` y la funcion devuelve
+        # `max_charge_w` sin repartir nada -- justo el escenario limite que
+        # `paced_charging` deberia cubrir mejor (0h de valle antes de la
+        # punta, toda la carga cae en la rama de emergencia). Mirar desde
+        # `i + 1` pregunta "cuando hace falta la bateria DESPUES de esta
+        # hora", que es la pregunta correcta cuando la hora actual es
+        # precisamente la que esta cargando. Para la rama 2 (carga en
+        # valle) esto no cambia nada: `needs_battery[i]` ya es False en
+        # cualquier hora de valle por construccion (linea de `needs_battery`
+        # de arriba exige tramo != "valle"), asi que `next_need_idx[i]` y
+        # `next_need_idx[i+1]` ya coincidian siempre ahi.
+        deadline = next_need_idx[i + 1]
         if deadline is None:
             return max_charge_w
         hours_remaining = deadline - i
@@ -257,7 +307,18 @@ def build_plan(
         #     barato que dejar esa punta sin cubrir (llano < punta siempre).
         #     Solo carga lo justo para tapar ese hueco, no la reserva completa.
         #     Tambien se salta en modo "autoconsumo".
-        elif allow_grid_charging and tier == "llano" and soc < min_soc_wh + future_punta_after[i]:
+        # BUG REAL, confirmado por fuzzing adversarial: la condicion
+        # comparaba `soc` contra `min_soc_wh + future_punta_after[i]` SIN
+        # capar al techo real de la bateria (`ceiling_wh`) -- `target`,
+        # dos lineas mas abajo, SI lo capa. Con un deficit de punta futuro
+        # que excede la capacidad util (facil: un pico de consumo grande
+        # en un dia sin apenas sol), la condicion salia True aunque la
+        # bateria ya estuviera al 100% y no hubiera ningun hueco real que
+        # cargar (`charge` acababa siendo 0) -- y al entrar en esta rama
+        # `elif` sin poder cargar nada, la rama 4 (descarga en llano) NUNCA
+        # se evaluaba para esa hora, dejando un deficit real de llano sin
+        # cubrir con bateria disponible, comprado a red sin necesidad.
+        elif allow_grid_charging and tier == "llano" and soc < min(ceiling_wh, min_soc_wh + future_punta_after[i]):
             target = min(ceiling_wh, min_soc_wh + future_punta_after[i])
             headroom = min(ceiling_wh - soc, target - soc)
             charge_limit = _paced_charge_limit(i, soc, target) if paced_charging else max_charge_w

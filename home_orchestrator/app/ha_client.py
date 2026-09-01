@@ -208,6 +208,23 @@ def get_history(entity_id: str, days: int) -> list[dict]:
 # hubiera dato, en vez de arrastrar ese ruido a la previsión.
 MIN_SAMPLES_PER_HOUR = 3
 
+# Mismo problema y mismo criterio que `_plausible_power_w` en main.py (no se
+# puede importar de aqui: ha_client es un modulo de mas bajo nivel que
+# main.py importa, no al reves -- mismo motivo de duplicacion ya
+# documentado para IMPLAUSIBLE_POWER_CEILING_W en energy_recovery.py).
+# Todos los sensores que hoy pasan por `_hourly_avg_by_hour_of_day` son de
+# potencia (W): consumo base, solar, potencia de bateria, red en bruto.
+# Sin este techo, UNA SOLA lectura disparatada que ya quedo grabada en el
+# historico de HA (el mismo tipo de glitch de sensor que `_plausible_power_w`
+# filtra en las lecturas EN VIVO, pero que aqui entraba sin ningun filtro)
+# contaminaba la previsión de esa franja horaria durante `days` dias
+# enteros -- confirmado en pruebas: un solo glitch de ~55kW mezclado con 20
+# muestras normales de 450W dispara la media a mas de 3000W (577% de mas)
+# hasta que el glitch envejece fuera de la ventana de historico. Igual que
+# la lectura en vivo, una muestra por encima del techo se DESCARTA entera
+# (nunca se recorta al techo, que seguiria siendo un dato inventado).
+IMPLAUSIBLE_POWER_CEILING_W = 30000
+
 
 def _safe_get_history(entity_id: str, days: int) -> list[dict]:
     """
@@ -264,12 +281,33 @@ def has_recent_history(entity_id: str, days: int = 1) -> bool:
 # resultado cacheado se quedaria "atrasado" una hora justo al cruzar el
 # limite entre dos horas dentro de la ventana de cache.
 _HISTORY_CACHE_SECONDS = 900  # 15 min
-_hourly_avg_cache: dict[tuple, tuple[float, dict[int, float], dict[int, bool]]] = {}
+_hourly_avg_cache: dict[tuple, tuple[float, dict[tuple[bool, int], float], dict[tuple[bool, int], bool]]] = {}
+
+
+def _bucket_key(ts: datetime) -> tuple[bool, int]:
+    """(es_fin_de_semana, hora) -- ver comentario extenso en
+    `_hourly_avg_by_hour_of_day` sobre por que laborable y fin de semana se
+    promedian por separado."""
+    local = ts.astimezone()
+    return (local.weekday() >= 5, local.hour)
 
 
 def _hourly_avg_by_hour_of_day(
     entity_id: str, days: int, default: float, abs_values: bool, sign_filter: str | None = None
-) -> tuple[dict[int, float], dict[int, bool]]:
+) -> tuple[dict[tuple[bool, int], float], dict[tuple[bool, int], bool]]:
+    """
+    Devuelve dos diccionarios con clave `(es_fin_de_semana, hora)`, no solo
+    `hora` -- BUG REAL corregido a peticion expresa del usuario ("aprendizaje
+    de las costumbres de consumo"): antes se promediaba cada hora-del-dia
+    mezclando laborables y fines de semana en el mismo cubo. Con costumbres
+    tipicas (p.ej. fuera de casa en horario laboral entre semana, en casa
+    todo el dia el fin de semana), esa mezcla sesga los DOS casos a la vez
+    hacia un valor intermedio que no representa a ninguno -- confirmado en
+    pruebas: 15 laborables a 300W + 6 findes a 900W mezclados dan una unica
+    media de 471W, que sobreestima cada laborable real en +171W y
+    subestima cada finde real en -429W. Separar en 48 cubos en vez de 24
+    dejar que cada patron se prediga con sus propias muestras.
+    """
     cache_key = (entity_id, days, default, abs_values, sign_filter)
     cached = _hourly_avg_cache.get(cache_key)
     now_ts = time.time()
@@ -288,16 +326,26 @@ def _hourly_avg_by_hour_of_day(
         current = get_numeric_state(entity_id, default=default)
         if abs_values and current is not None:
             current = abs(current)
-        hourly_avg = {h: current for h in range(24)}
-        reliable_by_hour = {h: False for h in range(24)}
+        hourly_avg = {(weekend, h): current for weekend in (False, True) for h in range(24)}
+        reliable_by_hour = {(weekend, h): False for weekend in (False, True) for h in range(24)}
         _hourly_avg_cache[cache_key] = (now_ts, hourly_avg, reliable_by_hour)
         return hourly_avg, reliable_by_hour
 
-    buckets: dict[int, list[float]] = {h: [] for h in range(24)}
+    buckets: dict[tuple[bool, int], list[float]] = {(weekend, h): [] for weekend in (False, True) for h in range(24)}
     for point in raw:
         try:
             val = float(point["state"])
         except (KeyError, ValueError):
+            continue
+        # Ver IMPLAUSIBLE_POWER_CEILING_W: BUG REAL confirmado en pruebas --
+        # a diferencia de las lecturas EN VIVO (protegidas por
+        # `_plausible_power_w` en main.py desde hace tiempo), este camino
+        # de historico no filtraba nada. Una sola muestra disparatada ya
+        # grabada en HA (el mismo tipo de glitch de sensor que causo los
+        # saltos de miles de kWh documentados esta misma noche) se cuela
+        # aqui sin ningun freno y contamina la previsión de esa franja
+        # horaria durante `days` dias enteros.
+        if abs(val) > IMPLAUSIBLE_POWER_CEILING_W:
             continue
         # sign_filter separa un sensor bidireccional con signo en sus dos
         # mitades (p.ej. un "net_power_sensor" de bateria: positivo=carga,
@@ -316,19 +364,23 @@ def _hourly_avg_by_hour_of_day(
         elif abs_values:
             val = abs(val)
         ts = datetime.fromisoformat(point["last_changed"].replace("Z", "+00:00"))
-        buckets[ts.astimezone().hour].append(val)
+        buckets[_bucket_key(ts)].append(val)
 
-    hourly_avg: dict[int, float | None] = {}
-    reliable_by_hour: dict[int, bool] = {}
-    for h, vals in buckets.items():
-        reliable_by_hour[h] = len(vals) >= MIN_SAMPLES_PER_HOUR
-        hourly_avg[h] = statistics.mean(vals) if reliable_by_hour[h] else None
+    hourly_avg: dict[tuple[bool, int], float | None] = {}
+    reliable_by_hour: dict[tuple[bool, int], bool] = {}
+    for key, vals in buckets.items():
+        reliable_by_hour[key] = len(vals) >= MIN_SAMPLES_PER_HOUR
+        hourly_avg[key] = statistics.mean(vals) if reliable_by_hour[key] else None
 
+    # Relleno de huecos: la media de TODOS los cubos fiables (laborable +
+    # finde mezclados aqui SI, a proposito -- es solo el ultimo recurso
+    # cuando una franja concreta no tiene ni 3 muestras propias, mejor una
+    # aproximacion imperfecta que ningun dato).
     known = [v for v in hourly_avg.values() if v is not None]
     fallback = statistics.mean(known) if known else default
-    for h in range(24):
-        if hourly_avg[h] is None:
-            hourly_avg[h] = fallback
+    for key in buckets:
+        if hourly_avg[key] is None:
+            hourly_avg[key] = fallback
 
     _hourly_avg_cache[cache_key] = (now_ts, hourly_avg, reliable_by_hour)
     return hourly_avg, reliable_by_hour
@@ -359,8 +411,14 @@ def hourly_average_forecast_with_reliability(
     """
     hourly_avg, reliable_by_hour = _hourly_avg_by_hour_of_day(entity_id, days, default, abs_values, sign_filter)
     now = datetime.now()
-    values = [hourly_avg[(now.hour + i) % 24] for i in range(horizon_hours)]
-    reliable = [reliable_by_hour[(now.hour + i) % 24] for i in range(horizon_hours)]
+    # Alineacion por FECHA real, no solo por hora del dia -- desde que los
+    # cubos distinguen laborable/fin de semana (ver _bucket_key), hace
+    # falta saber que DIA CONCRETO cae cada hora del horizonte para elegir
+    # el cubo correcto (p.ej. la hora 30 del horizonte puede caer en
+    # sabado aunque "ahora" sea viernes).
+    keys = [_bucket_key(now + timedelta(hours=i)) for i in range(horizon_hours)]
+    values = [hourly_avg[k] for k in keys]
+    reliable = [reliable_by_hour[k] for k in keys]
     return values, reliable
 
 

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 
@@ -102,6 +103,25 @@ def publishable(entity_id: str, total: float, get_known_ha_state=None) -> float:
         anterior_total = estado.get("last_total")
         publicado = float(estado.get("published") or 0.0)
 
+        # BUG REAL, confirmado por fuzzing adversarial: un `total` NaN se
+        # colaba por TODAS las comprobaciones de mas abajo sin excepcion --
+        # `nan > X`, `nan &lt; X` y `nan == X` son SIEMPRE False en Python, asi
+        # que ni la rama de salto positivo ni la de bajada se disparaban, y
+        # a diferencia de cualquier otro caso raro de este modulo (que
+        # siempre deja un log.warning/info), este pasaba en TOTAL silencio
+        # -- sin ningun rastro de diagnostico, el peor caso posible para
+        # depurar en produccion. `inf`/`-inf` tienen el mismo problema al
+        # comparar contra MAX_PLAUSIBLE_DELTA_KWH. Se tratan igual que un
+        # salto espureo: se descartan sin tocar el ultimo valor bueno.
+        if not math.isfinite(total):
+            log.warning(
+                "%s: el acumulado interno llego como %r (no es un numero finito) -- se "
+                "descarta este ciclo sin tocar el ultimo valor conocido, igual que un "
+                "salto espureo.",
+                entity_id, total,
+            )
+            return publicado
+
         if anterior_total is None:
             # BUG REAL, confirmado en produccion: esta rama ("primera vez que
             # se ve esta entidad, sin `last_total` en el fichero") no
@@ -120,7 +140,19 @@ def publishable(entity_id: str, total: float, get_known_ha_state=None) -> float:
             # partir de mucho mas abajo que lo que HA ya sabe (un
             # `total_increasing` real) es la misma señal de alarma que un
             # salto entre dos ciclos, aunque sea la primera vez que la vemos.
-            known = get_known_ha_state() if get_known_ha_state is not None else None
+            # BUG REAL, confirmado por fuzzing adversarial: esta es la UNICA
+            # llamada de red de todo el modulo (deliberadamente perezosa,
+            # ver docstring), y no estaba protegida -- un fallo real de HA
+            # (timeout, 502/503 mientras arranca...) justo la primera vez
+            # que se ve una entidad tiraba la excepcion sin capturar hacia
+            # arriba, tumbando el ciclo que llama a `publishable()` -- el
+            # mismo modulo pensado para blindar esos ciclos se convertia en
+            # el punto de fallo.
+            try:
+                known = get_known_ha_state() if get_known_ha_state is not None else None
+            except Exception:
+                log.warning("%s: no se pudo leer el estado ya conocido en HA -- se arranca sin ese suelo de sensatez", entity_id, exc_info=True)
+                known = None
             if known is not None and float(total) < float(known) - MAX_PLAUSIBLE_DELTA_KWH:
                 log.warning(
                     "%s: primera vez que se publica, pero el acumulado interno (%.3f) esta muy "

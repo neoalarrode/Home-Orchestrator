@@ -680,6 +680,29 @@ def run_cycle():
         return
 
     batteries = [_battery_from_cfg(b, cfg) for b in batteries_cfg]
+    # BUG REAL, confirmado por fuzzing adversarial: dos baterias EcoFlow
+    # declaradas por error con el MISMO `ecoflow_sn` (copiar/pegar al darlas
+    # de alta) producen la MISMA `_stable_battery_key` -- `lifetime_store`/
+    # `capacity_store` fusionan en silencio los acumulados de por vida y la
+    # salud estimada de dos baterias FISICAS distintas bajo una unica clave,
+    # sin ningun aviso. Como no hay forma de saber cual de las dos declaraciones
+    # tiene el SN real (son datos de configuracion, no algo que se pueda
+    # verificar contra hardware desde aqui), lo unico honesto es avisar alto
+    # y claro para que el usuario lo corrija -- silenciarlo seria dejar que
+    # el historico de dos baterias reales se siga mezclando ciclo tras ciclo.
+    _seen_stable_keys: dict[str, str] = {}
+    for b in batteries:
+        key = _stable_battery_key(b)
+        if key in _seen_stable_keys:
+            log.warning(
+                "Baterias '%s' y '%s' comparten el mismo identificador estable (%s) -- "
+                "probablemente el mismo ecoflow_sn/soc_sensor declarado dos veces por error. "
+                "Sus acumulados de por vida y su salud estimada se estan MEZCLANDO como si "
+                "fueran una sola bateria fisica. Revisa la configuracion de baterias.",
+                _seen_stable_keys[key], b.name, key,
+            )
+        else:
+            _seen_stable_keys[key] = b.name
     # Suma de potencia MAXIMA declarada de descarga de todas las baterias --
     # un RATING de configuracion, no depende de leer nada a HA, asi que se
     # puede calcular aqui, pronto. Se usa mas abajo para el hueco de
