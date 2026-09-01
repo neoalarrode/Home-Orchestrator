@@ -1147,12 +1147,31 @@ class ZoneRunner:
         # hay nada que climatizar termicamente ahi.
         self._drive_extractor(self._extractor_desired_on())
         if current_temp is None:
-            self.available = False
-            sensor = self.zone.get(CONF_CURRENT_TEMP_SENSOR) or "(sin sensor declarado)"
-            self.reason = (
-                f"no disponible: sin lectura de temperatura de «{sensor}» — los actuadores sí "
-                "están resueltos, el que falta es el sensor"
+            has_thermal_actuator = bool(
+                self.zone.get(CONF_HEAT_SWITCHES) or self.zone.get(CONF_COOL_SWITCHES) or self.zone.get(CONF_CLIMATE_ENTITIES)
             )
+            # BUG REAL, confirmado por fuzzing adversarial: el comentario de
+            # arriba ("una zona sin sensor... no tiene por que quedarse no
+            # disponible") describia la intencion, pero el codigo la
+            # contradecia -- CUALQUIER zona sin lectura de temperatura se
+            # marcaba "no disponible" igual, aunque no declarase sensor NI
+            # actuador termico alguno (solo extractor/humidificador). Ahora
+            # solo se marca de verdad no disponible cuando hace falta
+            # temperatura para decidir algo (hay actuador termico) o cuando
+            # SI hay un sensor declarado pero no esta respondiendo -- una
+            # zona puramente de extractor/humedad, sin nada que climatizar,
+            # se queda disponible.
+            sensor = self.zone.get(CONF_CURRENT_TEMP_SENSOR)
+            if sensor or has_thermal_actuator:
+                self.available = False
+                self.reason = (
+                    f"no disponible: sin lectura de temperatura de «{sensor or '(sin sensor declarado)'}» — "
+                    "los actuadores sí están resueltos, el que falta es el sensor"
+                )
+                self._maybe_publish_state()
+                return
+            self.available = True
+            self.reason = "zona sin capacidad térmica declarada (solo extractor/humedad) — nada que climatizar aquí"
             self._maybe_publish_state()
             return
         self.available = True

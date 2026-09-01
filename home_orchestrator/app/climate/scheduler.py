@@ -469,6 +469,16 @@ def _anticipate(heating: bool, current_temp: float, target_temp: float, deadband
     puramente reactivo, nunca se inventa una previsión."""
     if not outdoor_forecast or not rate_deg_h or rate_deg_h <= 0:
         return "idle", ""
+    # BUG REAL, confirmado por fuzzing adversarial: a diferencia de
+    # `_retention_factor`/`_modulate_target` (que si tratan `None` como
+    # "sin dato todavia, no anticipar"), aqui `idle_loss_coeff` se usaba
+    # directo en una multiplicacion sin comprobar nada -- un `None`
+    # revienta con `TypeError` y un negativo (que no deberia poder pasar
+    # de `thermal_model.py`, pero esta funcion no debe confiar en eso)
+    # haria que la proyeccion se alejase del exterior en vez de
+    # acercarse, invirtiendo la logica entera de la anticipacion.
+    if idle_loss_coeff is None or idle_loss_coeff < 0:
+        return "idle", ""
 
     threshold = (target_temp - deadband) if heating else (target_temp + deadband)
     temp = current_temp

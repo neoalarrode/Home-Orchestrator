@@ -20,6 +20,18 @@ puedan discrepar):
 Sin sensores de presencia declarados, o sin muestras suficientes en una
 hora concreta (zona/sensor recien añadido), esa hora devuelve None -- se
 prefiere no anticipar nada antes que inventar un patron que no esta.
+
+RETRASO DE ADAPTACION, documentado a proposito (encontrado durante el QA
+adversarial, no es un bug): `MIN_SAMPLES_PER_HOUR = 3` exige al menos 3
+dias con lectura valida en esa hora concreta antes de fiarse del
+patron -- si la rutina de la zona cambia de golpe (alguien se muda,
+cambia de turno de trabajo), la anticipacion sigue una temporada
+proyectando el patron VIEJO para las horas que todavia no tienen 3
+muestras nuevas, hasta que el historico de `HISTORY_DAYS` dias se
+renueva lo suficiente. Es el mismo compromiso, deliberado, que el resto
+del aprendizaje "estadistico verificable" de este addon (ver
+thermal_model.py) -- preferible a reaccionar de golpe a una sola lectura
+atipica.
 """
 
 from __future__ import annotations

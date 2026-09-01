@@ -15,6 +15,17 @@ de lo que se esta pidiendo, "cierra" cuando vuelve a un valor razonable.
 Pensado como RESPALDO para ventanas sin sensor fisico, opcional (ver
 CONF_AUTO_WINDOW_DETECTION en const.py) -- nunca sustituye a un sensor
 real declarado, solo se suma.
+
+LIMITE DE DISEÑO CONOCIDO (visto durante el QA adversarial, no es un bug
+con arreglo sencillo): `MAX_PLAUSIBLE_JUMP_DEG` descarta cualquier salto
+entre dos lecturas mayor que 2°C como glitch de sensor -- pero una
+ventana de verdad abierta de par en par con corriente fuerte puede
+producir, en los 120s de `MIN_SAMPLE_INTERVAL_SECONDS`, un salto real
+igual de grande, y en ese caso este filtro lo descarta TAMBIEN a el,
+justo el caso en el que la deteccion mas importaria. No hay forma de
+distinguir ambos casos solo con la pendiente de temperatura -- se acepta
+el compromiso (menos falsos positivos de glitch, algun falso negativo en
+el caso mas extremo de corriente) en vez de intentar adivinar.
 """
 
 from __future__ import annotations

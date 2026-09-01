@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.77.27
+
+**QA adversarial completo del plugin Climate — Fase 3 (medio/bajo), fin de la ronda (plugin Climate 0.7.2).**
+
+Última tanda de correcciones de la auditoría adversarial de Climate, verificada con tests dirigidos:
+
+- **`scheduler._anticipate` sin guarda para `idle_loss_coeff=None`/negativo**: a diferencia de `_retention_factor`/`_modulate_target` (que ya trataban `None` como "sin dato, no anticipar"), aquí se usaba directo en una multiplicación — un `None` revienta con `TypeError`, y un negativo invertiría la lógica entera de la proyección (alejándose del exterior en vez de acercarse). No alcanzable con la config actual del modelo térmico, pero la función no debía confiar en eso. Ahora se descarta con el mismo criterio que el resto.
+- **Una zona sin sensor de temperatura NI actuador térmico (solo extractor/humidificador) se marcaba "no disponible"**, contradiciendo el propio comentario del código ("no tiene por qué quedarse no disponible... no hay nada que climatizar aquí"). Ahora solo se marca no disponible de verdad cuando hace falta temperatura para decidir algo (hay actuador térmico) o cuando SÍ hay un sensor declarado pero no responde.
+- **Documentación de dos límites de diseño ya conocidos, sin arreglo sencillo posible** (encontrados durante el QA, no bugs): el retraso de adaptación de `occupancy.py` cuando la rutina de la zona cambia de golpe (`MIN_SAMPLES_PER_HOUR`/`HISTORY_DAYS`), y el compromiso de `window_algorithm.py` entre filtrar glitches de sensor y no perder una ventana real abierta con corriente fuerte (`MAX_PLAUSIBLE_JUMP_DEG`).
+
+Con esto se da por completada la auditoría adversarial de Climate pedida por el usuario, replicando el mismo proceso ya aplicado a Energy: 5 agentes en paralelo, ~25 hallazgos reales corregidos o documentados en tres fases (crítico → alto → medio/bajo), cada fase desplegada y verificada en producción antes de pasar a la siguiente. Dos hallazgos de menor severidad (debounce del delegado climate.*, mecanismo de respeto a un apagado manual desde el propio actuador) quedan deliberadamente fuera de esta ronda: son cambios de comportamiento con más superficie de riesgo que el resto, y merecen su propio diseño y verificación en vez de apresurarse dentro de "medio/bajo".
+
 ## 0.77.26
 
 **QA adversarial completo del plugin Climate — Fase 2 (alto) (plugin Climate 0.7.1).**
