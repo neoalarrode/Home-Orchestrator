@@ -279,6 +279,30 @@ def _distribute(total_w: float, items: list[tuple[Battery, float, float]]) -> di
     return result
 
 
+def _round_preserving_sum(assigned: dict[str, float], total_w: float) -> dict[str, int]:
+    """Redondea la potencia asignada a cada bateria a un entero de vatios sin
+    que la SUMA de los redondeos supere nunca `total_w` -- BUG REAL,
+    confirmado por fuzzing adversarial: redondear cada bateria por separado
+    con `round()` podia sumar hasta ~0.5W de mas POR BATERIA (confirmado: 7
+    baterias identicas repartiendose 1000W acababan sumando 1001W), y ese
+    mismo numero es el que se manda tal cual como limite de potencia al
+    equipo real. Metodo del "mayor resto": redondear todo hacia abajo
+    primero (la suma de eso nunca puede superar el total, ya que
+    `_distribute` garantiza `sum(assigned.values()) &lt;= total_w`) y repartir
+    los vatios enteros que sobren, uno a uno, a quien mas cerca estuviera
+    de redondear hacia arriba.
+    """
+    floors = {bid: int(v) for bid, v in assigned.items()}
+    budget = int(total_w) - sum(floors.values())
+    if budget <= 0:
+        return floors
+    order = sorted(assigned.keys(), key=lambda bid: assigned[bid] - floors[bid], reverse=True)
+    result = dict(floors)
+    for bid in order[:budget]:
+        result[bid] += 1
+    return result
+
+
 def plan_distribution(batteries: list[Battery], charge_w: float, discharge_w: float,
                        pv_surplus_w: float = 0.0, socs: dict | None = None) -> dict:
     """
@@ -330,9 +354,10 @@ def plan_distribution(batteries: list[Battery], charge_w: float, discharge_w: fl
             headroom = max(0.0, max_soc_wh - soc_wh)
             items.append((b, b.max_charge_w, headroom))
         assigned = _distribute(charge_w, items)
+        rounded = _round_preserving_sum(assigned, charge_w)
         action = "charge"
         per_battery += [
-            {"id": b.id, "name": b.name, "soc_pct": socs[b.id], "power_w": round(assigned[b.id]),
+            {"id": b.id, "name": b.name, "soc_pct": socs[b.id], "power_w": rounded[b.id],
              "capacity_wh": b.capacity_wh, "enabled": assigned[b.id] > 1, "note": "reparto por capacidad",
              "ecoflow_source": b.last_ecoflow_source if b.source == "ecoflow" else None}
             for b in available

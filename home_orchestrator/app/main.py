@@ -166,6 +166,9 @@ def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
         _last_published_at[entity_id] = now_ts
 
 
+_ecoflow_missing_main_sn_warned: set[str] = set()
+
+
 def _battery_from_cfg(b: dict, cfg: dict) -> battery_exec.Battery:
     """
     `cfg` (config completa, no solo la entrada de esta bateria) hace falta
@@ -174,6 +177,25 @@ def _battery_from_cfg(b: dict, cfg: dict) -> battery_exec.Battery:
     """
     source = b.get("source") or "ha"
     ecoflow_mode = b.get("ecoflow_mode") if source == "ecoflow" else None
+    # BUG REAL, confirmado por fuzzing adversarial: `Battery.ecoflow_set_
+    # charging_task`/`..._discharging_task` en modo cloud (`via_cloud()`,
+    # battery_exec.py) exigen `ecoflow_main_sn` -- sin el, NINGUN comando
+    # de carga/descarga llega nunca al equipo real, ciclo tras ciclo, con
+    # el unico rastro un "AVISO" por ciclo mezclado con el resto del log.
+    # Si TODO un grupo enlazado se queda sin esa unidad principal resuelta
+    # (config a medias, o la API nunca llego a resolverla), el grupo
+    # entero pierde control real de forma indefinida. Se avisa alto y
+    # claro UNA vez por bateria, en vez de dejar que se note solo mirando
+    # el log linea a linea.
+    if ecoflow_mode in ("cloud", "hybrid") and not b.get("ecoflow_main_sn") and b["id"] not in _ecoflow_missing_main_sn_warned:
+        _ecoflow_missing_main_sn_warned.add(b["id"])
+        log.warning(
+            "Bateria EcoFlow '%s' en modo %s sin `ecoflow_main_sn` resuelto -- los comandos de "
+            "carga/descarga por Cloud NUNCA llegaran al equipo real mientras falte (la API no "
+            "ha podido identificar la unidad principal del grupo, o la configuracion esta a "
+            "medias). Revisa el alta de esta bateria.",
+            b.get("name") or b["id"], ecoflow_mode,
+        )
     return battery_exec.Battery(
         id=b["id"],
         name=b["name"],
@@ -1392,7 +1414,21 @@ def run_cycle():
     has_live_load_data = live_base_load_w is not None and (load_sensor_mode == "combined" or load_sensor)
     if has_live_load_data:
         try:
-            if load_sensor_mode == "combined":
+            # BUG REAL, confirmado por fuzzing adversarial: esta rama
+            # miraba SOLO `load_sensor_mode` para decidir si `live_base_load_w`
+            # ya viene reconstruido del todo -- pero mas arriba (donde se
+            # calcula esa variable) la condicion real es
+            # `load_sensor_mode == "combined" AND net_grid_sensor`, no el
+            # modo a secas. Con el modo ya cambiado a "combined" en la
+            # config pero `net_grid_sensor` todavia vacio (usuario a medio
+            # configurar el cambio), `live_base_load_w` cae al `elif
+            # load_sensor:` de mas arriba y llega aqui SIN sol/descarga
+            # sumados -- tratarlo como si ya viniera completo infravalora
+            # el consumo real y sesga la deteccion de anomalias hacia
+            # falsos negativos, en silencio. Repetir aqui la MISMA
+            # condicion que decidio la formula evita que las dos ramas se
+            # desincronicen.
+            if load_sensor_mode == "combined" and net_grid_sensor:
                 # live_base_load_w ya es el consumo TOTAL reconstruido
                 # (sol + red neta + descarga − carga, ver mas arriba) — a
                 # diferencia del modo "separate", donde el sensor de

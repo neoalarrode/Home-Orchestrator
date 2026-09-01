@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.77.23
+
+**QA adversarial completo del plugin Energy — Fase 2 (alto) (plugin Energy 0.13.1).**
+
+Segunda tanda de correcciones tras el fuzzing adversarial de los 11 agentes, verificada con tests dirigidos:
+
+- **Grupo EcoFlow en modo cloud sin `ecoflow_main_sn` resuelto**: los comandos de carga/descarga nunca llegaban al equipo real, ciclo tras ciclo, con solo un "AVISO" mezclado en el log por ciclo. Ahora se avisa alto y claro una vez por batería en cuanto se detecta.
+- **Detección de anomalías con la fórmula equivocada en modo "combined" a medio configurar**: si el usuario cambia a modo "combined" pero deja `net_grid_sensor` vacío (configuración a medias), la sección de anomalías miraba solo el flag de modo, no si de verdad se calculó con la fórmula combinada — infravaloraba el consumo real y sesgaba hacia falsos negativos, en silencio. Ahora usa exactamente la misma condición que decidió la fórmula original.
+- **Redondeo por batería en `plan_distribution` podía superar el `charge_w` pedido** (confirmado: 7 baterías repartiéndose 1000W podían sumar 1001W, mandado tal cual como límite de potencia al equipo real). Ahora se redondea con el método del "mayor resto": nunca se supera el total, aunque haya baterías con headroom muy dispar.
+
 ## 0.77.22
 
 **QA adversarial completo del plugin Energy — Fase 1 (crítico): plantador y aprendizaje de costumbres a prueba de fallos (plugin Energy 0.13.0).**
