@@ -14,6 +14,8 @@ STALE_SENSOR_*_SECONDS en climate.py).
 
 from __future__ import annotations
 
+import math
+
 
 class Ema:
     def __init__(self, halflife_seconds: float, max_alpha: float = 0.5, precision: int = 2) -> None:
@@ -24,6 +26,14 @@ class Ema:
         self._last_ts = None
 
     def update(self, value: float, now) -> float:
+        # BUG REAL, confirmado por fuzzing adversarial: un `value` NaN o
+        # infinito envenena `self._value` de forma IRREVERSIBLE --
+        # `valor + alpha*(nan - valor)` da `nan` para CUALQUIER alpha,
+        # incluidas lecturas normales de aqui en adelante. Defensa en
+        # profundidad (el llamante real, `zone_runner._safe_float`, ya lo
+        # filtra) para que esta clase sea segura de usar por si sola.
+        if not math.isfinite(value):
+            return self.value
         if self._value is None or self._last_ts is None:
             self._value = value
         else:

@@ -135,6 +135,16 @@ class HAMqttClient:
         self._lock = threading.Lock()
         self.connected = False
         self._client_id = client_id
+        # BUG REAL, confirmado por fuzzing adversarial: tras CUALQUIER corte
+        # de conexion con el broker (reinicio de Mosquitto, blip de red),
+        # paho reconecta solo -- pero con `clean_session` por defecto
+        # (True), el broker OLVIDA las suscripciones anteriores. Sin
+        # re-suscribir aqui, todas las zonas de Climate dejaban de recibir
+        # ordenes de HA (climate.set_temperature, etc.) hasta un reinicio
+        # completo del addon. Se recuerda cada topic suscrito para
+        # re-suscribirlo en cada `_on_connect`, tanto el primero como
+        # cualquier reconexion posterior.
+        self._subscriptions: dict[str, object] = {}
 
     def connect(self) -> bool:
         creds = _fetch_broker_credentials()
@@ -153,6 +163,11 @@ class HAMqttClient:
             self.connected = reason_code == 0
             if self.connected:
                 log.info("MQTT local de HA conectado (%s:%s)", creds["host"], creds["port"])
+                for topic, on_message in self._subscriptions.items():
+                    client.message_callback_add(topic, on_message)
+                    client.subscribe(topic, qos=1)
+                if self._subscriptions:
+                    log.info("MQTT local de HA: %d suscripcion(es) re-establecida(s) tras (re)conexion", len(self._subscriptions))
             else:
                 log.warning("MQTT local de HA: fallo de conexion, codigo %s", reason_code)
 
@@ -174,6 +189,7 @@ class HAMqttClient:
         self._client.publish(topic, body, qos=1, retain=retain)
 
     def subscribe(self, topic: str, on_message) -> None:
+        self._subscriptions[topic] = on_message
         if self._client is None:
             return
         self._client.message_callback_add(topic, on_message)

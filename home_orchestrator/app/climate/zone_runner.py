@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from collections import deque
 from datetime import datetime, timezone
 
@@ -119,11 +120,40 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# BUG REAL, confirmado por fuzzing adversarial: `_read_current_temp` solo
+# excluia "unknown"/"unavailable"/None, sin ningun filtro de rango fisico
+# -- una lectura parseable pero disparatada (-50 C, 200 C: glitch de
+# sensor, cable suelto, fallo de ADC) se trataba como valida, disparaba la
+# rama de SEGURIDAD de scheduler.decide_action (enciende calor/frio de
+# emergencia de verdad) y ademas contaminaba la media movil suavizada
+# durante varios ciclos despues de que el sensor ya hubiera vuelto a dar
+# lecturas normales. Rango deliberadamente holgado (ninguna vivienda real
+# de esta instalacion puede estar fuera de esto) -- una lectura fuera se
+# descarta ENTERA, nunca se recorta al limite (que seguiria siendo un dato
+# inventado), igual que el techo de potencia ya usado en Energy.
+PLAUSIBLE_INDOOR_TEMP_RANGE_C = (-30.0, 60.0)
+
+
 def _safe_float(value) -> float | None:
+    # BUG REAL, confirmado por fuzzing adversarial: `float("nan")` y
+    # `float("inf")`/`float("Infinity")` NO lanzan excepcion en Python, asi
+    # que se colaban por este filtro como si fueran lecturas validas.
+    # Confirmado de extremo a extremo: una sola lectura "nan"/"inf" de un
+    # sensor (Modbus/ESPHome/cualquier integracion de terceros puede
+    # publicar literalmente ese string) envenenaba la media movil de
+    # temperatura (`Ema.update`) de forma IRREVERSIBLE -- ninguna lectura
+    # normal posterior la recuperaba, y la zona ni siquiera se marcaba
+    # "no disponible" porque `nan is not None` es `True`. Se descarta aqui
+    # mismo, en el unico sitio que parsea CUALQUIER numero de HA en este
+    # fichero, para blindar todos los usos a la vez (temperatura, target,
+    # humedad...).
     try:
-        return float(value) if value is not None else None
+        parsed = float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+    if parsed is not None and not math.isfinite(parsed):
+        return None
+    return parsed
 
 
 def _pick_fan_mode(fan_modes: list[str], urgent: bool, manual: str | None) -> str | None:
@@ -775,6 +805,13 @@ class ZoneRunner:
 
         if state is not None and state.get("state") not in ("unknown", "unavailable", None):
             raw = _safe_float(state.get("state"))
+            if raw is not None and not (PLAUSIBLE_INDOOR_TEMP_RANGE_C[0] <= raw <= PLAUSIBLE_INDOOR_TEMP_RANGE_C[1]):
+                _LOGGER.warning(
+                    "Zona %s: lectura de temperatura %.1f°C fuera de rango fisico plausible "
+                    "%s -- descartada como glitch de sensor, no se usa.",
+                    self.zone_id, raw, PLAUSIBLE_INDOOR_TEMP_RANGE_C,
+                )
+                raw = None
             if raw is not None:
                 self._sensor_stale = False
                 last_updated_raw = state.get("last_updated")
@@ -1344,7 +1381,7 @@ class ZoneRunner:
                 self._tpi_cycle_start.pop("heat", None)
             heat_force = force_off or (not desired_heat_on and action == "cool")
             for sw in self.zone.get(CONF_HEAT_SWITCHES) or []:
-                if self._drive_switch(sw, desired_heat_on, simulate, force=heat_force):
+                if self._drive_switch(sw, desired_heat_on, simulate, force=heat_force, urgent=urgent):
                     real_heat = True
 
         if capability in ("cool", "heat_cool"):
@@ -1355,7 +1392,7 @@ class ZoneRunner:
                 self._tpi_cycle_start.pop("cool", None)
             cool_force = force_off or (not desired_cool_on and action == "heat")
             for sw in self.zone.get(CONF_COOL_SWITCHES) or []:
-                if self._drive_switch(sw, desired_cool_on, simulate, force=cool_force):
+                if self._drive_switch(sw, desired_cool_on, simulate, force=cool_force, urgent=urgent):
                     real_cool = True
 
         for entity_id in self.zone.get(CONF_CLIMATE_ENTITIES) or []:
@@ -1502,7 +1539,7 @@ class ZoneRunner:
         elapsed = (now - start).total_seconds()
         return elapsed < on_percent * cycle_seconds
 
-    def _drive_switch(self, entity_id: str, desired_on: bool, simulate: bool, force: bool = False) -> bool:
+    def _drive_switch(self, entity_id: str, desired_on: bool, simulate: bool, force: bool = False, urgent: bool = False) -> bool:
         state = self._get_state(entity_id)
         current_on = state is not None and state.get("state") == "on"
         now = _utcnow()
@@ -1517,6 +1554,10 @@ class ZoneRunner:
                 else self.zone.get(CONF_MIN_OFF_SECONDS, DEFAULT_MIN_OFF_SECONDS)
             if (now - last_change).total_seconds() < min_seconds:
                 return current_on
+
+        arbitrate = getattr(self.bridges, "arbitrate_switch_command", None)
+        if arbitrate is not None and not arbitrate(entity_id, self.zone_id, desired_on, urgent):
+            return current_on
 
         if not simulate:
             service = "turn_on" if desired_on else "turn_off"

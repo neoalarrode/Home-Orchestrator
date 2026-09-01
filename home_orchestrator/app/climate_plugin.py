@@ -35,7 +35,7 @@ REACTIVE_MIN_INTERVAL_SECONDS = 5
 class ClimatePlugin(Plugin):
     slug = "climate"
     name = "Climate Orchestrator"
-    version = "0.6.2"
+    version = "0.7.0"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
@@ -55,7 +55,44 @@ class ClimatePlugin(Plugin):
         # zonas que referencien un actuador de otro plugin simplemente no
         # lo controlan (ver ZoneRunner._resolve_bridge_handle), no revientan.
         self._actuator_providers: dict[str, object] = {}
+        # BUG REAL, confirmado por fuzzing adversarial: dos zonas que
+        # comparten el mismo switch fisico (p.ej. una caldera con dos
+        # circuitos declarados como dos zonas) deciden y actuan de forma
+        # totalmente independiente, sin ninguna coordinacion. Una zona en
+        # emergencia de seguridad (por debajo de min_temp) puede encender
+        # el switch, y en el MISMO ciclo reactivo otra zona -- que no sabe
+        # que lo comparte -- lo apaga por su propia logica, dejando a la
+        # primera sin calefaccion pese a estar en su caso de mayor
+        # gravedad. `_actuator_cycle_claims` registra, solo durante la
+        # ejecucion de un ciclo reactivo, quien ha tocado cada actuador y
+        # con que urgencia -- ver arbitrate_switch_command().
+        self._actuator_cycle_claims: dict[str, tuple[str, bool, bool]] = {}
         self._register_routes()
+
+    def arbitrate_switch_command(self, entity_id: str, zone_id: str, desired_on: bool, urgent: bool) -> bool:
+        """Decide si una zona puede aplicar su comando sobre un switch que
+        puede estar compartido con otra zona, dentro del mismo ciclo
+        reactivo. Regla minima y deliberadamente conservadora: si OTRA
+        zona ya encendio este mismo actuador en este ciclo en modo de
+        emergencia (`urgent`), ninguna zona puede apagarlo hasta el
+        siguiente ciclo -- evita que una decision no urgente deshaga, en
+        el mismo instante, la decision de seguridad de otra zona. Fuera de
+        ese caso concreto, se conserva el comportamiento de siempre
+        (ultima decision del ciclo manda), que es correcto cuando el
+        actuador de verdad pertenece a una sola zona (el caso normal)."""
+        prior = self._actuator_cycle_claims.get(entity_id)
+        if prior is not None:
+            prior_zone, prior_on, prior_urgent = prior
+            if prior_zone != zone_id and prior_urgent and prior_on and not desired_on:
+                log.warning(
+                    "Conflicto de actuador compartido en %s: la zona %s intento apagarlo en el "
+                    "mismo ciclo reactivo en que la zona %s lo encendio en modo de emergencia -- "
+                    "se ignora la orden de apagado hasta el siguiente ciclo.",
+                    entity_id, zone_id, prior_zone,
+                )
+                return False
+        self._actuator_cycle_claims[entity_id] = (zone_id, desired_on, urgent)
+        return True
 
     def register_actuator_provider(self, prefix: str, provider) -> None:
         """`provider` debe exponer `.climate_handle(device_id, index) ->
@@ -358,6 +395,7 @@ class ClimatePlugin(Plugin):
         self._reactive.trigger()
 
     def _run_reactive_cycle(self) -> None:
+        self._actuator_cycle_claims = {}
         for zone_id, runner in list(self._runners.items()):
             try:
                 runner.handle_reactive_event()

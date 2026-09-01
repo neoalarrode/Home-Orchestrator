@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.77.25
+
+**QA adversarial completo del plugin Climate — Fase 1 (crítico) (plugin Climate 0.7.0).**
+
+A petición expresa del usuario, se repite en Climate el mismo proceso de QA adversarial ya completado en Energy: 5 agentes en paralelo sometieron el motor de zonas, el aprendizaje térmico, MQTT Discovery y la config a fuzzing adversarial (~25 hallazgos reales). Primera tanda de correcciones (crítico), verificada con tests dirigidos que reproducen cada fallo antes de subirla:
+
+- **Envenenamiento por `NaN`/`Infinity`**: una lectura de sensor con ese valor (glitch de sensor, entidad mal configurada) no lanza excepción al convertirla a `float`, así que atravesaba el `try/except` de `_safe_float` tal cual. En `climate/ema.py`, una sola lectura así dejaba el valor suavizado en `NaN` de forma IRREVERSIBLE (`valor + alpha*(nan-valor)` es `nan` para cualquier `alpha`, incluidas todas las lecturas normales posteriores). Ahora `_safe_float` y `Ema.update` descartan explícitamente cualquier valor no finito.
+- **Lecturas de temperatura interior fuera de rango físico plausible** (sensor desconectado reportando un valor fijo absurdo tipo -50°C o 200°C) se usaban tal cual para decidir calefacción/refrigeración. Ahora `_read_current_temp` descarta cualquier lectura fuera de (-30°C, 60°C) como glitch de sensor.
+- **Reconexión MQTT perdía TODAS las suscripciones de comando para siempre**: `HAMqttClient` no fija `clean_session=False` y su `_on_connect` nunca volvía a suscribirse tras una reconexión — con el comportamiento por defecto del broker, cualquier corte de red (blip de Mosquitto, reinicio del broker) dejaba a TODAS las zonas de Climate sin recibir más órdenes de HA hasta un reinicio completo del add-on. Ahora se recuerdan los topics suscritos y se re-suscriben automáticamente en cada `_on_connect`, tanto el primero como cualquier reconexión posterior.
+- **Conflicto de actuador compartido entre zonas**: cada `ZoneRunner` decide y actúa de forma totalmente independiente, sin ninguna coordinación — si dos zonas declaran el mismo switch físico (p.ej. una caldera con dos circuitos), una zona en emergencia de seguridad (por debajo de `min_temp`) podía encenderlo y, en el MISMO ciclo reactivo, otra zona sin conocimiento de que lo comparte podía apagarlo por su propia lógica, dejando a la primera sin calefacción en su caso más grave. `ClimatePlugin` ahora arbitra los comandos sobre switches dentro de cada ciclo reactivo: ninguna zona puede apagar un actuador que otra zona encendió en emergencia en ese mismo ciclo (fallo seguro hacia mantener el calor encendido); fuera de ese caso concreto se conserva el comportamiento de siempre.
+
 ## 0.77.24
 
 **QA adversarial completo del plugin Energy — Fase 3 (medio/bajo), fin de la ronda (plugin Energy 0.13.2).**
