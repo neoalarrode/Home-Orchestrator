@@ -217,10 +217,10 @@ PLUGIN_CATALOG = {
     "climate": {
         "name": "Climate Orchestrator",
         "description": "Termostatos adaptativos por zona, expuestos como climate.* nativos de HA (HomeKit/Matter) vía MQTT Discovery",
-        "version": "0.7.4",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
+        "version": "0.7.5",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
         "downloadable": True,
-        "tag": "v0.77.31",
-        "sha256": "8f55191690cc4c85191c2ed2a11066376a1d6c9ba582b5785d0c49f78dd93f31",  # sha256 real del tarball de v0.77.31, verificado contra una descarga real antes de fijarlo aqui (debounce del delegado climate.*, respeto a un cambio manual del actuador)
+        "tag": "v0.77.35",
+        "sha256": "ce56194d943b1c480ce1c6f88aa462fbd6bb6bda4916582fb79ad65a9c624088",  # sha256 real del tarball de v0.77.35, verificado contra una descarga real antes de fijarlo aqui (datalist de dispositivos integrado en el campo zf-climate)
         "files": ["climate_plugin.py", "climate", "climate_templates"],
     },
     "tuya": {
@@ -235,10 +235,10 @@ PLUGIN_CATALOG = {
     "lighting": {
         "name": "Lighting Orchestrator",
         "description": "Iluminación adaptativa por zona — color y brillo por hora, encendido/apagado por presencia y reglas condicionales (p.ej. TV encendida -> luces laterales en vez del techo)",
-        "version": "0.7.15",
+        "version": "0.7.16",
         "downloadable": True,
-        "tag": "v0.77.28",
-        "sha256": "5b4e11ca7ed9f657a9e9f66fe4ea53d40f87e29e5883c92f675b586883f72d10",  # sha256 real del tarball de v0.77.28, verificado contra una descarga real antes de fijarlo aqui (registro compartido de dispositivos device_registry.py, selector de "otros plugins" ya no menciona ninguna marca fija)
+        "tag": "v0.77.35",
+        "sha256": "ce56194d943b1c480ce1c6f88aa462fbd6bb6bda4916582fb79ad65a9c624088",  # sha256 real del tarball de v0.77.35, verificado contra una descarga real antes de fijarlo aqui (datalist de dispositivos integrado en cada fila de luz, no solo en una lista aparte)
         "files": ["lighting_plugin.py", "lighting", "lighting_templates"],
     },
     "tplink": {
