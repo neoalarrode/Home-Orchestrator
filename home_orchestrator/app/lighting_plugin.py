@@ -12,13 +12,14 @@ DOS vias de control, no una sola -- una regla puede referenciar:
     estandar `light.turn_on`/`light.turn_off` por WebSocket. Sirve
     cualquier bombilla que ya aparezca como `light.*` en HA, sin que este
     plugin necesite saber de que marca es.
-  - Un actuador de OTRO plugin cargado (hoy Tuya) referenciado como
-    `tuya:<device_id>[:<indice>]`, controlado DIRECTAMENTE en el mismo
-    proceso sin pasar por HA/MQTT -- mismo patron de "proveedor de
-    actuadores" que ya usa Climate (ver `register_actuator_provider`,
-    `TuyaPlugin.light_handle`). No son excluyentes: el mismo dispositivo
-    Tuya puede seguir viendose como `light.*` en HA (voz, Lovelace, otras
-    automatizaciones) mientras Lighting lo controla por la via directa.
+  - Un actuador de OTRO plugin cargado (Tuya/TP-Link/Govee/Shelly hoy)
+    referenciado como `tuya:<device_id>[:<indice>]`, controlado
+    DIRECTAMENTE en el mismo proceso sin pasar por HA/MQTT -- via el
+    registro compartido `device_registry.py` (ver `TuyaPlugin.
+    get_handle`), filtrando por capacidad "light". No son excluyentes:
+    el mismo dispositivo puede seguir viendose como `light.*` en HA (voz,
+    Lovelace, otras automatizaciones) mientras Lighting lo controla por
+    la via directa.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ import time
 
 import flask
 
+import device_registry
 import ha_mqtt
 import ha_websocket
 from lighting import presets, zone_store
@@ -44,7 +46,7 @@ DEFAULT_REAPPLY_MINUTES = 5
 class LightingPlugin(Plugin):
     slug = "lighting"
     name = "Lighting Orchestrator"
-    version = "0.7.14"
+    version = "0.7.15"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
@@ -61,35 +63,20 @@ class LightingPlugin(Plugin):
         self._ws.subscribe("lighting", self._on_entity_change)
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_lighting")
         self._app = flask.Flask("lighting_plugin", template_folder="lighting_templates")
-        # Registro GENERICO de "proveedores de actuadores" -- mismo
-        # mecanismo que ya usa ClimatePlugin (ver su propio comentario):
-        # cualquier plugin que ofrezca `light_handle` (Tuya hoy, otra
-        # marca mañana) se registra aqui solo, sin que este fichero
-        # necesite conocer nada especifico de esa marca.
-        self._actuator_providers: dict[str, object] = {}
+        # Los actuadores de otros plugins (Tuya/TP-Link/Govee/Shelly hoy)
+        # se resuelven via el registro COMPARTIDO device_registry.py,
+        # filtrando siempre por capacidad "light" -- ver
+        # is_bridge_ref()/resolve_bridge_handle() mas abajo.
         self._register_routes()
 
-    def register_actuator_provider(self, prefix: str, provider) -> None:
-        """`provider` debe exponer `.light_handle(device_id, index) ->
-        handle | None` y, si quiere aparecer en la referencia de luces de
-        la interfaz, `.list_light_actuators() -> list[dict]`."""
-        self._actuator_providers[prefix] = provider
-        log.info("Registrado proveedor de actuadores '%s'", prefix)
-
     def is_bridge_ref(self, ref: str) -> bool:
-        return ":" in ref and ref.split(":", 1)[0] in self._actuator_providers
+        return device_registry.is_bridge_ref(ref)
 
     def resolve_bridge_handle(self, ref: str):
         """`ref` = '<prefijo>:<device_id>[:<indice>]' -> handle, o None
-        si el prefijo no tiene proveedor registrado ahora mismo."""
-        prefix, rest = ref.split(":", 1)
-        provider = self._actuator_providers.get(prefix)
-        if provider is None:
-            return None
-        parts = rest.split(":", 1)
-        device_id = parts[0]
-        index = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-        return provider.light_handle(device_id, index)
+        si el prefijo no tiene proveedor registrado ahora mismo, o si no
+        ofrece la capacidad "light" para ese ref."""
+        return device_registry.resolve(ref, "light")
 
     # --------------------------------------------------------------- Flask -
 
@@ -133,16 +120,7 @@ class LightingPlugin(Plugin):
             que Climate usa en `/api/actuators`. `ref` es lo que se
             escribe en `luces=...` de una regla para usar esta via en vez
             de un `light.*`."""
-            out = []
-            for prefix, provider in self._actuator_providers.items():
-                lister = getattr(provider, "list_light_actuators", None)
-                if lister is None:
-                    continue
-                try:
-                    out.extend(lister())
-                except Exception:
-                    log.exception("Fallo listando actuadores de luz del proveedor '%s'", prefix)
-            return flask.jsonify(out)
+            return flask.jsonify(device_registry.list_actuators("light"))
 
         @app.get("/api/room-presets")
         def _list_room_presets():

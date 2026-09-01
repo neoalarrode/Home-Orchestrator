@@ -219,12 +219,12 @@ class ZoneRunner:
     y `mqtt` (mqtt_climate.MqttClimateEntity, ver ese modulo) se inyectan
     desde fuera -- este runner no abre ninguna conexion el mismo.
 
-    `bridges` (opcional): el propio `ClimatePlugin`, que hace de registro
-    generico de "proveedores de actuadores" -- cualquier plugin que
-    ofrezca dispositivos climate.* (Tuya hoy, otras marcas mañana) se
-    registra solo en el (ver ClimatePlugin.register_actuator_provider(),
-    llamado desde core_app.py tras cargar los plugins). Este runner nunca
-    conoce marcas concretas: solo sabe que `<prefijo>:<id>` en
+    `bridges` (opcional): el propio `ClimatePlugin`, que resuelve
+    actuadores de otros plugins via el registro COMPARTIDO
+    `device_registry.py` (cualquier plugin que ofrezca dispositivos
+    climate.* -- Tuya hoy, otras marcas mañana -- se registra ahi una
+    sola vez, ver core_app.py) filtrando siempre por capacidad "climate".
+    Este runner nunca conoce marcas concretas: solo sabe que `<prefijo>:<id>` en
     `climate_entities` (junto a `climate.*` de HA, misma lista de
     siempre) se resuelve preguntandole a `bridges`, sea cual sea el
     prefijo -- añadir una marca nueva no toca ni una linea de este

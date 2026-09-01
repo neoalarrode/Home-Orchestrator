@@ -26,6 +26,7 @@ from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.serving import run_simple
 
 import core_shell
+import device_registry
 import plugin_loader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -34,30 +35,18 @@ log = logging.getLogger("core")
 
 def main() -> None:
     plugins = plugin_loader.load_all_plugins()
-    by_slug = {p.slug: p for p in plugins}
 
-    # Cualquier plugin cargado que ofrezca `climate_handle` (Tuya hoy,
-    # otra marca mañana) se registra solo en Climate como proveedor de
-    # actuadores -- no hace falta tocar este fichero ni climate_plugin.py
-    # cuando llegue un tercero; basta con que el plugin nuevo exponga el
-    # mismo contrato (ver TuyaPlugin.climate_handle/list_climate_actuators).
-    climate_plugin = by_slug.get("climate")
-    if climate_plugin is not None:
-        for p in plugins:
-            if p is climate_plugin or not hasattr(p, "climate_handle"):
-                continue
-            climate_plugin.register_actuator_provider(p.slug, p)
-
-    # Mismo mecanismo, ahora para Lighting -- cualquier plugin cargado
-    # que ofrezca `light_handle` (Tuya hoy, otra marca mañana) se
-    # registra en Lighting sin que este fichero necesite conocer nada
-    # especifico de esa marca.
-    lighting_plugin = by_slug.get("lighting")
-    if lighting_plugin is not None:
-        for p in plugins:
-            if p is lighting_plugin or not hasattr(p, "light_handle"):
-                continue
-            lighting_plugin.register_actuator_provider(p.slug, p)
+    # Registro COMPARTIDO de dispositivos consumibles internamente por
+    # otro plugin (ver device_registry.py) -- cualquier plugin cargado
+    # que ofrezca el contrato generico `get_handle`/`list_actuators`
+    # (Tuya/Shelly/TP-Link/Govee hoy, otra marca mañana) se registra UNA
+    # sola vez aqui, sin que este fichero necesite saber que capacidades
+    # ofrece ni que plugin las va a consumir despues -- cada consumidor
+    # (Climate, Lighting...) filtra por su propia capacidad al leer del
+    # registro, nunca al revés.
+    for p in plugins:
+        if hasattr(p, "get_handle") and hasattr(p, "list_actuators"):
+            device_registry.register_provider(p.slug, p)
 
     primary = next((p for p in plugins if getattr(p, "serves_root", False)), None)
     rest = [p for p in plugins if p is not primary]

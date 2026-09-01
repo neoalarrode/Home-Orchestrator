@@ -19,6 +19,7 @@ import time
 
 import flask
 
+import device_registry
 import ha_mqtt
 import ha_websocket
 from climate import zone_store
@@ -35,7 +36,7 @@ REACTIVE_MIN_INTERVAL_SECONDS = 5
 class ClimatePlugin(Plugin):
     slug = "climate"
     name = "Climate Orchestrator"
-    version = "0.7.2"
+    version = "0.7.3"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
@@ -46,15 +47,13 @@ class ClimatePlugin(Plugin):
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_climate")
         self._reactive = ha_websocket.ReactiveTrigger(self._run_reactive_cycle)
         self._app = flask.Flask("climate_plugin", template_folder="climate_templates")
-        # Registro GENERICO de "proveedores de actuadores" -- prefijo ->
-        # plugin. Cualquier plugin que ofrezca dispositivos climate.*
-        # (Tuya hoy, otra marca mañana) se registra solo aqui (ver
-        # register_actuator_provider(), llamado desde core_app.py tras
-        # cargar los plugins) sin que este fichero necesite conocer nada
-        # especifico de esa marca. Vacio si no hay ninguno cargado: las
-        # zonas que referencien un actuador de otro plugin simplemente no
-        # lo controlan (ver ZoneRunner._resolve_bridge_handle), no revientan.
-        self._actuator_providers: dict[str, object] = {}
+        # Los actuadores de otros plugins (Tuya/Shelly/... hoy) se
+        # resuelven via el registro COMPARTIDO device_registry.py,
+        # filtrando siempre por capacidad "climate" -- ver
+        # is_bridge_ref()/resolve_bridge_handle() mas abajo. Sin ningun
+        # proveedor de esa capacidad cargado, las zonas que referencien
+        # un actuador de otro plugin simplemente no lo controlan (ver
+        # ZoneRunner._resolve_bridge_handle), no revientan.
         # BUG REAL, confirmado por fuzzing adversarial: dos zonas que
         # comparten el mismo switch fisico (p.ej. una caldera con dos
         # circuitos declarados como dos zonas) deciden y actuan de forma
@@ -94,28 +93,14 @@ class ClimatePlugin(Plugin):
         self._actuator_cycle_claims[entity_id] = (zone_id, desired_on, urgent)
         return True
 
-    def register_actuator_provider(self, prefix: str, provider) -> None:
-        """`provider` debe exponer `.climate_handle(device_id, index) ->
-        handle | None` (control) y, si quiere aparecer en el selector de
-        la interfaz, `.list_climate_actuators() -> list[dict]` (ver
-        api_list_actuators mas abajo)."""
-        self._actuator_providers[prefix] = provider
-        log.info("Registrado proveedor de actuadores '%s'", prefix)
-
     def is_bridge_ref(self, ref: str) -> bool:
-        return ":" in ref and ref.split(":", 1)[0] in self._actuator_providers
+        return device_registry.is_bridge_ref(ref)
 
     def resolve_bridge_handle(self, ref: str):
         """`ref` = '<prefijo>:<device_id>[:<indice>]' -> handle, o None
-        si el prefijo no tiene proveedor registrado ahora mismo."""
-        prefix, rest = ref.split(":", 1)
-        provider = self._actuator_providers.get(prefix)
-        if provider is None:
-            return None
-        parts = rest.split(":", 1)
-        device_id = parts[0]
-        index = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-        return provider.climate_handle(device_id, index)
+        si el prefijo no tiene proveedor registrado ahora mismo, o si no
+        ofrece la capacidad "climate" para ese ref."""
+        return device_registry.resolve(ref, "climate")
 
     def get_history(self, ref: str, days: int) -> list[dict]:
         """Historico de un actuador de otro plugin, para que
@@ -124,7 +109,7 @@ class ClimatePlugin(Plugin):
         historico (capacidad opcional, ver TuyaPlugin.get_actuator_history)
         o si el prefijo no tiene proveedor registrado ahora mismo."""
         prefix, rest = ref.split(":", 1)
-        provider = self._actuator_providers.get(prefix)
+        provider = device_registry.get_provider(prefix)
         getter = getattr(provider, "get_actuator_history", None)
         if getter is None:
             return []
@@ -163,17 +148,10 @@ class ClimatePlugin(Plugin):
                 if ":" in ref
             }
             out = []
-            for prefix, provider in self._actuator_providers.items():
-                lister = getattr(provider, "list_climate_actuators", None)
-                if lister is None:
-                    continue
-                try:
-                    for actuator in lister():
-                        actuator = dict(actuator)
-                        actuator["already_used"] = actuator.get("ref") in used_refs
-                        out.append(actuator)
-                except Exception:
-                    log.exception("Fallo listando actuadores del proveedor '%s'", prefix)
+            for actuator in device_registry.list_actuators("climate"):
+                actuator = dict(actuator)
+                actuator["already_used"] = actuator.get("ref") in used_refs
+                out.append(actuator)
             return flask.jsonify(out)
 
         @app.get("/api/zones")

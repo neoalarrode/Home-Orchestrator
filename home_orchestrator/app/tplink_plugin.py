@@ -54,7 +54,7 @@ REDISCOVER_INTERVAL_SECONDS = 5 * 60
 class TplinkPlugin(Plugin):
     slug = "tplink"
     name = "TP-Link Orchestrator"
-    version = "0.2.1"
+    version = "0.2.2"
 
     def __init__(self) -> None:
         self._manager = TplinkDeviceManager(
@@ -268,22 +268,30 @@ class TplinkPlugin(Plugin):
                 log.exception("Fallo publicando estado MQTT de %s", device_id)
 
     # --------------------------------------------------- API para otros plugins
+    # Contrato generico de device_registry.py -- ver TuyaPlugin.get_handle
+    # para la explicacion completa de por que es asi en vez de un metodo
+    # por capacidad.
 
-    def light_handle(self, device_id: str, light_index: int = 0):
+    def get_handle(self, capability: str, device_id: str, index: int = 0):
         """Punto de entrada para consumo INTERNO desde otro plugin (hoy
         Lighting) -- control DIRECTO de una bombilla TP-Link, sin pasar
-        por HA/MQTT. `light_index` se ignora (un dispositivo TP-Link
-        expone como mucho una luz por `device_id` -- a diferencia de
-        Tuya no hay un `lights:` con varias entradas por dispositivo),
-        se acepta solo para cumplir el mismo contrato que
-        `TuyaPlugin.light_handle`."""
+        por HA/MQTT. `index` se ignora (un dispositivo TP-Link expone
+        como mucho una luz por `device_id`). TP-Link solo ofrece "light"
+        hoy (no todos sus dispositivos son luces, ver `list_actuators``)
+        -- cualquier otra capacidad devuelve None, igual que un
+        device_id desconocido o que no sea una luz."""
+        if capability != "light":
+            return None
         return self._manager.light_handle(device_id)
 
-    def list_light_actuators(self) -> list[dict]:
+    def list_actuators(self, capability: str) -> list[dict]:
         """Un `{"ref", "name", "brand"}` por cada dispositivo dado de
-        alta que resulte ser una luz -- lo que LightingPlugin agrega
-        para que el selector de la interfaz de Lighting los ofrezca sin
-        que el usuario tenga que escribir `tplink:<id>` a mano."""
+        alta que resulte ser una luz -- lo que el registro compartido
+        agrega para que el selector de la interfaz de Lighting los
+        ofrezca sin que el usuario tenga que escribir `tplink:<id>` a
+        mano. TP-Link solo ofrece "light" hoy."""
+        if capability != "light":
+            return []
         out = []
         for device in tplink_store.load_devices():
             device_id = device["id"]

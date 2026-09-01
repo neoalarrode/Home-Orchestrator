@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.77.28
+
+**Registro compartido de dispositivos (`device_registry.py`) -- generalizacion del mecanismo de "proveedor de actuadores".**
+
+A peticion expresa del usuario: antes de esto, Climate y Lighting tenian cada uno su propia copia casi identica del mismo mecanismo (`_actuator_providers`, `register_actuator_provider`, `resolve_bridge_handle`), y cada plugin de ingesta (Tuya, Shelly, TP-Link, Govee) tenia que exponer un metodo distinto por cada capacidad que ofreciera consumir internamente (`light_handle`/`list_light_actuators` para Lighting, `climate_handle`/`list_climate_actuators` solo en Tuya para Climate). Anadir una capacidad nueva a un consumidor nuevo obligaba a duplicar todo el mecanismo otra vez, y no habia ningun sitio donde ver "que dispositivos hay, de que tipo" sin mirar plugin por plugin.
+
+- Nuevo `device_registry.py` (nucleo, tecnologia-agnostico): `register_provider(prefix, provider)`, `list_actuators(capability)` (agrega de todos los proveedores registrados, SIEMPRE filtrando por capacidad) y `resolve(ref, capability)`. Ni una sola mencion a Tuya/Climate/Lighting dentro.
+- Tuya, Shelly, TP-Link y Govee sustituyen sus metodos por capacidad por un unico par generico: `get_handle(capability, device_id, index)` y `list_actuators(capability)`, que despachan internamente segun "light"/"climate"/"vacuum". Tuya expone ahora tambien "vacuum" en el catalogo (sin handle interno todavia -- ningun plugin lo consume asi, solo se expone via MQTT Discovery como hasta ahora).
+- `climate_plugin.py`/`lighting_plugin.py` consultan el registro compartido filtrando por su propia capacidad ("climate"/"light") en vez de mantener cada uno su copia -- Iluminacion nunca puede ofrecer ni resolver un actuador de Climate, y viceversa.
+- `core_app.py`: una unica pasada de wiring en vez de dos casi identicas.
+- Interfaz de Iluminacion adaptativa: el selector de "dispositivos de otros plugins" (antes "Tuya/TP-Link" a secas, aunque Shelly y Govee ya aportaban dispositivos por el mismo mecanismo) ya no menciona ninguna marca en concreto y muestra la marca real de cada dispositivo junto a su nombre.
+
+El formato de referencia guardado en zonas/reglas existentes (`tuya:device_id[:indice]`, etc.) no cambia -- es una reorganizacion interna, cero migracion de datos.
+
+**Nota de despliegue:** a diferencia de todas las releases anteriores de esta sesion, `device_registry.py` (fichero nuevo) y el cambio en `core_app.py` son del NUCLEO, no de un plugin concreto -- no viajan por el mecanismo de descarga en caliente de `plugins.json`, solo llegan reconstruyendo la imagen del add-on entero.
+
 ## 0.77.27
 
 **QA adversarial completo del plugin Climate — Fase 3 (medio/bajo), fin de la ronda (plugin Climate 0.7.2).**

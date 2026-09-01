@@ -144,6 +144,7 @@
   .lights-ref-row:hover { background: var(--accent-soft); }
   .lights-ref-row .eid { font-family: var(--font-mono); color: var(--accent); }
   .lights-ref-row .nm { color: var(--muted); }
+  .lights-ref-row .brand-tag { font-size: 0.75em; color: var(--muted); opacity: 0.7; border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; margin-left: 6px; }
 
   /* --- Editor visual de reglas -- sustituye el textarea de texto plano
      como forma PRINCIPAL de editar (el textarea sigue vivo por debajo,
@@ -289,7 +290,7 @@
       <p class="help" style="margin-top:14px">
         Reglas — qué luces controlar según presencia y condiciones, una por línea, la primera que coincide gana:
         <code>Nombre; si entidad=valor[,valor2]; luces=light.a,light.b</code>. Una regla sin <code>si...</code> es la reserva por defecto.
-        Cada luz puede ser un <code>light.*</code> de Home Assistant (vía servicios, la más compatible) o, si el dispositivo viene de otro plugin instalado (Tuya o TP-Link), una referencia <code>tuya:device_id</code> / <code>tplink:device_id</code> para controlarlo directamente sin pasar por HA/MQTT. ¿No aparece el dispositivo que buscas? Dalo de alta primero en <a href="/plugins/tuya/" target="_blank">Tuya</a> o <a href="/plugins/tplink/" target="_blank">TP-Link</a>. Haz clic en una luz de la lista de abajo para añadirla a la última regla.
+        Cada luz puede ser un <code>light.*</code> de Home Assistant (vía servicios, la más compatible) o, si el dispositivo viene de otro plugin instalado (Tuya, Shelly, TP-Link, Govee...), una referencia <code>&lt;plugin&gt;:device_id</code> para controlarlo directamente sin pasar por HA/MQTT. ¿No aparece el dispositivo que buscas? Dalo de alta primero en el plugin correspondiente. Haz clic en una luz de la lista de abajo para añadirla a la última regla.
       </p>
 
       <div id="rules-editor"></div>
@@ -299,9 +300,9 @@
         <summary>Ver luces (light.*) conocidas por Home Assistant ahora mismo</summary>
         <div id="lights-ref-list" class="lights-ref-list"></div>
       </details>
-      <details class="lights-ref" id="tuya-ref-details">
-        <summary>Ver luces Tuya/TP-Link controlables directamente (sin pasar por HA)</summary>
-        <div id="tuya-ref-list" class="lights-ref-list"></div>
+      <details class="lights-ref" id="bridge-ref-details">
+        <summary>Ver luces de otros plugins controlables directamente (sin pasar por HA)</summary>
+        <div id="bridge-ref-list" class="lights-ref-list"></div>
       </details>
 
       <details class="lights-ref" id="raw-rules-details">
@@ -830,18 +831,18 @@ async function loadLightsRef() {
       </div>`).join("");
   } catch (e) { box.innerHTML = '<div class="lights-ref-row"><span class="nm">Fallo al listar luces</span></div>'; }
 }
-async function loadTuyaRef() {
-  const box = document.getElementById("tuya-ref-list");
+async function loadBridgeRef() {
+  const box = document.getElementById("bridge-ref-list");
   try {
     const actuators = await (await fetch(`${API}/light-actuators`)).json();
-    if (!actuators.length) { box.innerHTML = '<div class="lights-ref-row"><span class="nm">Ningún dispositivo Tuya con luces dado de alta todavía</span></div>'; return; }
+    if (!actuators.length) { box.innerHTML = '<div class="lights-ref-row"><span class="nm">Ningún dispositivo con luces dado de alta todavía en otro plugin</span></div>'; return; }
     box.innerHTML = actuators.map(a => `
       <div class="lights-ref-row" onclick="insertLightRef('${esc(a.ref)}')">
-        <span class="nm">${esc(a.name)}</span><span class="eid">${esc(a.ref)}</span>
+        <span class="nm">${esc(a.name)} <span class="brand-tag">${esc(a.brand || "")}</span></span><span class="eid">${esc(a.ref)}</span>
       </div>`).join("");
-  } catch (e) { box.innerHTML = '<div class="lights-ref-row"><span class="nm">Fallo al listar actuadores Tuya</span></div>'; }
+  } catch (e) { box.innerHTML = '<div class="lights-ref-row"><span class="nm">Fallo al listar actuadores de otros plugins</span></div>'; }
 }
-document.getElementById("tuya-ref-details").addEventListener("toggle", (e) => { if (e.target.open) loadTuyaRef(); });
+document.getElementById("bridge-ref-details").addEventListener("toggle", (e) => { if (e.target.open) loadBridgeRef(); });
 
 function insertLightRef(entityId) {
   // Añade a la ULTIMA regla del editor visual (creando una si no hay

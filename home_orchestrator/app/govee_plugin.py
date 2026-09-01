@@ -37,7 +37,7 @@ log = logging.getLogger("govee_plugin")
 class GoveePlugin(Plugin):
     slug = "govee"
     name = "Govee Orchestrator"
-    version = "0.1.1"
+    version = "0.1.2"
 
     def __init__(self) -> None:
         self._manager = GoveeDeviceManager(on_any_change=self._on_device_change)
@@ -199,20 +199,27 @@ class GoveePlugin(Plugin):
                 log.exception("Fallo publicando estado MQTT de %s", device_id)
 
     # --------------------------------------------------- API para otros plugins
+    # Contrato generico de device_registry.py -- ver TuyaPlugin.get_handle
+    # para la explicacion completa de por que es asi en vez de un metodo
+    # por capacidad.
 
-    def light_handle(self, device_id: str, light_index: int = 0):
+    def get_handle(self, capability: str, device_id: str, index: int = 0):
         """Punto de entrada para consumo INTERNO desde Lighting -- control
-        DIRECTO de una bombilla Govee, sin pasar por HA/MQTT. `light_index`
-        se ignora (un dispositivo Govee expone como mucho una luz por
-        `device_id`), se acepta solo para cumplir el mismo contrato que
-        `TuyaPlugin.light_handle`/`TplinkPlugin.light_handle`."""
+        DIRECTO de una bombilla Govee, sin pasar por HA/MQTT. `index` se
+        ignora (un dispositivo Govee expone como mucho una luz por
+        `device_id`). Govee solo ofrece "light" hoy -- cualquier otra
+        capacidad devuelve None, igual que un device_id desconocido."""
+        if capability != "light":
+            return None
         return self._manager.light_handle(device_id)
 
-    def list_light_actuators(self) -> list[dict]:
+    def list_actuators(self, capability: str) -> list[dict]:
         """Un `{"ref", "name", "brand"}` por cada dispositivo dado de alta
-        -- lo que LightingPlugin agrega para que el selector de la
-        interfaz de Lighting los ofrezca sin que el usuario tenga que
-        escribir `govee:<id>` a mano."""
+        -- lo que el registro compartido agrega para que el selector de
+        la interfaz de Lighting los ofrezca sin que el usuario tenga que
+        escribir `govee:<id>` a mano. Govee solo ofrece "light" hoy."""
+        if capability != "light":
+            return []
         out = []
         for device in govee_store.load_devices():
             device_id = device["id"]

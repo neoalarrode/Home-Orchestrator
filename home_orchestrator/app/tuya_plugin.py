@@ -44,7 +44,7 @@ IDENTIFY_INTERVAL_SECONDS = 30 * 60
 class TuyaPlugin(Plugin):
     slug = "tuya"
     name = "Tuya Orchestrator"
-    version = "0.4.7"
+    version = "0.4.8"
 
     def __init__(self) -> None:
         self._manager = TuyaDeviceManager(
@@ -574,11 +574,32 @@ class TuyaPlugin(Plugin):
                 log.exception("Fallo publicando estado MQTT de %s", device_id)
 
     # --------------------------------------------------- API para otros plugins
+    # Contrato generico de device_registry.py -- UN par de metodos para
+    # cualquier capacidad ("light"/"climate"/"vacuum"/...), en vez de un
+    # par distinto por cada consumidor nuevo (asi era antes:
+    # `light_handle`/`list_light_actuators` para Lighting,
+    # `climate_handle`/`list_climate_actuators` para Climate, y habria
+    # hecho falta un tercer par para "vacuum" si algun dia hay un
+    # consumidor). El `ref`/formato de referencia guardado en zonas y
+    # reglas NO cambia -- solo se reorganiza que metodo lo resuelve.
 
-    def climate_handle(self, device_id: str, climate_index: int = 0):
+    _PROFILE_SECTION_BY_CAPABILITY = {"climate": "climates", "light": "lights", "vacuum": "vacuums"}
+
+    def get_handle(self, capability: str, device_id: str, index: int = 0):
         """Punto de entrada para consumo INTERNO desde otro plugin (hoy
-        Climate) -- ver tuya/device_manager.py:TuyaClimateHandle."""
-        return self._manager.climate_handle(device_id, climate_index)
+        Climate para "climate", Lighting para "light") -- control DIRECTO
+        del dispositivo Tuya, sin pasar por HA/MQTT. No es excluyente con
+        `expose_mqtt`: el mismo dispositivo puede seguir viendose por
+        ejemplo como `light.*` en HA para todo lo demas (voz, Lovelace,
+        otras automatizaciones) mientras otro plugin lo controla por
+        aqui. "vacuum" no tiene handle interno todavia (ningun plugin lo
+        consume asi hoy, solo se expone via MQTT Discovery) -- devuelve
+        None con sensatez, igual que un device_id desconocido."""
+        if capability == "climate":
+            return self._manager.climate_handle(device_id, index)
+        if capability == "light":
+            return self._manager.light_handle(device_id, index)
+        return None
 
     def get_actuator_history(self, device_id: str, climate_index: int, days: int) -> list[dict]:
         """Historico local para que thermal_model.py aprenda la inercia
@@ -586,13 +607,17 @@ class TuyaPlugin(Plugin):
         device_manager.py:get_actuator_history."""
         return self._manager.get_actuator_history(device_id, climate_index, days)
 
-    def list_climate_actuators(self) -> list[dict]:
-        """Un `{"ref", "name", "brand"}` por cada bloque `climates:` de
-        cada dispositivo dado de alta -- lo que ClimatePlugin agrega en
-        `/api/actuators` para que el selector de la interfaz de Climate
-        los ofrezca sin que el usuario tenga que escribir `tuya:<id>` a
-        mano. `ref` es exactamente lo que `climate_entities` de una zona
-        espera (ver ZoneRunner.bridges)."""
+    def list_actuators(self, capability: str) -> list[dict]:
+        """Un `{"ref", "name", "brand"}` por cada bloque de esa capacidad
+        ("climates:"/"lights:"/"vacuums:") de cada dispositivo dado de
+        alta -- lo que el registro compartido agrega para que el
+        selector del plugin consumidor los ofrezca sin que el usuario
+        tenga que escribir `tuya:<id>` a mano. `ref` es exactamente lo
+        que espera ese consumidor (ver ZoneRunner.bridges para Climate,
+        las reglas de zona para Lighting)."""
+        section = self._PROFILE_SECTION_BY_CAPABILITY.get(capability)
+        if section is None:
+            return []
         out = []
         for device in tuya_store.load_devices():
             cfg = device["config"]
@@ -602,45 +627,12 @@ class TuyaPlugin(Plugin):
             profile = self._manager.profile(device_id)
             if profile is None:
                 continue
-            for i, cm in enumerate(profile.climates):
-                ref = f"tuya:{device_id}" if len(profile.climates) == 1 else f"tuya:{device_id}:{i}"
+            items = getattr(profile, section)
+            for i, item in enumerate(items):
+                ref = f"tuya:{device_id}" if len(items) == 1 else f"tuya:{device_id}:{i}"
                 out.append({
                     "ref": ref,
-                    "name": f"{cfg.get('name') or device_id} — {cm.name}",
-                    "brand": "Tuya",
-                })
-        return out
-
-    def light_handle(self, device_id: str, light_index: int = 0):
-        """Punto de entrada para consumo INTERNO desde otro plugin (hoy
-        Lighting) -- control DIRECTO de una bombilla Tuya, sin pasar por
-        HA/MQTT (ver tuya/device_manager.py:TuyaLightHandle). No es
-        excluyente con `expose_mqtt`: el mismo dispositivo puede seguir
-        viendose como `light.*` en HA para todo lo demas (voz, Lovelace,
-        otras automatizaciones) mientras Lighting lo controla por aqui."""
-        return self._manager.light_handle(device_id, light_index)
-
-    def list_light_actuators(self) -> list[dict]:
-        """Un `{"ref", "name", "brand"}` por cada bloque `lights:` de
-        cada dispositivo dado de alta -- lo que LightingPlugin agrega
-        para que el selector de la interfaz de Lighting los ofrezca sin
-        que el usuario tenga que escribir `tuya:<id>` a mano en las
-        reglas. `ref` es exactamente lo que las reglas de una zona de
-        Lighting esperan como identificador de luz."""
-        out = []
-        for device in tuya_store.load_devices():
-            cfg = device["config"]
-            device_id = cfg.get("device_id")
-            if not device_id:
-                continue
-            profile = self._manager.profile(device_id)
-            if profile is None:
-                continue
-            for i, lt in enumerate(profile.lights):
-                ref = f"tuya:{device_id}" if len(profile.lights) == 1 else f"tuya:{device_id}:{i}"
-                out.append({
-                    "ref": ref,
-                    "name": f"{cfg.get('name') or device_id} — {lt.name}",
+                    "name": f"{cfg.get('name') or device_id} — {item.name}",
                     "brand": "Tuya",
                 })
         return out

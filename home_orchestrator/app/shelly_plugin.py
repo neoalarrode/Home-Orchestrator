@@ -40,7 +40,7 @@ log = logging.getLogger("shelly_plugin")
 class ShellyPlugin(Plugin):
     slug = "shelly"
     name = "Shelly Orchestrator"
-    version = "0.1.3"
+    version = "0.1.4"
 
     def __init__(self) -> None:
         self._manager = ShellyDeviceManager(on_any_change=self._on_device_change)
@@ -192,19 +192,27 @@ class ShellyPlugin(Plugin):
                 log.exception("Fallo publicando estado MQTT de %s", device_id)
 
     # --------------------------------------------------- API para otros plugins
+    # Contrato generico de device_registry.py -- ver TuyaPlugin.get_handle
+    # para la explicacion completa de por que es asi en vez de un metodo
+    # por capacidad.
 
-    def light_handle(self, device_id: str, light_index: int = 0):
+    def get_handle(self, capability: str, device_id: str, index: int = 0):
         """Punto de entrada para consumo INTERNO desde Lighting -- control
-        DIRECTO de un dispositivo Shelly, sin pasar por HA/MQTT.
-        `light_index` se ignora (mismo contrato que
-        `TuyaPlugin.light_handle`/`GoveePlugin.light_handle`)."""
+        DIRECTO de un dispositivo Shelly, sin pasar por HA/MQTT. `index`
+        se ignora (mismo contrato que `TuyaPlugin.get_handle`). Shelly
+        solo ofrece "light" hoy -- cualquier otra capacidad devuelve
+        None, igual que un device_id desconocido."""
+        if capability != "light":
+            return None
         return self._manager.light_handle(device_id)
 
-    def list_light_actuators(self) -> list[dict]:
+    def list_actuators(self, capability: str) -> list[dict]:
         """Un `{"ref", "name", "brand"}` por cada dispositivo dado de alta
-        -- lo que LightingPlugin agrega para que el selector de la
-        interfaz de Lighting los ofrezca sin que el usuario tenga que
-        escribir `shelly:<id>` a mano."""
+        -- lo que el registro compartido agrega para que el selector de
+        la interfaz de Lighting los ofrezca sin que el usuario tenga que
+        escribir `shelly:<id>` a mano. Shelly solo ofrece "light" hoy."""
+        if capability != "light":
+            return []
         out = []
         for device in shelly_store.load_devices():
             device_id = device["id"]
