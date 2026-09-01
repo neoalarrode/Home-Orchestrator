@@ -201,7 +201,8 @@
         </div>
       </div>
       <label for="zf-climate">Delegados climate.* (aire acondicionado con su propio termostato)</label>
-      <input id="zf-climate" placeholder="climate.airclima_frio_salon">
+      <datalist id="climate-ref-options"></datalist>
+      <input id="zf-climate" list="climate-ref-options" placeholder="climate.airclima_frio_salon">
       <p class="help">Un <code>climate.*</code> de Home Assistant por línea/coma, o elige abajo un dispositivo de otro plugin (Tuya...) — se controla directamente, sin pasar por HA. ¿No aparece el dispositivo que buscas? <a href="/plugins/tuya/" target="_blank">Dalo de alta en Tuya</a> primero.</p>
       <div id="zf-actuator-picker" style="margin-top:8px"></div>
       <label for="zf-humidifiers">Humidificadores/deshumidificadores (opcional)</label>
@@ -793,7 +794,20 @@ async function loadActuators() {
   try {
     lastActuators = await (await fetch("api/actuators")).json();
     renderActuatorPicker();
+    renderClimateRefDatalist();
   } catch (e) { /* red temporalmente caida */ }
+}
+
+// El campo `zf-climate` sigue siendo texto libre a proposito (admite
+// varias entidades separadas por coma) -- este <datalist> le anade
+// autocompletado nativo con los dispositivos de otros plugins ya
+// detectados, sin dejar de admitir escribir un climate.* de HA a mano.
+function renderClimateRefDatalist() {
+  const list = document.getElementById("climate-ref-options");
+  if (!list) return;
+  list.innerHTML = lastActuators.map(a =>
+    `<option value="${esc(a.ref)}" label="${esc(a.name)} (${esc(a.brand || "otro plugin")})"></option>`
+  ).join("");
 }
 
 function renderActuatorPicker() {

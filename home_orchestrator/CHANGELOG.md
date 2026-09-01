@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.77.35
+
+**Selector de dispositivos integrado en el propio campo, no solo en una lista aparte (plugins Lighting 0.7.16 y Climate 0.7.5).**
+
+A peticion expresa del usuario: el registro compartido de dispositivos (v0.77.28) anadio un panel plegable para ver los dispositivos de otros plugins, pero cada fila de luz de una regla (Lighting) o el campo de delegados climate.* (Climate) seguian siendo un `<input>` de texto libre sin ninguna forma de elegir directamente ahi -- la lista aparte solo servia para copiar el ref a mano. Confirmado por el usuario que esto seguia pasando tanto al crear una zona nueva como al editar una existente, en ambos plugins.
+
+- **Lighting**: cada fila de luz del editor de reglas (`<input class="light-ref">`) tiene ahora un `<datalist>` con autocompletado nativo de TODAS las entidades `light.*` de HA y TODOS los dispositivos de otros plugins ya detectados (Tuya/Shelly/TP-Link/Govee) -- sigue admitiendo escribir cualquier cosa a mano, pero ya no hace falta. Las dos listas se cargan en cuanto se abre el formulario (crear o editar), no solo al desplegar los paneles de referencia.
+- **Climate**: el campo de delegados `climate.*` tiene el mismo autocompletado con los actuadores de otros plugins ya detectados.
+
+El formato de referencia guardado no cambia -- es una mejora de interfaz, no una migracion de datos.
+
 ## 0.77.33
 
 **Apagado ordenado de plugins al reiniciar el add-on (nucleo) -- cierra el hueco real que dejaba a TP-Link/Tapo con su sesion KLAP colgada.**

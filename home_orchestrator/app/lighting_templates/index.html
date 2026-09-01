@@ -208,6 +208,7 @@
   <details id="add-zone-details">
     <summary><span class="add-toggle">＋ Nueva zona</span></summary>
     <form id="zone-form" style="margin-top:16px" onsubmit="return submitZoneForm(event)">
+      <datalist id="light-ref-options"></datalist>
       <input type="hidden" id="zf-id" value="">
 
       <label for="zf-name">Nombre</label>
@@ -688,7 +689,7 @@ function renderRulesEditor() {
       <div class="rule-section-label">Luces</div>
       ${rule.lights.map((l, li) => `
         <div class="rule-light-row">
-          <input type="text" class="light-ref" placeholder="light.techo_salon" value="${esc(l.ref)}" oninput="updateLightRef(${ri}, ${li}, this.value)">
+          <input type="text" class="light-ref" list="light-ref-options" placeholder="light.techo_salon" value="${esc(l.ref)}" oninput="updateLightRef(${ri}, ${li}, this.value)">
           <select onchange="updateLightMode(${ri}, ${li}, this.value)">
             <option value="" ${!l.mode ? "selected" : ""}>Color + brillo</option>
             <option value="solo_brillo" ${l.mode === "solo_brillo" ? "selected" : ""}>Solo brillo</option>
@@ -818,12 +819,33 @@ async function submitZoneForm(ev) {
 }
 
 // -------------------------------------------- referencia de light.* --
-// Solo para copiar entity_id al escribir las reglas -- clicar una fila
-// la copia al final del textarea de reglas, no hace falta teclearla.
+// Ademas de la lista plegable de mas abajo (clicar una fila la copia al
+// final del textarea de reglas), las dos listas alimentan un
+// <datalist> compartido (`light-ref-options`) para que CADA fila de luz
+// del editor visual (el <input class="light-ref">, ver renderRulesEditor)
+// ofrezca autocompletado nativo con las entidades/dispositivos ya
+// conocidos SIN dejar de admitir escribir cualquier otra cosa a mano --
+// antes esa lista aparte era la UNICA forma de no teclear el ref entero,
+// asi que en la practica cada fila seguia pidiendo entrada manual.
+let lastKnownLights = [];
+let lastKnownBridgeLights = [];
+
+function renderLightRefDatalist() {
+  const list = document.getElementById("light-ref-options");
+  if (!list) return;
+  const rows = [
+    ...lastKnownLights.map(l => ({ value: l.entity_id, label: l.name })),
+    ...lastKnownBridgeLights.map(a => ({ value: a.ref, label: `${a.name} (${a.brand || "otro plugin"})` })),
+  ];
+  list.innerHTML = rows.map(r => `<option value="${esc(r.value)}" label="${esc(r.label)}"></option>`).join("");
+}
+
 async function loadLightsRef() {
   const box = document.getElementById("lights-ref-list");
   try {
     const lights = await (await fetch(`${API}/lights`)).json();
+    lastKnownLights = lights;
+    renderLightRefDatalist();
     if (!lights.length) { box.innerHTML = '<div class="lights-ref-row"><span class="nm">Ninguna entidad light.* visible todavía</span></div>'; return; }
     box.innerHTML = lights.map(l => `
       <div class="lights-ref-row" onclick="insertLightRef('${esc(l.entity_id)}')">
@@ -835,6 +857,8 @@ async function loadBridgeRef() {
   const box = document.getElementById("bridge-ref-list");
   try {
     const actuators = await (await fetch(`${API}/light-actuators`)).json();
+    lastKnownBridgeLights = actuators;
+    renderLightRefDatalist();
     if (!actuators.length) { box.innerHTML = '<div class="lights-ref-row"><span class="nm">Ningún dispositivo con luces dado de alta todavía en otro plugin</span></div>'; return; }
     box.innerHTML = actuators.map(a => `
       <div class="lights-ref-row" onclick="insertLightRef('${esc(a.ref)}')">
@@ -843,6 +867,15 @@ async function loadBridgeRef() {
   } catch (e) { box.innerHTML = '<div class="lights-ref-row"><span class="nm">Fallo al listar actuadores de otros plugins</span></div>'; }
 }
 document.getElementById("bridge-ref-details").addEventListener("toggle", (e) => { if (e.target.open) loadBridgeRef(); });
+// El <datalist> de cada fila de luz (ver renderRulesEditor) necesita las
+// dos listas cargadas ANTES de que el usuario escriba en un campo, no
+// solo cuando despliega los paneles de referencia de mas abajo -- se
+// cargan aqui en cuanto se abre el formulario, tanto al crear una zona
+// nueva como al editar una existente (`editZone` abre este mismo
+// <details>).
+document.getElementById("add-zone-details").addEventListener("toggle", (e) => {
+  if (e.target.open) { loadLightsRef(); loadBridgeRef(); }
+});
 
 function insertLightRef(entityId) {
   // Añade a la ULTIMA regla del editor visual (creando una si no hay
