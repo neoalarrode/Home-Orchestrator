@@ -217,37 +217,37 @@ PLUGIN_CATALOG = {
     "climate": {
         "name": "Climate Orchestrator",
         "description": "Termostatos adaptativos por zona, expuestos como climate.* nativos de HA (HomeKit/Matter) vía MQTT Discovery",
-        "version": "0.7.2",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
+        "version": "0.7.3",  # version PROPIA del plugin (ClimatePlugin.version) -- distinta de "tag", que es la version del REPO de la que se descarga
         "downloadable": True,
-        "tag": "v0.77.27",
-        "sha256": "3f1823f9787be8dbde54c7f85f0edd48b772af5122424e92eeef4f0551b541b8",  # sha256 real del tarball de v0.77.27, verificado contra una descarga real antes de fijarlo aqui (QA adversarial Fase 3, fin de la auditoria: idle_loss_coeff sin guarda, disponibilidad de zona sin capacidad termica)
+        "tag": "v0.77.28",
+        "sha256": "5b4e11ca7ed9f657a9e9f66fe4ea53d40f87e29e5883c92f675b586883f72d10",  # sha256 real del tarball de v0.77.28, verificado contra una descarga real antes de fijarlo aqui (registro compartido de dispositivos device_registry.py, sustituye _actuator_providers)
         "files": ["climate_plugin.py", "climate", "climate_templates"],
     },
     "tuya": {
         "name": "Tuya Orchestrator",
         "description": "Puente de ingesta para dispositivos Tuya-por-LAN — consumo interno por Climate y/o exposición opcional a HA por MQTT",
-        "version": "0.4.7",
+        "version": "0.4.8",
         "downloadable": True,
-        "tag": "v0.76.0",
-        "sha256": "65e358cbc2dbf5e555f0c2f5d29ee357e61ace39918d4a321f950e129b1b6179",  # sha256 real del tarball de v0.76.0, verificado contra una descarga real antes de fijarlo aqui (tuya/mqtt_tuya.py y tuya/auto_profile.py)
+        "tag": "v0.77.28",
+        "sha256": "5b4e11ca7ed9f657a9e9f66fe4ea53d40f87e29e5883c92f675b586883f72d10",  # sha256 real del tarball de v0.77.28, verificado contra una descarga real antes de fijarlo aqui (registro compartido de dispositivos device_registry.py: get_handle/list_actuators generico, incluye "vacuum" en el catalogo)
         "files": ["tuya_plugin.py", "tuya", "tuya_templates"],
     },
     "lighting": {
         "name": "Lighting Orchestrator",
         "description": "Iluminación adaptativa por zona — color y brillo por hora, encendido/apagado por presencia y reglas condicionales (p.ej. TV encendida -> luces laterales en vez del techo)",
-        "version": "0.7.14",
+        "version": "0.7.15",
         "downloadable": True,
-        "tag": "v0.77.17",
-        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (config None ya no congela la logica reactiva, manual_command ya no pisa color/brillo, respect_manual_changes respetado en los forzados de apagado)
+        "tag": "v0.77.28",
+        "sha256": "5b4e11ca7ed9f657a9e9f66fe4ea53d40f87e29e5883c92f675b586883f72d10",  # sha256 real del tarball de v0.77.28, verificado contra una descarga real antes de fijarlo aqui (registro compartido de dispositivos device_registry.py, selector de "otros plugins" ya no menciona ninguna marca fija)
         "files": ["lighting_plugin.py", "lighting", "lighting_templates"],
     },
     "tplink": {
         "name": "TP-Link Orchestrator",
         "description": "Puente de ingesta para dispositivos TP-Link (Kasa/Tapo) vía python-kasa (misma librería que usa Home Assistant) — consumo interno por Lighting y/o exposición opcional a HA por MQTT",
-        "version": "0.2.1",
+        "version": "0.2.2",
         "downloadable": True,
-        "tag": "v0.77.17",
-        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (locking consistente en todo TplinkDeviceManager, ya no hay riesgo de "dictionary changed size during iteration")
+        "tag": "v0.77.28",
+        "sha256": "5b4e11ca7ed9f657a9e9f66fe4ea53d40f87e29e5883c92f675b586883f72d10",  # sha256 real del tarball de v0.77.28, verificado contra una descarga real antes de fijarlo aqui (registro compartido de dispositivos device_registry.py: get_handle/list_actuators generico)
         "files": ["tplink_plugin.py", "tplink", "tplink_templates", "tplink_store.py"],
     },
     "starlink": {
@@ -262,19 +262,19 @@ PLUGIN_CATALOG = {
     "govee": {
         "name": "Govee Orchestrator",
         "description": "Puente de ingesta para bombillas Govee — LAN API local del propio dispositivo (sin cuenta ni nube) — consumo interno por Lighting y/o exposición opcional a HA por MQTT",
-        "version": "0.1.1",
+        "version": "0.1.2",
         "downloadable": True,
-        "tag": "v0.77.17",
-        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (alta de dispositivo envuelta en try/except, un fallo ya no aborta el arranque del resto)
+        "tag": "v0.77.28",
+        "sha256": "5b4e11ca7ed9f657a9e9f66fe4ea53d40f87e29e5883c92f675b586883f72d10",  # sha256 real del tarball de v0.77.28, verificado contra una descarga real antes de fijarlo aqui (registro compartido de dispositivos device_registry.py: get_handle/list_actuators generico)
         "files": ["govee_plugin.py", "govee", "govee_templates", "govee_store.py"],
     },
     "shelly": {
         "name": "Shelly Orchestrator",
         "description": "Puente de ingesta para dispositivos Shelly — API local del propio fabricante (Gen1 HTTP / Gen2+ RPC), sin cuenta ni nube — consumo interno por Lighting y/o exposición opcional a HA por MQTT",
-        "version": "0.1.3",
+        "version": "0.1.4",
         "downloadable": True,
-        "tag": "v0.77.17",
-        "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",  # sha256 real del tarball de v0.77.17, verificado contra una descarga real antes de fijarlo aqui (nuevo _reconnect_loop, add_device ya no pierde el dispositivo para siempre si no responde al añadirlo)
+        "tag": "v0.77.28",
+        "sha256": "5b4e11ca7ed9f657a9e9f66fe4ea53d40f87e29e5883c92f675b586883f72d10",  # sha256 real del tarball de v0.77.28, verificado contra una descarga real antes de fijarlo aqui (registro compartido de dispositivos device_registry.py: get_handle/list_actuators generico)
         "files": ["shelly_plugin.py", "shelly", "shelly_templates", "shelly_store.py"],
     },
 }
