@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.77.31
+
+**Debounce del delegado climate.* y respeto a un cambio manual hecho directamente en el actuador (plugin Climate 0.7.4).**
+
+Dos hallazgos del QA adversarial de Climate, dejados aparcados a proposito en su momento por tener mas superficie de riesgo, ahora abordados a peticion expresa del usuario:
+
+- **Sin ningun control de frecuencia**: `_drive_climate_actuator`/`_drive_climate_idle` podian reenviar `set_hvac_mode`/`set_temperature` al delegado real en CADA ciclo reactivo (dispara con cualquier cambio de una entidad vigilada, a veces varias veces por minuto), aunque el comando anterior siguiera aplicandose de verdad -- la lectura de estado tarda un rato en reflejarlo, sobre todo via nube Tuya. Ahora ningun comando se reenvia al mismo delegado antes de 8s desde el anterior.
+- **Un cambio manual del equipo real (mando fisico, app de la marca, otra automatizacion) se deshacia en el siguiente ciclo** sin que Climate se enterase de que alguien lo habia tocado a proposito. Ahora, si el estado real sigue sin coincidir con lo ultimo que mandamos pasados 25s (tiempo de sobra para que un comando nuestro se aplicase), se trata como cambio externo y se respeta durante 30 minutos -- salvo que la zona entre en una emergencia de seguridad real (por debajo de min_temp o por encima de max_temp), donde el control automatico manda siempre, sin excepcion.
+- Verificado con un test dirigido que reproduce ambos casos con el reloj simulado -- que ademas atrapo un bug real de la primera version del fix (un bucle que nunca dejaba retomar el control automatico tras la ventana de gracia, corregido antes de subirlo).
+
+Dos hallazgos de menor prioridad quedan descartados sin mas seguimiento (decision expresa del usuario): la capacidad "vacuum" del registro de dispositivos sin consumidor interno, y la comprobacion de si Govee esta instalado en esta instancia.
+
 ## 0.77.30
 
 **Restaura el log de registro de proveedor de dispositivos, perdido en la generalizacion de v0.77.28.**
