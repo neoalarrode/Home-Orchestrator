@@ -48,10 +48,10 @@
       "description": "Termostatos adaptativos por zona, expuestos como climate.* nativos de HA (HomeKit/Matter) via MQTT Discovery",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.6.2",
+      "version": "0.7.0",
       "downloadable": true,
-      "tag": "v0.77.17",
-      "sha256": "9e3f74abafb1c9e24bc06efe7f469f9358d6a357cfbfb805e7d75678047ba44f",
+      "tag": "v0.77.25",
+      "sha256": "7409ac5643c69370fa4a07a7dea899711f6d6d541c7cfbea3f8b0a4f8f0fad05",
       "files": [
         "climate_plugin.py",
         "climate",
