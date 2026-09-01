@@ -42,6 +42,8 @@ propio estado, restaurado tras un reinicio igual que el resto.
 
 from __future__ import annotations
 
+import math
+
 PRESET_AUTO = "Automático"
 PRESET_MANUAL = "Manual"
 
@@ -50,6 +52,19 @@ PRESET_MANUAL = "Manual"
 # la barra ("Ausente; calor=18; frio=27" en vez de "Ausente: 18/27").
 _HEAT_LABELS = ("calor", "heat", "invierno")
 _COOL_LABELS = ("frio", "frío", "cool", "verano")
+
+
+def _finite_temp(value: float, name: str, raw: str) -> float:
+    # BUG REAL, confirmado por fuzzing adversarial: `float("nan")`,
+    # `float("inf")` y un literal que desborda a infinito (p.ej.
+    # "1e400") no lanzan excepcion al convertirlos -- pasaban tal cual
+    # el resto de validaciones (una comparacion con NaN es SIEMPRE
+    # False, asi que ni siquiera el chequeo "calor < frio" lo detecta)
+    # y envenenaban la consigna de ese preset para siempre, con el mismo
+    # efecto irreversible que un NaN colandose en una lectura de sensor.
+    if not math.isfinite(value):
+        raise ValueError(f"«{raw.strip()}» no es una temperatura valida para «{name}»")
+    return value
 
 
 def _split_entries(text: str) -> list[str]:
@@ -99,6 +114,7 @@ def _parse_labelled_sides(fields: list[str], name: str) -> tuple[float, float] |
             value = float(raw.strip().rstrip("°CcFf ").strip() or raw.strip())
         except ValueError as e:
             raise ValueError(f"«{raw.strip()}» no es una temperatura valida para «{name}»") from e
+        value = _finite_temp(value, name, raw)
         if label in _HEAT_LABELS:
             heat = value
         elif label in _COOL_LABELS:
@@ -167,6 +183,8 @@ def parse_presets(text: str) -> list[dict]:
                 cool_temp = float(cool_str.strip())
             except ValueError as e:
                 raise ValueError(f"«{temps_str}» no es un par valido «calor/frio» para «{name}»") from e
+            heat_temp = _finite_temp(heat_temp, name, heat_str)
+            cool_temp = _finite_temp(cool_temp, name, cool_str)
             # Con calor >= frio (p.ej. "25/21" en vez de "21/25", el orden
             # invertido) la zona en Auto no tendria NINGUNA temperatura
             # que la deje tranquila: por debajo de 25 "hace falta calor",
@@ -188,6 +206,7 @@ def parse_presets(text: str) -> list[dict]:
                 heat_temp = cool_temp = float(temps_str)
             except ValueError as e:
                 raise ValueError(f"«{temps_str}» no es una temperatura valida para «{name}»") from e
+            heat_temp = cool_temp = _finite_temp(heat_temp, name, temps_str)
 
         presets.append({"name": name, "heat_temp": heat_temp, "cool_temp": cool_temp})
     if not presets:

@@ -20,14 +20,22 @@ todavia), `read()` devuelve todo a None y quien lo consuma
 
 from __future__ import annotations
 
+import math
+
 GRID_SIGNAL_ENTITY_ID = "sensor.battery_orchestrator_grid_signal"
 
 
 def _safe_float(v):
+    # Mismo bug de fondo que en el resto del addon: `float("nan")`/
+    # `float("inf")` no lanzan excepcion, asi que un atributo corrupto
+    # publicado por Battery pasaria tal cual a la decision de esta zona.
     try:
-        return float(v) if v is not None else None
+        parsed = float(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+    if parsed is not None and not math.isfinite(parsed):
+        return None
+    return parsed
 
 
 def read(ws) -> dict:

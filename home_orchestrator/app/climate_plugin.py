@@ -23,7 +23,7 @@ import ha_mqtt
 import ha_websocket
 from climate import zone_store
 from climate.mqtt_climate import MqttClimateZone
-from climate.zone_runner import ZoneRunner, zone_stagger_seconds
+from climate.zone_runner import ZoneRunner, _resolve_min_max_temp, zone_stagger_seconds
 from plugin_base import Plugin
 
 log = logging.getLogger("climate_plugin")
@@ -35,7 +35,7 @@ REACTIVE_MIN_INTERVAL_SECONDS = 5
 class ClimatePlugin(Plugin):
     slug = "climate"
     name = "Climate Orchestrator"
-    version = "0.7.0"
+    version = "0.7.1"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
@@ -327,11 +327,30 @@ class ClimatePlugin(Plugin):
         self._mqtt.connect()
 
         zones = zone_store.load_zones()
+        started = 0
         for zone in zones:
-            self._start_zone(zone)
+            # BUG REAL, confirmado por fuzzing adversarial: sin este
+            # try/except, una zona con config corrupta (min_temp no
+            # numerico, actuador mal declarado, cualquier fallo dentro de
+            # `ZoneRunner.__init__`) tumbaba `_start_zone` ANTES de
+            # terminar el bucle -- todas las zonas restantes en la lista
+            # se quedaban sin arrancar en absoluto, sin ningun aviso mas
+            # alla de la traza de Python en el log. Una zona rota ahora se
+            # salta y se avisa; el resto arrancan con normalidad.
+            try:
+                self._start_zone(zone)
+                started += 1
+            except Exception:
+                log.exception(
+                    "Fallo arrancando la zona %s -- se omite, el resto de zonas siguen arrancando",
+                    zone.get("id", "?"),
+                )
         self._refresh_watched_entities()
 
-        log.info("Plugin Climate arrancado con %d zona(s)", len(zones))
+        if started < len(zones):
+            log.info("Plugin Climate arrancado con %d/%d zona(s) (el resto fallo al arrancar, ver arriba)", started, len(zones))
+        else:
+            log.info("Plugin Climate arrancado con %d zona(s)", started)
 
     def _persist_zone_state(self, runner) -> None:
         """Guarda el estado de la zona tras aplicar un comando. El estado hacia
@@ -352,10 +371,8 @@ class ClimatePlugin(Plugin):
         # HTTP equivalente (`_zone_command`) -- antes solo lo hacia el HTTP, asi
         # que una consigna puesta desde HA se perdia al reiniciar el add-on.
         mqtt_zone.bind(runner, after_command=self._persist_zone_state)
-        mqtt_zone.publish_discovery(
-            min_temp=float(cfg.get("min_temp", 15.0)),
-            max_temp=float(cfg.get("max_temp", 30.0)),
-        )
+        min_temp, max_temp = _resolve_min_max_temp(cfg.get("min_temp", 15.0), cfg.get("max_temp", 30.0), 15.0, 30.0)
+        mqtt_zone.publish_discovery(min_temp=min_temp, max_temp=max_temp)
 
         self._runners[zone_id] = runner
         self._mqtt_zones[zone_id] = mqtt_zone

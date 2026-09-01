@@ -20,12 +20,27 @@ un import global.
 from __future__ import annotations
 
 import logging
+import math
 import statistics
 from datetime import datetime, timedelta, timezone
 
 _LOGGER = logging.getLogger(__name__)
 
 MIN_SAMPLES_PER_HOUR = 3
+
+# Rango fisico plausible para una temperatura exterior (España peninsular
+# incluida ola de calor/frio extrema). Fuera de este rango es casi siempre
+# un glitch de sensor (NaN convertido a texto, sensor desconectado
+# reportando un valor fijo absurdo, etc.) -- se descarta, nunca se usa.
+PLAUSIBLE_OUTDOOR_TEMP_RANGE_C = (-40.0, 55.0)
+
+
+def _plausible_temp(value: float | None) -> float | None:
+    if value is None or not math.isfinite(value):
+        return None
+    if not (PLAUSIBLE_OUTDOOR_TEMP_RANGE_C[0] <= value <= PLAUSIBLE_OUTDOOR_TEMP_RANGE_C[1]):
+        return None
+    return value
 
 
 def _utcnow() -> datetime:
@@ -77,10 +92,10 @@ def _hourly_average_sync(ws, entity_id: str, horizon_hours: int, days: int, defa
     buckets: dict[int, list[float]] = {h: [] for h in range(24)}
     for point in raw:
         try:
-            val = float(point["state"])
+            val = _plausible_temp(float(point["state"]))
         except (ValueError, TypeError):
             continue
-        if point.get("last_updated") is None:
+        if val is None or point.get("last_updated") is None:
             continue
         buckets[_to_local_hour(point["last_updated"])].append(val)
 
@@ -110,9 +125,11 @@ def get_outdoor_forecast(ws, zone: dict, weather_entity: str, horizon_hours: int
                 state = None
             if state is not None:
                 try:
-                    forecast[0] = float(state["state"])
+                    corrected = _plausible_temp(float(state["state"]))
                 except (ValueError, TypeError, KeyError):
-                    pass
+                    corrected = None
+                if corrected is not None:
+                    forecast[0] = corrected
         return forecast
 
     if outdoor_sensor:
@@ -128,7 +145,9 @@ def get_outdoor_forecast(ws, zone: dict, weather_entity: str, horizon_hours: int
         except Exception:
             state = None
     try:
-        current = float(state["state"]) if state else default
+        current = _plausible_temp(float(state["state"])) if state else None
     except (ValueError, TypeError, KeyError):
+        current = None
+    if current is None:
         current = default
     return [current] * horizon_hours

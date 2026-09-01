@@ -58,7 +58,14 @@ class WindowSlopeDetector:
         self._samples = 0
         self._alert = False
 
-    def update(self, temp: float, now, wants_heat: bool, wants_cool: bool) -> bool:
+    def update(self, temp: float | None, now, wants_heat: bool, wants_cool: bool) -> bool:
+        # Defensa en profundidad: el unico llamante real (zone_runner.
+        # decide_and_act) ya corta antes de llegar aqui si no hay lectura
+        # de temperatura valida, pero esta clase debe ser segura de usar
+        # por si sola -- un `None` aqui NUNCA debe intentar restar contra
+        # `self._last_temp` (mismo criterio que `Ema.update`).
+        if temp is None:
+            return self._alert
         if self._last_temp is None or self._last_ts is None:
             self._last_temp, self._last_ts = temp, now
             return self._alert

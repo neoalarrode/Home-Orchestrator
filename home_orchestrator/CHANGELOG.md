@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.77.26
+
+**QA adversarial completo del plugin Climate — Fase 2 (alto) (plugin Climate 0.7.1).**
+
+Segunda tanda de correcciones tras el fuzzing adversarial de Climate, verificada con tests dirigidos:
+
+- **`presets.py` aceptaba temperaturas `NaN`/`Infinity`**: igual que con las lecturas de sensor, `float("nan")`/`float("inf")` (o un literal que desborda, "1e400") no lanzan excepción al declarar un preset a mano — ni siquiera la comprobación "calor < frío" lo detecta (una comparación con NaN es siempre `False`). Envenenaba la consigna de ese preset para siempre. Ahora se rechaza explícitamente en los tres formatos admitidos (barra, etiquetas, valor único).
+- **`outdoor.py` sin filtro de sensatez**: la previsión exterior (histórico y lectura en vivo del sensor propio de la zona) no descartaba valores fuera de rango físico plausible, a diferencia de la temperatura interior (ya corregida en Fase 1). Ahora usa el mismo criterio: fuera de (-40°C, 55°C) se descarta como glitch, nunca se usa.
+- **`grid_signal.py`/`climate_link.py` con el mismo bug de NaN/Infinity que el resto del addon**: un atributo corrupto publicado por Battery (`solar_surplus_now_w`, `battery_discharge_headroom_now_w`) o por otra zona de Climate (`zone_power_w`) pasaba tal cual — este último caso es más grave porque `zone_power_w` alimenta directamente `total_w`, que a su vez alimenta el detector de anomalías de Battery Orchestrator. Ambos ahora descartan valores no finitos como "sin dato".
+- **`min_temp`/`max_temp` sin validar**: se convertían con `float(...)` directo, sin capturar excepción ni comprobar que `min < max` — una config corrupta (string no numérico, o límites invertidos por error) tumbaba la creación de toda la zona con un `ValueError` sin capturar, y unos límites invertidos se publicaban tal cual a MQTT Discovery (rango de termostato sin sentido para HA). Ahora se sanea con aviso y se cae a los valores por defecto de la zona.
+- **Una zona con config corrupta tumbaba el arranque de TODAS las zonas siguientes**: el bucle de arranque (`ClimatePlugin.start_background_threads`) no aislaba una zona de otra — un fallo en `_start_zone` (el de `min_temp` de arriba, o cualquier otro) paraba el bucle entero, dejando sin arrancar cualquier zona declarada DESPUÉS de la rota en la lista. Ahora cada zona se aísla con su propio `try/except`: una zona rota se salta y se avisa, el resto arrancan con normalidad.
+- **La protección de tiempo mínimo encendido/apagado del switch no sobrevivía a un reinicio del addon**: `_switch_last_change` (pensada para no dejar un compresor haciendo ciclos cortos, que lo desgasta) vivía solo en memoria — cualquier reinicio del addon (no hace falta que sea un release de Climate) la reseteaba a cero, así que un switch encendido segundos antes del reinicio podía apagarse de inmediato después. Ahora se persiste junto al resto del estado de la zona y se restaura al arrancar, filtrando a los switches que la zona declara en ese momento.
+
 ## 0.77.25
 
 **QA adversarial completo del plugin Climate — Fase 1 (crítico) (plugin Climate 0.7.0).**

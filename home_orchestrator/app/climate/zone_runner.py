@@ -156,6 +156,31 @@ def _safe_float(value) -> float | None:
     return parsed
 
 
+def _resolve_min_max_temp(min_raw, max_raw, default_min: float, default_max: float) -> tuple[float, float]:
+    # BUG REAL, confirmado por fuzzing adversarial: `min_temp`/`max_temp`
+    # se convertian con `float(...)` directo, SIN try/except, en dos
+    # sitios (aqui y en `decide_and_act`) y sin comprobar que
+    # `min_temp < max_temp` -- una config corrupta o editada a mano
+    # (string no numerico, o min/max invertidos por error) hacia
+    # `ZoneRunner.__init__` reventar con un `ValueError` sin capturar,
+    # tumbando la creacion de ESA zona por completo (ver el bucle de
+    # arranque en `ClimatePlugin.start_background_threads`, que tampoco
+    # aislaba una zona de otra). Con min/max invertidos y publicados tal
+    # cual a MQTT Discovery, HA recibe un rango de termostato sin
+    # sentido. Se cae a los valores por defecto de la zona (avisando)
+    # ante cualquiera de los dos problemas, en vez de dejar la zona sin
+    # arrancar o publicar un rango roto.
+    parsed_min = _safe_float(min_raw)
+    parsed_max = _safe_float(max_raw)
+    if parsed_min is None or parsed_max is None or parsed_min >= parsed_max:
+        _LOGGER.warning(
+            "min_temp/max_temp invalidos (%r/%r) -- usando los valores por defecto (%s/%s)",
+            min_raw, max_raw, default_min, default_max,
+        )
+        return default_min, default_max
+    return parsed_min, parsed_max
+
+
 def _pick_fan_mode(fan_modes: list[str], urgent: bool, manual: str | None) -> str | None:
     if not fan_modes:
         return None
@@ -253,8 +278,10 @@ class ZoneRunner:
         self._preset_modes = [presets_module.PRESET_AUTO, presets_module.PRESET_MANUAL] + [p["name"] for p in self._presets]
         self._preset_mode = presets_module.PRESET_AUTO
 
-        self._min_temp = float(self.zone.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP))
-        self._max_temp = float(self.zone.get(CONF_MAX_TEMP, DEFAULT_MAX_TEMP))
+        self._min_temp, self._max_temp = _resolve_min_max_temp(
+            self.zone.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP), self.zone.get(CONF_MAX_TEMP, DEFAULT_MAX_TEMP),
+            DEFAULT_MIN_TEMP, DEFAULT_MAX_TEMP,
+        )
         self.hvac_mode = self._default_hvac_mode(capability)
         self.hvac_action = "off" if self.hvac_mode == "off" else "idle"
         self.current_temperature: float | None = None
@@ -365,6 +392,32 @@ class ZoneRunner:
             declared = set(self.zone.get(CONF_CLIMATE_ENTITIES) or [])
             self._delegate_needs_explicit_off = {e for e in learned_off if e in declared}
 
+        # BUG REAL, confirmado por fuzzing adversarial: `_switch_last_change`
+        # (proteccion de tiempo minimo encendido/apagado del switch, ver
+        # `_drive_switch` -- pensada para no dejar un compresor haciendo
+        # ciclos cortos, que lo desgasta o lo puede llegar a danar) no se
+        # persistia nunca. Un reinicio del addon (cualquier release, no
+        # hace falta que sea de Climate) la reseteaba a cero: un switch
+        # encendido 5 segundos antes del reinicio podia apagarse de
+        # inmediato despues, sin respetar el minimo declarado. Se
+        # restaura aqui, filtrando a los switches que la zona declara
+        # AHORA MISMO (una zona reconfigurada no debe arrastrar el estado
+        # de un switch que ya no le pertenece).
+        saved_switch_changes = state.get("switch_last_change")
+        if isinstance(saved_switch_changes, dict):
+            declared_switches = set(self.zone.get(CONF_HEAT_SWITCHES) or []) | set(self.zone.get(CONF_COOL_SWITCHES) or [])
+            for entity_id, entry in saved_switch_changes.items():
+                if entity_id not in declared_switches or not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                    continue
+                switch_state, ts_raw = entry
+                if switch_state not in ("on", "off"):
+                    continue
+                try:
+                    ts = datetime.fromisoformat(str(ts_raw))
+                except ValueError:
+                    continue
+                self._switch_last_change[entity_id] = (switch_state, ts)
+
     def to_persisted_state(self) -> dict:
         """Lo que se guarda en config_store en cada cambio que importa —
         ver zone_store.py."""
@@ -376,6 +429,10 @@ class ZoneRunner:
             "fan_mode": self._manual_fan_mode,
             "target_humidity": self.target_humidity,
             "delegate_needs_explicit_off": sorted(self._delegate_needs_explicit_off),
+            "switch_last_change": {
+                entity_id: [switch_state, ts.isoformat()]
+                for entity_id, (switch_state, ts) in self._switch_last_change.items()
+            },
         }
 
     def watched_entities(self) -> set[str]:
@@ -1101,8 +1158,10 @@ class ZoneRunner:
         self.available = True
 
         deadband = float(self.zone.get(CONF_DEADBAND, DEFAULT_DEADBAND))
-        min_temp = float(self.zone.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP))
-        max_temp = float(self.zone.get(CONF_MAX_TEMP, DEFAULT_MAX_TEMP))
+        min_temp, max_temp = _resolve_min_max_temp(
+            self.zone.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP), self.zone.get(CONF_MAX_TEMP, DEFAULT_MAX_TEMP),
+            DEFAULT_MIN_TEMP, DEFAULT_MAX_TEMP,
+        )
         capability = self._effective_capability()
         wants_heat = capability in ("heat", "heat_cool")
         wants_cool = capability in ("cool", "heat_cool")

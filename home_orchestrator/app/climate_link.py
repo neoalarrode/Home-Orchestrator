@@ -35,6 +35,7 @@ frecuencia como para justificar preguntarlo solo.
 from __future__ import annotations
 
 import json
+import math
 
 import ha_client
 
@@ -79,6 +80,13 @@ def _entry_from_state(state: dict) -> dict:
     try:
         power = float(power) if power is not None else None
     except (TypeError, ValueError):
+        power = None
+    # `float("nan")`/`float("inf")` no lanzan excepcion -- un atributo
+    # corrupto de una zona de Climate contaminaria "total_w", que
+    # alimenta DIRECTAMENTE el detector de anomalias de Battery
+    # Orchestrator (ver main.py). Se trata igual que "sin dato" (nunca
+    # cero inventado, ver docstring de arriba).
+    if power is not None and not math.isfinite(power):
         power = None
 
     active = attrs.get("hvac_action") in ACTIVE_HVAC_ACTIONS
