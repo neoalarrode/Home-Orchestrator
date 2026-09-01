@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.77.34
+
+**TP-Link: reintento inmediato de la primera lectura tras descubrir un dispositivo (plugin TP-Link 0.2.5).**
+
+Cierre de la investigacion del aviso KLAP "block length" en 192.168.1.75: confirmado en produccion, con un apagado ordenado real (ver v0.77.33), que el fallo persiste igual -- no era una colision de sesion evitable por nuestra parte, sino una corrupcion intermitente de la primera respuesta de ESE equipo en concreto (nunca visto en el resto de dispositivos TP-Link de esta instalacion). `_discover_and_connect` reutiliza ahora el mismo mecanismo de reintento ya usado para las escrituras (`_with_retry`, 3 intentos con 0.15s de por medio) en vez de rendirse al primer fallo -- una colision/corrupcion KLAP se libera casi siempre en milisegundos, asi que el segundo intento suele salir limpio sin ni siquiera tener que esperar al primer sondeo periodico. Verificado con un test dirigido que reproduce el fallo intermitente real.
+
 ## 0.77.33
 
 **Apagado ordenado de plugins al reiniciar el add-on (nucleo) -- cierra el hueco real que dejaba a TP-Link/Tapo con su sesion KLAP colgada.**
