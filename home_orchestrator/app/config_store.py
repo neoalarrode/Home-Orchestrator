@@ -10,7 +10,9 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import threading
+import time
 import uuid
 
 log = logging.getLogger("config_store")
@@ -207,7 +209,29 @@ def _read_raw_locked() -> dict | None:
                 return obj
             except json.JSONDecodeError:
                 pass
-        raise
+        # BUG REAL, confirmado por fuzzing adversarial: cualquier OTRA
+        # forma de JSON invalido (truncado a medias por una causa EXTERNA
+        # al propio addon -- este nunca deja el fichero asi por su cuenta,
+        # la escritura atomica .tmp+os.replace ya lo garantiza; pero una
+        # edicion manual, una restauracion de backup a medias, o un fallo
+        # de disco si pueden) se relanzaba sin capturar, tumbando el
+        # arranque del addon ENTERO en vez de degradar con gracia. Nunca
+        # se descarta el contenido corrupto en silencio (podria ser
+        # recuperable a mano) -- se aparta a un fichero ".corrupto" junto
+        # al original y se sigue con la config por defecto, igual que un
+        # primer arranque sin fichero todavia.
+        try:
+            backup_path = f"{CONFIG_PATH}.corrupto-{int(time.time())}"
+            shutil.copy2(CONFIG_PATH, backup_path)
+            log.error(
+                "config.json no es JSON valido (%s) y no se pudo recuperar automaticamente -- "
+                "se ha copiado tal cual a %s por si se puede reparar a mano, y se sigue con la "
+                "configuracion por defecto para no dejar el add-on sin arrancar.",
+                exc.msg, backup_path,
+            )
+        except OSError:
+            log.error("config.json no es JSON valido (%s) y ademas no se pudo hacer una copia de seguridad del fichero corrupto.", exc.msg)
+        return None
 
 
 def _write_raw(root: dict) -> None:

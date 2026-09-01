@@ -67,8 +67,24 @@ def accumulate(battery_id: str, battery_name: str, charged_wh: float, discharged
     with _lock:
         data = _load()
         entry = data.get(battery_id)
-        if entry is None and legacy_id and legacy_id in data:
-            entry = data.pop(legacy_id)
+        # BUG REAL, confirmado por fuzzing adversarial: esto solo migraba
+        # legacy_id cuando `battery_id` estaba VACIO todavia -- si las DOS
+        # claves ya tenian datos propios (p.ej. tras una reconfiguracion
+        # que dejo un rato conviviendo el id viejo y el nuevo), el
+        # historico bajo legacy_id se quedaba huerfano en disco para
+        # siempre, sin fusionarse ni avisar. Ahora, si legacy_id existe,
+        # SIEMPRE se retira de disco -- fusionando su energia en vez de
+        # descartarla si `battery_id` ya tenia la suya propia.
+        if legacy_id and legacy_id in data and legacy_id != battery_id:
+            legacy_entry = data.pop(legacy_id)
+            if entry is None:
+                entry = legacy_entry
+            else:
+                entry["charged_wh"] = entry.get("charged_wh", 0.0) + legacy_entry.get("charged_wh", 0.0)
+                entry["discharged_wh"] = entry.get("discharged_wh", 0.0) + legacy_entry.get("discharged_wh", 0.0)
+                since_new, since_legacy = entry.get("since"), legacy_entry.get("since")
+                if since_legacy and (not since_new or since_legacy < since_new):
+                    entry["since"] = since_legacy
         if entry is None:
             entry = {
                 "name": battery_name,

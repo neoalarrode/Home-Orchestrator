@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.77.24
+
+**QA adversarial completo del plugin Energy — Fase 3 (medio/bajo), fin de la ronda (plugin Energy 0.13.2).**
+
+Última tanda de correcciones de la auditoría de 11 agentes, verificada con tests dirigidos:
+
+- **`days_of_week` fuera de rango** (p.ej. `[7]`, convenio ISO 1-7 en vez de 0=lunes..6=domingo) dejaba una carga diferible sin programar para siempre, sin ningún aviso. Ahora se sanea y, si no queda ningún día válido, se avisa y se programa todos los días en vez de dejarla muda.
+- **`duration_hours`/`runs_per_day` no numéricos** (config corrupta o editada a mano) tiraban `ValueError` sin capturar — en `deferrable_exec.execute()` esto tumbaba la ejecución de TODAS las cargas diferibles, no solo la afectada. Ahora degradan con sensatez al valor por defecto.
+- **`estimated_energy_wh` negativo** producía un umbral de excedente solar negativo, haciendo que cualquier excedente (incluido cero) "cumpliera" la condición — degradaba en silencio el corte anticipado de una carga interrumpible. Ahora se satura a 0.
+- **Asimetría de logging en `monotonic_sensor`**: una bajada catastrófica del acumulado interno (dato corrupto) se registraba igual que una corrección normal de redondeo (`log.info` en ambos casos), a diferencia de una subida excesiva, que ya escala a `log.warning`. Ahora una bajada de magnitud mayor que `MAX_PLAUSIBLE_DELTA_KWH` tiene la misma visibilidad.
+- **Migración `legacy_id` cuando ambas claves ya tenían datos propios** (`lifetime_store`, `capacity_store`): el historial bajo el id antiguo quedaba huérfano en disco para siempre en vez de fusionarse. Ahora se fusiona siempre que se detecta.
+- **`config.json` corrupto por una causa externa** (edición manual, restauración de backup a medias) tumbaba el arranque del add-on entero. Ahora se hace una copia de seguridad del fichero corrupto junto al original (por si se puede reparar a mano) y se sigue con la configuración por defecto en vez de dejar el add-on sin arrancar.
+
+Con esto se da por completada la auditoría adversarial de Energy pedida por el usuario ("QA completo... llevarlo a los extremos absolutos"): 11 agentes en paralelo, ~35 hallazgos reales confirmados y corregidos en tres fases (crítico → alto → medio/bajo), cada fase desplegada y verificada en producción antes de pasar a la siguiente.
+
 ## 0.77.23
 
 **QA adversarial completo del plugin Energy — Fase 2 (alto) (plugin Energy 0.13.1).**

@@ -26,10 +26,27 @@ empezado si pueden recalcularse cada ciclo por si la previsión mejora.
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timedelta
 
 import deferrable_store
+
+log = logging.getLogger("deferrable_scheduler")
+
+
+def _safe_int(value, default: int) -> int:
+    """BUG REAL, confirmado por fuzzing adversarial: `int(load.get(...))`
+    directo tira `ValueError` sin capturar si el campo llega no-numerico
+    (config editada a mano, o corrupta) -- inalcanzable desde la interfaz
+    normal, pero `main.py` solo protege el CICLO (esta carga concreta deja
+    de programarse en silencio via `log.exception`, sin tumbar el resto),
+    no la propia funcion. Aqui se degrada con sensatez al valor por
+    defecto en vez de propagar la excepcion."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _avg(values: list[float], start: int, length: int) -> float:
@@ -114,7 +131,7 @@ def plan_for_load(load: dict, now: datetime, plan_hours: list[datetime],
     """
     load_id = load["id"]
     horizon = len(plan_hours)
-    configured_duration = max(1, int(load.get("duration_hours", 1)))
+    configured_duration = max(1, _safe_int(load.get("duration_hours", 1), 1))
     frequency = load.get("frequency", "daily")
 
     # Cargas NO interrumpibles (p.ej. una lavadora: una vez arrancado su
@@ -131,7 +148,12 @@ def plan_for_load(load: dict, now: datetime, plan_hours: list[datetime],
             configured_duration = max(configured_duration, math.ceil(auto_duration_h))
     duration = max(1, min(horizon, configured_duration))
 
-    manual_energy = float(load.get("estimated_energy_wh") or 0)
+    # max(0.0, ...): un valor negativo (dato manual mal introducido) colaba
+    # un `min_power_w` negativo mas abajo, y con eso CUALQUIER excedente
+    # (incluido cero) "cumplia" el umbral solar -- degradaba en silencio la
+    # logica de corte anticipado de una carga interrumpible sin romper nada
+    # visible. Confirmado por fuzzing adversarial.
+    manual_energy = max(0.0, float(load.get("estimated_energy_wh") or 0))
     auto_energy = deferrable_store.get_estimated_energy_wh(load_id)
     energy_wh = manual_energy or auto_energy or 500.0  # sin dato manual ni historico: estimacion de partida razonable
     min_power_w = energy_wh / duration
@@ -176,12 +198,28 @@ def plan_for_load(load: dict, now: datetime, plan_hours: list[datetime],
     # mantienen tal cual; solo se recalculan las que aun no han arrancado.
     # Si la carga tiene dias de la semana concretos (p.ej. una lavadora
     # solo lunes y sabado), los demas dias no se programa nada.
-    days_of_week = load.get("days_of_week") or []
+    # BUG REAL, confirmado por fuzzing adversarial: un valor fuera de rango
+    # en `days_of_week` (p.ej. `[7]`, error tipico de quien esta acostumbrado
+    # al convenio ISO 1-7 en vez de 0=lunes..6=domingo) hacia que
+    # `now.weekday()` NUNCA coincidiera -- la carga se quedaba sin programar
+    # PARA SIEMPRE, sin ninguna excepcion ni aviso que lo delatara. Se
+    # sanean los valores fuera de [0,6] y, si no queda ninguno valido tras
+    # sanear (la lista original no estaba vacia pero era enteramente
+    # invalida), se avisa y se trata como "todos los dias" -- mejor
+    # programar de mas que dejar la carga muda sin que nadie lo note.
+    days_of_week_raw = load.get("days_of_week") or []
+    days_of_week = [d for d in days_of_week_raw if isinstance(d, int) and 0 <= d <= 6]
+    if days_of_week_raw and not days_of_week:
+        log.warning(
+            "Carga diferible '%s': days_of_week=%r no tiene ningun dia valido (0=lunes..6=domingo) "
+            "-- se programa todos los dias en vez de dejarla muda para siempre.",
+            load.get("name", load_id), days_of_week_raw,
+        )
     if days_of_week and now.weekday() not in days_of_week:
         return None
 
     today = now.date().isoformat()
-    count = 1 if frequency == "daily" else max(1, int(load.get("runs_per_day", 2)))
+    count = 1 if frequency == "daily" else max(1, _safe_int(load.get("runs_per_day", 2), 2))
     hours_left_today = _hours_left_today(now, plan_hours)
 
     started = []

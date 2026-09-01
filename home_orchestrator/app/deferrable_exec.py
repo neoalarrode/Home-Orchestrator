@@ -104,7 +104,16 @@ def execute(loads: list[dict], schedules: dict[str, dict], now: datetime,
             continue
         load_id, name, switch = load["id"], load["name"], load["switch_entity"]
         power_sensor = load.get("power_sensor")
-        duration_hours = max(1, int(load.get("duration_hours", 1)))
+        # BUG REAL, confirmado por fuzzing adversarial: `int(...)` directo
+        # tira `ValueError` sin capturar con un `duration_hours` no
+        # numerico -- a diferencia de `deferrable_scheduler.plan_for_load`
+        # (protegido por ciclo desde main.py), este bucle NO esta protegido
+        # por carga individual, asi que una sola carga con dato corrupto
+        # tumbaria `execute()` entero para TODAS las cargas diferibles.
+        try:
+            duration_hours = max(1, int(load.get("duration_hours", 1)))
+        except (TypeError, ValueError):
+            duration_hours = 1
         schedule = schedules.get(load_id)
         occurrences = schedule.get("occurrences", []) if schedule else []
         active_occ = _in_any_window(now, occurrences)

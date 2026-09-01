@@ -179,12 +179,24 @@ def publishable(entity_id: str, total: float, get_known_ha_state=None) -> float:
             elif delta > 0:
                 publicado += delta
             elif delta < 0:
-                log.info(
-                    "%s: el acumulado interno ha bajado de %.3f a %.3f (correccion). "
+                # BUG REAL, confirmado por fuzzing adversarial: una bajada
+                # PEQUEÑA (correccion/redondeo normal) y una CATASTROFICA
+                # (p.ej. -1e9, un fichero de acumulado propio corrupto) se
+                # trataban exactamente igual -- ambas solo con `log.info`,
+                # a diferencia de una SUBIDA excesiva, que ya escala a
+                # `log.warning`. Una bajada de magnitud mayor que
+                # MAX_PLAUSIBLE_DELTA_KWH es la misma señal de alarma que
+                # una subida excesiva, solo que en sentido contrario, y
+                # merece la misma visibilidad.
+                log_fn = log.warning if abs(delta) > MAX_PLAUSIBLE_DELTA_KWH else log.info
+                log_fn(
+                    "%s: el acumulado interno ha bajado de %.3f a %.3f (%s). "
                     "El contador publicado se queda en %.3f y sigue subiendo desde ahi "
                     "-- publicar la bajada haria que HA la contase como un reinicio, "
                     "sumando el valor entero de golpe al Panel de Energia.",
-                    entity_id, float(anterior_total), float(total), publicado,
+                    entity_id, float(anterior_total), float(total),
+                    "correccion" if abs(delta) <= MAX_PLAUSIBLE_DELTA_KWH else "bajada MUY grande, revisa si el dato interno esta corrupto",
+                    publicado,
                 )
 
         data[entity_id] = {"last_total": float(total), "published": publicado}

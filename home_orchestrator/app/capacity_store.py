@@ -121,8 +121,22 @@ def update(battery_id: str, battery_name: str, soc_pct: float | None,
     with _lock:
         data = _load()
         entry = data.get(battery_id)
-        if entry is None and legacy_id and legacy_id in data:
-            entry = data.pop(legacy_id)
+        # BUG REAL, confirmado por fuzzing adversarial: mismo fallo que ya
+        # se corrigio en lifetime_store.accumulate -- si las DOS claves ya
+        # tenian datos propios, el historico de observaciones bajo
+        # legacy_id se quedaba huerfano en disco para siempre en vez de
+        # fusionarse. Se retira siempre de disco si existe, fusionando sus
+        # observaciones (recientes primero) si `battery_id` ya tenia las
+        # suyas.
+        if legacy_id and legacy_id in data and legacy_id != battery_id:
+            legacy_entry = data.pop(legacy_id)
+            _migrate_legacy_observations(legacy_entry)
+            if entry is None:
+                entry = legacy_entry
+            else:
+                _migrate_legacy_observations(entry)
+                for key in ("observations_charge", "observations_discharge"):
+                    entry[key] = (legacy_entry.get(key, []) + entry.get(key, []))[-MAX_OBSERVATIONS:]
         if entry is None:
             entry = _default_entry(battery_name)
         _migrate_legacy_observations(entry)
