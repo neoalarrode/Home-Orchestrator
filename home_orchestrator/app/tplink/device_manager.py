@@ -369,32 +369,26 @@ class TplinkDeviceManager:
         # `Discover.discover_single` de python-kasa.
         device = await Discover.discover_single(host, credentials=credentials, discovery_timeout=10)
         try:
+            await device.update()
+        except Exception:
             # BUG REAL, visto en produccion: `KasaException: Error trying to
             # decrypt device ... response: The length of the provided data is
             # not a multiple of the block length` -- una sesion KLAP
-            # desincronizada o una primera respuesta corrupta del propio
-            # equipo real justo tras el handshake (confirmado que persiste
-            # incluso con un apagado ordenado del addon y sin ninguna otra
-            # integracion nativa de HA hablandole -- no es una colision
-            # evitable, es una rareza intermitente propia de ese firmware
-            # concreto). El mismo modulo ya sabe que "una colision KLAP se
-            # libera casi siempre en milisegundos" (ver `_with_retry`, usado
-            # hasta ahora solo para escrituras) -- se reutiliza aqui igual:
-            # 3 intentos con 0.15s de por medio, casi siempre de sobra para
-            # que el segundo intento ya salga limpio, sin ni siquiera tener
-            # que esperar al primer sondeo periodico (5s) para recuperarse.
-            await self._with_retry(device.update)
-        except Exception:
+            # desincronizada. Pasa con facilidad porque un Tapo admite UNA sola
+            # sesion autenticada a la vez (lo documenta este mismo modulo mas
+            # abajo): si algo mas le esta hablando -- la integracion nativa de
+            # TP-Link de HA, por ejemplo -- la primera lectura puede salir
+            # corrupta.
+            #
             # Antes esto se propagaba y `add_device` no llegaba a registrar el
             # dispositivo, asi que `_poll_loop` no lo sondeaba NUNCA: se perdia
             # hasta reiniciar el add-on entero. Pero el DESCUBRIMIENTO si
             # funciono -- el dispositivo existe y sabemos como hablarle. Se
             # devuelve sin cebar para registrarlo igualmente y que el sondeo
-            # (cada 5s) lo recupere solo -- solo se llega aqui si los 3
-            # reintentos ya han fallado.
+            # (cada 5s) lo recupere solo.
             log.warning(
-                "TP-Link en %s: descubierto pero la primera lectura fallo tras varios intentos -- "
-                "se registra igualmente y el sondeo lo reintenta (empieza como no disponible)",
+                "TP-Link en %s: descubierto pero la primera lectura fallo -- se registra "
+                "igualmente y el sondeo lo reintenta (empieza como no disponible)",
                 host, exc_info=True,
             )
             return device, False
