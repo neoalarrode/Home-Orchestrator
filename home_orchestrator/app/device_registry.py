@@ -44,6 +44,7 @@ _providers: dict[str, object] = {}
 
 def register_provider(prefix: str, provider) -> None:
     _providers[prefix] = provider
+    log.info("Registrado proveedor de dispositivos '%s'", prefix)
 
 
 def get_provider(prefix: str):

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.77.30
+
+**Restaura el log de registro de proveedor de dispositivos, perdido en la generalizacion de v0.77.28.**
+
+Cosmetico: `device_registry.register_provider()` no dejaba constancia en el log de que proveedor se registro, a diferencia del mecanismo anterior (`register_actuator_provider` por plugin). Sin impacto funcional.
+
 ## 0.77.29
 
 **Hotfix de v0.77.28: condicion de carrera en la re-suscripcion MQTT, encontrada en produccion nada mas reconstruir.**
