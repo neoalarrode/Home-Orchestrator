@@ -40,3 +40,19 @@ class Plugin(ABC):
         """Arranca los hilos de fondo propios del plugin (ciclo de
         planificacion, publicacion de sensores en vivo, WebSocket
         reactivo...). Se llama una vez, al arrancar el nucleo."""
+
+    def shutdown(self) -> None:
+        """Punto de apagado ORDENADO, opcional -- se llama una vez desde
+        `core_app.py` al recibir SIGTERM, antes de que el proceso
+        termine, con tiempo limitado (Docker no espera para siempre a
+        que el contenedor pare solo). Default no-op: la mayoria de
+        plugins solo dependen de conexiones sin estado de sesion que
+        cerrar explicitamente (el WebSocket compartido de HA, MQTT) y no
+        necesitan sobreescribir esto.
+
+        BUG REAL, confirmado en produccion: sin esto en NINGUN plugin,
+        un `kill` duro del contenedor (lo unico que hacia un reinicio
+        del addon) dejaba a los dispositivos TP-Link/Tapo con su unica
+        sesion KLAP "colgada" en el equipo real unos segundos -- el
+        primer intento de reconexion del proceso NUEVO podia chocar con
+        ese hueco (ver `TplinkDeviceManager.shutdown`)."""

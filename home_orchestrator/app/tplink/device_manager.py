@@ -113,6 +113,30 @@ class TplinkDeviceManager:
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return future.result(timeout=timeout)
 
+    def shutdown(self) -> None:
+        """Desconecta ORDENADAMENTE todos los dispositivos antes de que
+        el proceso termine (ver `Plugin.shutdown` para el porque). Best-
+        effort con tiempo acotado: un dispositivo que no responde a
+        tiempo no debe bloquear el apagado del addon entero ni impedir
+        que se desconecten los demas."""
+        if self._loop is None:
+            return
+
+        async def _disconnect_all() -> None:
+            with self._lock:
+                devices_snapshot = list(self._devices.values())
+            for device in devices_snapshot:
+                try:
+                    await device.disconnect()
+                except Exception:
+                    pass
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_disconnect_all(), self._loop)
+            future.result(timeout=4.0)
+        except Exception:
+            log.debug("TP-Link: fallo desconectando dispositivos ordenadamente al apagar", exc_info=True)
+
     async def _poll_loop(self) -> None:
         while True:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)

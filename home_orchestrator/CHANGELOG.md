@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.77.33
+
+**Apagado ordenado de plugins al reiniciar el add-on (nucleo) -- cierra el hueco real que dejaba a TP-Link/Tapo con su sesion KLAP colgada.**
+
+Investigando a fondo el aviso "TP-Link en X: descubierto pero la primera lectura fallo... block length" a peticion del usuario: confirmado que un reinicio del addon es SIEMPRE un `kill` duro del contenedor -- ningun plugin tenia ocasion de cerrar nada ordenadamente. Un dispositivo Tapo/KLAP solo admite UNA sesion autenticada a la vez (ya documentado en este mismo modulo); sin desconectar limpiamente, esa sesion se quedaba "colgada" en el equipo real unos segundos, y el primer intento de reconexion del proceso NUEVO podia chocar justo con ese hueco.
+
+- `Plugin.shutdown()` (nuevo, opcional, default no-op): punto de apagado ordenado que `core_app.py` llama en TODOS los plugins al recibir SIGTERM, antes de que el proceso termine. Un plugin que revienta al cerrar no bloquea a los demas.
+- `TplinkDeviceManager.shutdown()`: desconecta ordenadamente todos los dispositivos dados de alta, best-effort y con tiempo acotado.
+- Verificado con un test dirigido: desconexion real de todos los dispositivos, un dispositivo roto no bloquea a los demas, y un plugin que revienta al cerrar no impide que el resto cierren limpiamente.
+
+Junto con el fix de v0.77.32 (segunda sesion KLAP evitable en el escaneo periodico), esto cierra las dos causas reales encontradas -- ninguna de las dos tenia que ver con la integracion nativa de TP-Link de Home Assistant, ya retirada por el usuario antes de esta investigacion.
+
+**Nota de despliegue:** `core_app.py` y `plugin_base.py` son NUCLEO -- requieren reconstruir la imagen del add-on entero, no un hot-swap de plugin.
+
 ## 0.77.32
 
 **TP-Link: el escaneo periodico de la LAN ya no abre una segunda sesion KLAP contra un dispositivo ya conectado (plugin TP-Link 0.2.3).**

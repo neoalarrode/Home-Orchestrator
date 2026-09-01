@@ -21,6 +21,8 @@ El resto de plugins instalados (los que no sirven la raiz) se montan bajo
 from __future__ import annotations
 
 import logging
+import os
+import signal
 
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.serving import run_simple
@@ -33,8 +35,42 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("core")
 
 
+def _register_shutdown_handler(plugins: list) -> None:
+    # BUG REAL, confirmado en produccion: un reinicio del addon es
+    # SIEMPRE un `kill` duro del contenedor -- ningun plugin tenia
+    # ocasion de cerrar nada ordenadamente. Para la mayoria (WebSocket
+    # compartido de HA, MQTT) esto no importa, son conexiones sin estado
+    # de sesion que reconectan solas sin problema. Pero un dispositivo
+    # TP-Link/Tapo (protocolo KLAP) solo admite UNA sesion autenticada a
+    # la vez -- sin cerrarla, se queda "colgada" en el equipo real unos
+    # segundos, y el primer intento de reconexion del proceso NUEVO
+    # puede chocar justo con ese hueco (ver
+    # `TplinkDeviceManager.shutdown`, `Plugin.shutdown`).
+    #
+    # `os._exit(0)` en vez de un `return` normal: `run_simple` bloquea el
+    # hilo principal en su propio bucle de aceptar conexiones, que jamas
+    # va a comprobar por su cuenta ninguna señal de parada -- forzar la
+    # salida aqui, tras el apagado ordenado de los plugins, es lo que de
+    # verdad termina el proceso. Docker mata igual si esto tarda de mas
+    # (cada `shutdown()` de plugin tiene su propio limite de tiempo, ver
+    # `TplinkDeviceManager.shutdown`), asi que nunca deja el contenedor
+    # colgado esperando.
+    def _handle_signal(signum, frame) -> None:
+        log.info("Señal de apagado recibida (%s) -- cerrando plugins ordenadamente", signum)
+        for p in plugins:
+            try:
+                p.shutdown()
+            except Exception:
+                log.exception("Plugin '%s' fallo cerrando ordenadamente -- se continua igual", p.slug)
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+
 def main() -> None:
     plugins = plugin_loader.load_all_plugins()
+    _register_shutdown_handler(plugins)
 
     # Registro COMPARTIDO de dispositivos consumibles internamente por
     # otro plugin (ver device_registry.py) -- cualquier plugin cargado

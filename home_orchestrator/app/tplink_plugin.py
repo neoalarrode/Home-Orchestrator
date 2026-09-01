@@ -54,7 +54,7 @@ REDISCOVER_INTERVAL_SECONDS = 5 * 60
 class TplinkPlugin(Plugin):
     slug = "tplink"
     name = "TP-Link Orchestrator"
-    version = "0.2.3"
+    version = "0.2.4"
 
     def __init__(self) -> None:
         self._manager = TplinkDeviceManager(
@@ -219,6 +219,9 @@ class TplinkPlugin(Plugin):
             target=self._rediscover_loop, name="tplink-rediscover", daemon=True,
         ).start()
         log.info("Plugin TP-Link arrancado con %d dispositivo(s)", len(devices))
+
+    def shutdown(self) -> None:
+        self._manager.shutdown()
 
     def _start_device(self, device: dict) -> None:
         cfg = device["config"]
