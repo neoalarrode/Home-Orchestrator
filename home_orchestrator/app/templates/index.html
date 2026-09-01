@@ -33,6 +33,19 @@
 
   #health-pill { margin-left: 10px; }
 
+  /* Colores propios de "Flujo de energía ahora mismo" -- a diferencia del
+     resto de la pagina, este widget necesita 3 colores REALMENTE
+     distinguibles para solar/bateria/red a la vez en la misma barra, y los
+     tokens compartidos --accent/--accent-2/--amber son deliberadamente el
+     MISMO ambar en todo el sitio (ver design-system.css: "un unico acento",
+     estetica Dishylink) -- ahi es intencional, aqui rompia la lectura de la
+     barra (bug real, confirmado por el usuario: los tres segmentos salian
+     del mismo color). Mismos tonos que ya usa el dashboard de Grafana
+     (panel "Potencia en vivo") para que los dos sitios se lean igual.
+     Fijos a proposito, no varian con el tema claro/oscuro -- son
+     codigo de color por tipo de energia, no un token de superficie. */
+  :root { --flow-solar: #fbc531; --flow-battery: #4cd137; --flow-grid: #e84118; }
+
   .row-historical td { opacity: .55; }
   .row-historical:hover td { opacity: .85; }
   .row-badge { color: var(--green); font-weight: 700; }
@@ -3055,7 +3068,7 @@ function renderEnergyFlow() {
   const solarSeg = totalDemand > 0 ? Math.min(100, 100 * solarUsed / totalDemand) : 0;
   const battSeg = totalDemand > 0 ? Math.min(100 - solarSeg, 100 * battUsed / totalDemand) : 0;
   const gridSeg = totalDemand > 0 ? Math.max(0, 100 - solarSeg - battSeg) : 0;
-  const gridColor = gridUsed > 0 ? 'var(--amber)' : 'var(--border)';
+  const gridColor = gridUsed > 0 ? 'var(--flow-grid)' : 'var(--border)';
 
   // La carga de bateria SI forma parte del total de arriba, pero se marca
   // aparte para poder ver de un vistazo cuanta potencia esta yendo a
@@ -3089,17 +3102,17 @@ function renderEnergyFlow() {
       <span class="flow-source-value">${totalDemand} W</span>
     </div>
     <div class="flow-bar-track" role="img" aria-label="${totalDemand}W: ${t('stat_solar')} ${solarUsed}W, ${t('flow_bateria')} ${battUsed}W, ${t('flow_red')} ${gridUsed}W">
-      <div class="flow-bar-seg" style="width:${solarSeg}%; background:var(--accent)"></div>
-      <div class="flow-bar-seg" style="width:${battSeg}%; background:var(--accent-2)"></div>
+      <div class="flow-bar-seg" style="width:${solarSeg}%; background:var(--flow-solar)"></div>
+      <div class="flow-bar-seg" style="width:${battSeg}%; background:var(--flow-battery)"></div>
       <div class="flow-bar-seg" style="width:${gridSeg}%; background:${gridColor}"></div>
     </div>
     <div class="flow-endpoints">
       <div class="flow-endpoint ${solarOff ? 'off' : ''}">
-        <span class="dot" style="background:var(--accent)"></span>
+        <span class="dot" style="background:var(--flow-solar)"></span>
         <span><div class="flow-endpoint-label">${t('stat_solar')}</div><div class="flow-endpoint-value">${solarUsed} W</div></span>
       </div>
       <div class="flow-endpoint ${battOff ? 'off' : ''}">
-        <span class="dot ${battCharging ? 'dot-pulse' : ''}" style="background:var(--accent-2)"></span>
+        <span class="dot ${battCharging ? 'dot-pulse' : ''}" style="background:var(--flow-battery)"></span>
         <span><div class="flow-endpoint-label">${t('flow_bateria')}</div><div class="flow-endpoint-value">${battCharging ? t('flow_battery_charging_value', { w: chargingW }) : battUsed + ' W'}</div></span>
       </div>
       <div class="flow-endpoint ${gridOff ? 'off' : ''}">

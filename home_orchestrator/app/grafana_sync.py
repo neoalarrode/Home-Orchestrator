@@ -25,6 +25,17 @@ interfaz, o automatica al guardar cambios en los arrays solares):
     para consultar los sensores propios que este mismo plugin publica
     (`sensor.battery_orchestrator_solar_forecast_today/tomorrow`, ver
     main.py:run_cycle) en vez de depender de una fuente externa.
+  - El panel "Consumo casa" (y la serie homonima del panel "Potencia en
+    vivo — Red / Solar / Casa / Batería"): consultaban `load_sensor`/
+    `sensor.consumo_instantaneo` en bruto -- que por diseño de este mismo
+    plugin NO es el consumo total de la casa, solo la parte que viene de
+    red (ver "load_sensor_mode" en config_store.py). Con sol/bateria
+    cubriendo gran parte del consumo, ese panel podia marcar un numero
+    pequeño y confuso (p.ej. "8W") que el usuario razonablemente
+    interpretaba como un fallo. Se reescriben para consultar
+    `sensor.battery_orchestrator_load` (el consumo TOTAL ya reconstruido
+    que este plugin publica, ver `_live_total_load_w`/`_live_sensor_loop`
+    en main.py).
 
 Requiere una API key con rol Editor de una service account de Grafana
 (Administration -> Users and access -> Service accounts) y la URL desde la
@@ -53,6 +64,9 @@ DATASOURCE_UID = "bfwskhk4o8k5cf"
 
 ARRAY_PANEL_TITLE = "Generación solar por panel/array declarado"
 SOLAR_FORECAST_PANEL_TITLE = "Previsión solar hoy / mañana"
+CONSUMO_CASA_PANEL_TITLE = "Consumo casa"
+LIVE_POWER_PANEL_TITLE = "Potencia en vivo — Red / Solar / Casa / Batería (24h)"
+CONSUMO_CASA_LEGEND = "Consumo casa"
 
 
 def _headers(token: str) -> dict:
@@ -96,6 +110,21 @@ def _fix_solar_forecast_panel(panel: dict) -> None:
             "legendFormat": "Mañana",
         },
     ]
+
+
+def _fix_consumo_casa_stat_panel(panel: dict) -> None:
+    panel["targets"] = [
+        {
+            "expr": 'hass_sensor_power_w{entity="sensor.battery_orchestrator_load"}',
+            "legendFormat": "Casa",
+        },
+    ]
+
+
+def _fix_consumo_casa_in_live_power_panel(panel: dict) -> None:
+    for target in panel.get("targets", []):
+        if target.get("legendFormat") == CONSUMO_CASA_LEGEND:
+            target["expr"] = 'hass_sensor_power_w{entity="sensor.battery_orchestrator_load"}'
 
 
 def _find_panel(panels: list[dict], title: str) -> dict | None:
@@ -160,6 +189,14 @@ def sync(grafana_url: str, grafana_token: str, pv_arrays: list[dict]) -> dict:
     forecast_panel = _find_panel(panels, SOLAR_FORECAST_PANEL_TITLE)
     if forecast_panel is not None:
         _fix_solar_forecast_panel(forecast_panel)
+
+    consumo_casa_panel = _find_panel(panels, CONSUMO_CASA_PANEL_TITLE)
+    if consumo_casa_panel is not None:
+        _fix_consumo_casa_stat_panel(consumo_casa_panel)
+
+    live_power_panel = _find_panel(panels, LIVE_POWER_PANEL_TITLE)
+    if live_power_panel is not None:
+        _fix_consumo_casa_in_live_power_panel(live_power_panel)
 
     payload = {
         "dashboard": dashboard,

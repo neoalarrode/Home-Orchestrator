@@ -1577,8 +1577,15 @@ def _live_sensor_loop():
     while True:
         try:
             cfg = config_store.load_config()
+            # Defaults seguros para cuando no hay ninguna bateria declarada
+            # -- el consumo total de mas abajo los necesita igual (la casa
+            # puede tener consumo/sol sin tener ninguna bateria).
+            live_charge_w, live_discharge_w, live_battery_data_ok = 0.0, 0.0, False
             if cfg["batteries"]:
                 live = _live_battery_totals(cfg, fresh=True)
+                live_charge_w = live["live_charge_w"]
+                live_discharge_w = live["live_discharge_w"]
+                live_battery_data_ok = live["live_battery_data_ok"]
                 if live["current_soc_pct"] is not None:
                     _publish_sensor_throttled(
                         "sensor.battery_orchestrator_soc", live["current_soc_pct"],
@@ -1648,6 +1655,17 @@ def _live_sensor_loop():
                     min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
                 )
             _solar_energy_last_ts = now_ts
+
+            total_load_w = _live_total_load_w(cfg, solar_w, live_charge_w, live_discharge_w, live_battery_data_ok)
+            if total_load_w is not None:
+                _publish_sensor_throttled(
+                    "sensor.battery_orchestrator_load", round(total_load_w),
+                    {
+                        "device_class": "power", "state_class": "measurement",
+                        "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Consumo total de la casa",
+                    },
+                    min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
+                )
         except Exception:
             log.exception("Fallo publicando los sensores en vivo")
         time.sleep(LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS)
@@ -1908,6 +1926,50 @@ def _live_solar_per_array_w(cfg: dict) -> list[tuple[str, str, float]]:
             if v is not None:
                 out.append((a["id"], a.get("name") or a["id"], v))
     return out
+
+
+def _live_total_load_w(cfg: dict, pv_now_w: float | None, live_charge_w: float,
+                        live_discharge_w: float, live_battery_data_ok: bool) -> float | None:
+    """
+    Consumo TOTAL reconstruido de la casa ahora mismo (sol + descarga de
+    batería + lo que venga de red) -- a peticion expresa del usuario, tras
+    confundir el panel "Consumo casa" del dashboard de Grafana (que
+    apuntaba a `load_sensor`/`net_grid_sensor` en bruto) con el consumo
+    real: NINGUNO de esos dos sensores, por si solo, es "cuanto gasta la
+    casa" -- ver el comentario de `load_sensor_mode` en config_store.py.
+    `load_sensor` (modo "separate") ya viene SIN la carga de baterias, y
+    `net_grid_sensor` (modo "combined") es solo el punto de conexion, ni
+    siquiera resta la bateria. Mismo calculo que ya hace `/api/live`
+    inline para el diagrama de "Flujo de energia" (mantener ambos en
+    sincronia si alguno cambia), pero devuelto aqui aparte para poder
+    publicarlo TAMBIEN como sensor propio (ver `sensor.
+    battery_orchestrator_load`, `_live_sensor_loop`) y que Grafana pueda
+    consultar el numero real en vez del sensor de red en bruto.
+
+    None si no hay datos en vivo suficientes ahora mismo -- nunca se cae a
+    la previsión del planificador, esto es explicitamente el dato EN VIVO.
+    """
+    load_sensor_mode = cfg.get("load_sensor_mode") or "separate"
+    if load_sensor_mode == "combined":
+        net_grid_sensor = cfg.get("net_grid_sensor")
+        if not net_grid_sensor:
+            return None
+        net_grid_now_w = _plausible_power_w(
+            ha_client.get_numeric_state(net_grid_sensor, default=None), "net_grid_sensor")
+        if net_grid_now_w is None or pv_now_w is None or not live_battery_data_ok:
+            return None
+        return max(0.0, pv_now_w + net_grid_now_w + live_discharge_w - live_charge_w)
+
+    load_sensor = cfg.get("load_sensor")
+    base_load_now_w = ha_client.get_numeric_state(load_sensor, default=None) if load_sensor else None
+    if base_load_now_w is None:
+        return None
+    load_now_w = base_load_now_w
+    if pv_now_w is not None:
+        load_now_w += pv_now_w
+    if live_battery_data_ok:
+        load_now_w += live_discharge_w
+    return max(0.0, load_now_w)
 
 
 def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:

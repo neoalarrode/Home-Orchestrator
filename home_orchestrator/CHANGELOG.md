@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.77.21
+
+**Colores del flujo de energía indistinguibles + "Consumo casa" mostraba el sensor equivocado (plugin Energy 0.12.6).**
+
+A petición expresa del usuario:
+
+- **"Flujo de energía ahora mismo"**: solar, batería y red (cuando está activa) se pintaban con el mismo color -- `--accent`/`--accent-2`/`--amber` son deliberadamente el mismo ámbar en todo el sitio desde el rediseño "estilo Dishylink" (un único acento), pero este widget en concreto necesita 3 colores realmente distinguibles a la vez en la misma barra. Ahora usa tres colores propios (`--flow-solar`/`--flow-battery`/`--flow-grid`), sin tocar la paleta compartida, y coinciden con los que ya usa el dashboard de Grafana para que los dos sitios se lean igual.
+- **"Consumo casa" (Grafana) mostraba el sensor de red en bruto, no el consumo total**: `sensor.consumo_instantaneo` (`load_sensor`) es por diseño SOLO la parte que viene de red, ya sin sol ni batería (ver `load_sensor_mode` en `config_store.py`) -- con sol/batería cubriendo casi todo el consumo, ese panel podía marcar un número pequeño y confuso que parecía un fallo. Nuevo sensor `sensor.battery_orchestrator_load` (consumo total reconstruido, mismo cálculo que ya alimenta el diagrama de "Flujo de energía" en vivo) publicado desde `_live_sensor_loop`, y `grafana_sync.py` reescribe el panel "Consumo casa" y la serie homónima de "Potencia en vivo" para consultarlo.
+
 ## 0.77.20
 
 **Hotfix de v0.77.19: el panel de previsión solar apuntaba al nombre de métrica equivocado (plugin Energy 0.12.5).**
