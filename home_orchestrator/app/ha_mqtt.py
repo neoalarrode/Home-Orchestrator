@@ -163,11 +163,21 @@ class HAMqttClient:
             self.connected = reason_code == 0
             if self.connected:
                 log.info("MQTT local de HA conectado (%s:%s)", creds["host"], creds["port"])
-                for topic, on_message in self._subscriptions.items():
+                # BUG REAL, confirmado en produccion (RuntimeError: dictionary
+                # changed size during iteration): `_on_connect` corre en el
+                # hilo de RED de paho, al mismo tiempo que cada zona llama a
+                # `subscribe()` desde su propio hilo de arranque -- iterar
+                # `self._subscriptions` en vivo mientras otro hilo le anade
+                # una entrada tumbaba este callback a mitad de la
+                # re-suscripcion. Se toma una foto bajo el lock antes de
+                # iterar, nunca el dict en vivo.
+                with self._lock:
+                    subscriptions = list(self._subscriptions.items())
+                for topic, on_message in subscriptions:
                     client.message_callback_add(topic, on_message)
                     client.subscribe(topic, qos=1)
-                if self._subscriptions:
-                    log.info("MQTT local de HA: %d suscripcion(es) re-establecida(s) tras (re)conexion", len(self._subscriptions))
+                if subscriptions:
+                    log.info("MQTT local de HA: %d suscripcion(es) re-establecida(s) tras (re)conexion", len(subscriptions))
             else:
                 log.warning("MQTT local de HA: fallo de conexion, codigo %s", reason_code)
 
@@ -189,7 +199,8 @@ class HAMqttClient:
         self._client.publish(topic, body, qos=1, retain=retain)
 
     def subscribe(self, topic: str, on_message) -> None:
-        self._subscriptions[topic] = on_message
+        with self._lock:
+            self._subscriptions[topic] = on_message
         if self._client is None:
             return
         self._client.message_callback_add(topic, on_message)

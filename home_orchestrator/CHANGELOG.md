@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.29
+
+**Hotfix de v0.77.28: condicion de carrera en la re-suscripcion MQTT, encontrada en produccion nada mas reconstruir.**
+
+El propio fix de re-suscripcion MQTT de Climate Fase 1 (v0.77.25, `ha_mqtt.py`) iteraba `self._subscriptions` directamente en `_on_connect` -- que corre en el hilo de RED de paho -- mientras cada zona de Lighting/Climate llama a `subscribe()` desde su propio hilo de arranque casi al mismo tiempo. Confirmado en produccion nada mas reconstruir a v0.77.28: `RuntimeError: dictionary changed size during iteration`, matando el hilo de MQTT de Lighting. Ahora `_on_connect` toma una foto de las suscripciones bajo el lock ya existente antes de iterar, y `subscribe()` muta el diccionario bajo el mismo lock -- nunca el dict en vivo desde dos hilos a la vez. Verificado con un test que fuerza la carrera de verdad (varios hilos suscribiendo en paralelo mientras `_on_connect` se dispara en bucle), no solo esperando a que aparezca sola.
+
+`ha_mqtt.py` es NUCLEO (como `device_registry.py`), asi que este hotfix tambien requiere reconstruir el add-on, no un simple hot-swap de plugin.
+
 ## 0.77.28
 
 **Registro compartido de dispositivos (`device_registry.py`) -- generalizacion del mecanismo de "proveedor de actuadores".**
