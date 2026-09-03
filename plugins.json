@@ -130,10 +130,10 @@
       "description": "Puente de ingesta para bombillas Govee -- LAN API local como via principal, con la API Cloud oficial de Govee como respaldo -- consumo interno por Lighting y/o exposicion opcional a HA por MQTT",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "downloadable": true,
-      "tag": "v0.77.38",
-      "sha256": "9a54ca40b91564a2fe4753fdc1195e06f1fb6fa9cbf009633b98c9a7496f355a",
+      "tag": "v0.77.40",
+      "sha256": "e3252a4a961c2a662245e2b9752f2eedf7b36638b5c8f1d4c49b252c58bb07bc",
       "files": [
         "govee_plugin.py",
         "govee",
