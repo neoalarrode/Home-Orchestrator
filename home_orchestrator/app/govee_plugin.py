@@ -41,7 +41,7 @@ log = logging.getLogger("govee_plugin")
 class GoveePlugin(Plugin):
     slug = "govee"
     name = "Govee Orchestrator"
-    version = "0.2.0"
+    version = "0.2.1"
 
     def __init__(self) -> None:
         self._manager = GoveeDeviceManager(on_any_change=self._on_device_change)
