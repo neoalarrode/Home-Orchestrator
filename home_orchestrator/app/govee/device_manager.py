@@ -457,10 +457,28 @@ class GoveeLightHandle:
         # color y brillo (ver documentacion oficial); si el llamante solo
         # pidio HS y no hay LAN, se enciende igualmente sin ese matiz en
         # vez de no hacer nada.
-        self._manager._cloud_control(self._device_id, on=True, brightness_pct=brightness_pct, color_temp_kelvin=color_temp_kelvin)
+        #
+        # BUG REAL, confirmado en produccion (Dormitorio, solo-cloud): un
+        # fallo real del comando cloud (limite de 1 cada
+        # MIN_SECONDS_BETWEEN_CONTROL, red caida, respuesta con codigo
+        # distinto de 200...) se descartaba aqui en silencio -- `_apply_
+        # values` en zone_runner.py registra `commanded` SIEMPRE que
+        # `turn_on()` no lance excepcion, asi que un comando que nunca
+        # llego de verdad a la bombilla quedaba anotado como "ya mandado":
+        # la zona no lo reintentaba nunca mas, y en el siguiente ciclo
+        # `_detect_manual_overrides` comparaba ese "commanded" optimista
+        # contra el estado real (sin cambiar) y lo marcaba encima como
+        # "tocado a mano", bloqueando cualquier reintento futuro tambien.
+        # Lanzar aqui hace que `_apply_values` NO registre nada (su propio
+        # `except Exception: log.exception(...); return`) -- la zona lo
+        # reintenta en el siguiente ciclo, igual que ya hacia un fallo de
+        # `ha_client`/`call_service` en el resto de la app.
+        if not self._manager._cloud_control(self._device_id, on=True, brightness_pct=brightness_pct, color_temp_kelvin=color_temp_kelvin):
+            raise RuntimeError(f"Govee Cloud: fallo mandando turn_on a {self._device_id}")
 
     def turn_off(self) -> None:
         if self._manager.connected(self._device_id):
             self._manager.turn_off(self._device_id)
             return
-        self._manager._cloud_control(self._device_id, on=False)
+        if not self._manager._cloud_control(self._device_id, on=False):
+            raise RuntimeError(f"Govee Cloud: fallo mandando turn_off a {self._device_id}")

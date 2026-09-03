@@ -95,26 +95,37 @@ def get_state(api_key: str, device_mac: str, sku: str) -> dict | None:
     return merged
 
 
-def _control_allowed(device_mac: str) -> bool:
+def _control_allowed(device_mac: str, cmd_name: str) -> bool:
     with _last_control_lock:
-        last = _last_control_at.get(device_mac)
+        last = _last_control_at.get((device_mac, cmd_name))
         return last is None or (time.time() - last) >= MIN_SECONDS_BETWEEN_CONTROL
 
 
-def _note_control(device_mac: str) -> None:
+def _note_control(device_mac: str, cmd_name: str) -> None:
     with _last_control_lock:
-        _last_control_at[device_mac] = time.time()
+        _last_control_at[(device_mac, cmd_name)] = time.time()
 
 
 def control(api_key: str, device_mac: str, sku: str, cmd_name: str, cmd_value) -> bool:
     """Manda UN comando de control (`turn`/`brightness`/`color`/
     `colorTem`, ver la documentacion oficial para el resto de nombres) --
     `False` sin mandar nada si se ha llamado hace menos de
-    `MIN_SECONDS_BETWEEN_CONTROL` para ese mismo dispositivo, para
-    respetar el limite de facto del fabricante."""
-    if not _control_allowed(device_mac):
+    `MIN_SECONDS_BETWEEN_CONTROL` para ese MISMO comando en ese mismo
+    dispositivo, para respetar el limite de facto del fabricante.
+    BUG REAL, confirmado en produccion: la API oficial de Govee NO admite
+    mandar varias propiedades en una sola peticion (`cmd` como lista ->
+    400 "Invalid cmd", probado contra la cuenta real) -- encender con
+    brillo y temperatura de color a la vez son SIEMPRE 3 peticiones
+    separadas (`turn`, `brightness`, `colorTem`). El limite antes era por
+    DISPOSITIVO a secas, asi que esas 3 peticiones de una misma operacion
+    se bloqueaban entre si -- la primera (`turn`) pasaba y las otras dos
+    se descartaban en silencio por "acabo de mandar algo a este
+    dispositivo". Por comando en vez de por dispositivo: sigue evitando
+    repetir la MISMA propiedad demasiado seguido, sin impedir mandar
+    varias propiedades distintas en la misma operacion."""
+    if not _control_allowed(device_mac, cmd_name):
         log.warning(
-            "Govee Cloud: comando '%s' a %s omitido -- se mando otro hace menos de %ss",
+            "Govee Cloud: comando '%s' a %s omitido -- se mando el mismo comando hace menos de %ss",
             cmd_name, device_mac, MIN_SECONDS_BETWEEN_CONTROL,
         )
         return False
@@ -127,5 +138,10 @@ def control(api_key: str, device_mac: str, sku: str, cmd_name: str, cmd_value) -
         log.exception("Govee Cloud: fallo mandando '%s' a %s", cmd_name, device_mac)
         return False
     finally:
-        _note_control(device_mac)
-    return data.get("code") == 200
+        _note_control(device_mac, cmd_name)
+    ok = data.get("code") == 200
+    if ok:
+        log.info("Govee Cloud: '%s'=%s mandado a %s", cmd_name, cmd_value, device_mac)
+    else:
+        log.warning("Govee Cloud: '%s' a %s respondio codigo %s (%s)", cmd_name, device_mac, data.get("code"), data.get("message"))
+    return ok
