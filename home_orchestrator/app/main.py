@@ -77,12 +77,18 @@ def _restrict_wallpanel_port():
 
 # WebSocket reactivo hacia HA (ver ha_websocket.py): en cuanto cambia un
 # sensor que nos interesa, dispara una reevaluacion del ciclo de
-# planificacion en segundos, en vez de esperar al proximo `cycle_seconds`.
-# `_reactive_trigger` hace de debounce (ver ReactiveTrigger) para que
-# varios cambios seguidos no lancen el ciclo completo mas de una vez cada
-# `REACTIVE_MIN_INTERVAL_SECONDS`. El propio ciclo periodico sigue
+# planificacion al instante, en vez de esperar al proximo `cycle_seconds`.
+# `_reactive_trigger` sigue coalescendo varios cambios seguidos en una
+# sola ejecucion mas (ver ReactiveTrigger.worker_loop), pero SIN el
+# margen minimo por defecto entre ejecuciones (`min_interval_seconds=0`,
+# a diferencia de Climate, que mantiene los 5s de fabrica) -- a peticion
+# expresa del usuario de tiempo real riguroso, no una pausa fija tras
+# cada ciclo. Seguro de bajar a 0 porque ya no es la unica proteccion:
+# el debounce a nivel de COMANDO en battery_exec.py (no de ciclo) es
+# quien de verdad evita machacar EcoFlow/HA con ordenes repetidas: sin
+# el, bajar esto a 0 SI hubiera sido peligroso. El ciclo periodico sigue
 # funcionando igual, como respaldo si el WebSocket se cae.
-_reactive_trigger = ha_websocket.ReactiveTrigger(lambda: _run_cycle_locked())
+_reactive_trigger = ha_websocket.ReactiveTrigger(lambda: _run_cycle_locked(), min_interval_seconds=0)
 # Conexion COMPARTIDA del core -- ver ha_websocket.shared(). El callback ya no
 # va en el constructor: con la conexion compartida cada plugin se registra con
 # su propia clave, y solo se le avisa de las entidades que EL vigila.
