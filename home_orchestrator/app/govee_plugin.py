@@ -3,7 +3,10 @@ Plugin de Govee para el nucleo Home Orchestrator -- puro puente de
 ingesta, mismo papel que TuyaPlugin/TplinkPlugin pero hablando el
 protocolo LAN de Govee directamente (ver govee/device_manager.py: no hay
 libreria de terceros en Python para esto, a diferencia de `python-kasa`
-para TP-Link).
+para TP-Link). LAN sigue siendo la via PRIMARIA; la API Cloud oficial de
+Govee (ver govee_cloud.py) es un respaldo opcional para lo que LAN no
+puede alcanzar -- a peticion expresa del usuario, no todos los
+dispositivos soportan LAN.
 
 Dos formas de usar un dispositivo dado de alta, no excluyentes (mismo
 criterio que Tuya/TP-Link):
@@ -26,6 +29,7 @@ import threading
 import flask
 
 import ha_mqtt
+import govee_cloud
 import govee_store
 from govee.device_manager import GoveeDeviceManager
 from govee.mqtt_govee import MqttGoveeDevice
@@ -37,7 +41,7 @@ log = logging.getLogger("govee_plugin")
 class GoveePlugin(Plugin):
     slug = "govee"
     name = "Govee Orchestrator"
-    version = "0.1.2"
+    version = "0.2.0"
 
     def __init__(self) -> None:
         self._manager = GoveeDeviceManager(on_any_change=self._on_device_change)
@@ -129,6 +133,48 @@ class GoveePlugin(Plugin):
             ]
             return flask.jsonify(out)
 
+        # ------------------------------------------------ cuenta / cloud -
+        # API Cloud oficial de Govee (ver govee_cloud.py) -- SOLO como
+        # respaldo de lo que LAN no puede alcanzar (mismo criterio ya
+        # aplicado a EcoFlow Cloud/BLE en Energy Orchestrator). La API key
+        # es de cuenta, no por dispositivo -- un unico campo, igual que el
+        # patron ya usado en tplink_store.py.
+
+        @app.get("/api/account")
+        def _get_account():
+            account = govee_store.load_account()
+            return flask.jsonify({"api_key_set": bool(account.get("api_key"))})
+
+        @app.post("/api/account")
+        def _save_account():
+            payload = flask.request.get_json(force=True) or {}
+            govee_store.save_account({"api_key": payload.get("api_key", "")})
+            self._manager.set_cloud_api_key(govee_store.load_account().get("api_key"))
+            return flask.jsonify({"ok": True})
+
+        @app.post("/api/discover_cloud")
+        def _discover_cloud():
+            api_key = govee_store.load_account().get("api_key")
+            if not api_key:
+                return flask.jsonify({"error": "no hay API key de Govee configurada"}), 400
+            devices = govee_cloud.list_devices(api_key)
+            if devices is None:
+                return flask.jsonify({"error": "la API de Govee no respondio"}), 502
+            added_macs = {
+                d["config"]["govee_device_mac"] for d in govee_store.load_devices()
+                if d["config"].get("govee_device_mac")
+            }
+            out = [
+                {
+                    "device": d.get("device"),
+                    "sku": d.get("model"),
+                    "name": d.get("deviceName"),
+                    "already_added": d.get("device") in added_macs,
+                }
+                for d in devices
+            ]
+            return flask.jsonify(out)
+
     # ------------------------------------------------------------- arranque
 
     def start_background_threads(self) -> None:
@@ -152,6 +198,7 @@ class GoveePlugin(Plugin):
                 "proceso del host ya lo tiene tomado. Las bombillas se quedaran sin "
                 "conexion hasta que se resuelva.", 4002,
             )
+        self._manager.set_cloud_api_key(govee_store.load_account().get("api_key"))
         self._mqtt.connect()
         devices = govee_store.load_devices()
         for device in devices:
@@ -160,8 +207,14 @@ class GoveePlugin(Plugin):
 
     def _start_device(self, device: dict) -> None:
         cfg = device["config"]
+        self._manager.set_cloud_identity(device["id"], cfg.get("govee_device_mac"), cfg.get("govee_sku"))
         if not cfg.get("host"):
-            log.warning("Dispositivo Govee '%s' sin host -- no se conecta", cfg.get("name") or device["id"])
+            # Dispositivo dado de alta SOLO por la nube (nunca visto en
+            # LAN, o modelo sin soporte LAN) -- valido si tiene identidad
+            # cloud, ya registrada arriba; sin eso, no hay forma de
+            # controlarlo por ningun camino.
+            if not (cfg.get("govee_device_mac") and cfg.get("govee_sku")):
+                log.warning("Dispositivo Govee '%s' sin host ni identidad cloud -- no se puede controlar", cfg.get("name") or device["id"])
             return
         # Mismo patron ya corregido en Shelly/Tuya/TP-Link: un fallo dando de
         # alta UN dispositivo (poco probable aqui, `add_device` solo hace un
@@ -189,6 +242,7 @@ class GoveePlugin(Plugin):
         if mqtt_dev:
             mqtt_dev.remove_discovery()
         self._manager.remove_device(device_id)
+        self._manager.set_cloud_identity(device_id, None, None)
 
     def _on_device_change(self, device_id: str) -> None:
         mqtt_dev = self._mqtt_devices.get(device_id)

@@ -36,7 +36,7 @@
         <path d="M12 4v2.5M12 17.5V20M4 12h2.5M17.5 12H20M6.5 6.5l1.8 1.8M15.7 15.7l1.8 1.8M6.5 17.5l1.8-1.8M15.7 8.3l1.8-1.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
       </svg>
     </span>Home Orchestrator<span class="plugin-badge">Govee</span></h1>
-    <div class="subtitle">Puente de ingesta para bombillas Govee — SOLO la LAN API local del propio dispositivo (sin cuenta, sin nube del fabricante) — consumidas internamente por Lighting y/o expuestas a Home Assistant por MQTT.</div>
+    <div class="subtitle">Puente de ingesta para bombillas Govee — LAN local como vía principal, con la API Cloud oficial de Govee como respaldo para lo que LAN no alcanza (modelos sin soporte, o sin la "LAN API" activada) — consumidas internamente por Lighting y/o expuestas a Home Assistant por MQTT.</div>
   </div>
   <div class="topbar-right">
     <nav class="plugin-switch" id="plugin-switch-nav" aria-label="Cambiar de plugin"></nav>
@@ -49,13 +49,24 @@
 </div>
 
 <div class="card">
-  <h2><span>Escanear la red</span> <span class="hint">solo informativo — tú decides si añadir alguna</span></h2>
-  <p class="help">Envía un aviso multicast a la LAN y espera unos segundos las respuestas — no es un listener permanente, pulsa "Escanear" cada vez que quieras ver qué hay.</p>
+  <h2><span>Cuenta Cloud (respaldo)</span></h2>
+  <p class="help">API key gratuita de developer-api.govee.com (se pide desde la app oficial: Perfil → Configuración → Acerca de nosotros). Solo hace falta para los dispositivos que LAN no puede alcanzar — nunca se usa como vía principal si LAN ya responde.</p>
   <div class="actions">
-    <button type="button" id="scan-btn" onclick="scanNow()">Escanear ahora</button>
+    <input id="account-api-key" type="password" placeholder="API key" style="flex:1; min-width:220px">
+    <button type="button" onclick="saveAccount()">Guardar</button>
+    <span class="hint" id="account-status">—</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2><span>Buscar bombillas</span> <span class="hint">solo informativo — tú decides si añadir alguna</span></h2>
+  <p class="help">"Escanear LAN" envía un aviso multicast a la red y espera unos segundos las respuestas. "Buscar en la nube" (si hay API key guardada) lista TODOS los dispositivos de tu cuenta Govee, incluidos los que nunca responden por LAN.</p>
+  <div class="actions">
+    <button type="button" id="scan-btn" onclick="scanNow()">Escanear LAN</button>
+    <button type="button" class="secondary" id="scan-cloud-btn" onclick="scanCloud()">Buscar en la nube</button>
   </div>
   <div id="discovered-grid" class="device-grid" style="margin-top:14px"></div>
-  <div id="discovered-empty" class="empty" style="display:none">Nada visto todavía — pulsa "Escanear ahora".</div>
+  <div id="discovered-empty" class="empty" style="display:none">Nada visto todavía — pulsa "Escanear LAN" o "Buscar en la nube".</div>
 </div>
 
 <div class="card">
@@ -72,12 +83,15 @@
     <summary><span class="add-toggle">＋ Nueva bombilla</span></summary>
     <form id="device-form" style="margin-top:16px" onsubmit="return submitDeviceForm(event)">
       <input type="hidden" id="df-id" value="">
+      <input type="hidden" id="df-mac" value="">
+      <input type="hidden" id="df-sku" value="">
 
       <label for="df-name">Nombre</label>
       <input id="df-name" required placeholder="Tira LED escritorio">
 
       <label for="df-host">Dirección IP en la LAN</label>
-      <input id="df-host" required placeholder="192.168.1.70">
+      <input id="df-host" placeholder="192.168.1.70">
+      <p class="help" id="df-cloud-note" style="display:none">Este dispositivo se añade SOLO por la nube (identidad de cuenta ya rellena) — puedes dejar la IP en blanco, o rellenarla más adelante si alguna vez responde por LAN.</p>
 
       <div class="checkline">
         <input type="checkbox" id="df-expose-mqtt">
@@ -121,7 +135,7 @@ function renderDevices(devices) {
         <span class="device-name">${esc(d.config.name || d.id)}</span>
         <span class="pill ${live.connected ? 'pill-ok' : 'pill-off'}">${live.connected ? (live.is_on ? 'encendida' : 'apagada') : 'sin conexión'}</span>
       </div>
-      <div class="device-meta">${esc(d.config.host)}${live.brightness_pct !== undefined && live.brightness_pct !== null ? ' · ' + live.brightness_pct + '%' : ''}${live.color_temp_kelvin ? ' · ' + live.color_temp_kelvin + 'K' : ''}</div>
+      <div class="device-meta">${esc(d.config.host || (d.config.govee_device_mac ? 'solo nube' : 'sin identidad'))}${live.brightness_pct !== undefined && live.brightness_pct !== null ? ' · ' + live.brightness_pct + '%' : ''}${live.color_temp_kelvin ? ' · ' + live.color_temp_kelvin + 'K' : ''}</div>
       ${d.config.expose_mqtt ? '<span class="pill pill-mqtt" style="margin-top:8px">expuesta por MQTT</span>' : ''}
       <div class="device-actions">
         <button class="ghost" onclick="editDevice('${d.id}')">Editar</button>
@@ -158,11 +172,12 @@ function renderDiscovered(devices) {
   grid.innerHTML = notAdded.map(d => `
     <div class="device-card">
       <div class="device-card-head">
-        <span class="device-name">${esc(d.sku || d.host)}</span>
+        <span class="device-name">${esc(d.name || d.sku || d.host || d.device)}</span>
+        <span class="pill ${d.source === 'cloud' ? 'pill-mqtt' : 'pill-ok'}">${d.source === 'cloud' ? 'nube' : 'LAN'}</span>
       </div>
-      <div class="device-meta">${esc(d.host)}${d.device ? ' · ' + esc(d.device) : ''}</div>
+      <div class="device-meta">${d.host ? esc(d.host) + ' · ' : ''}${esc(d.sku || '')}${d.device ? ' · ' + esc(d.device) : ''}</div>
       <div class="device-actions">
-        <button onclick="addFromDiscovered('${jsAttr(d.host)}', '${jsAttr(d.sku || '')}')">Añadir</button>
+        <button onclick="addFromDiscovered('${jsAttr(JSON.stringify(d))}')">Añadir</button>
       </div>
     </div>`).join("");
 }
@@ -173,19 +188,53 @@ async function scanNow() {
   try {
     const r = await fetch(`${API}/discover`, {method: "POST"});
     const found = r.ok ? await r.json() : [];
-    renderDiscovered(found);
+    renderDiscovered(found.map(d => ({...d, source: "lan"})));
     if (!r.ok) toast("Fallo al escanear la red");
   } catch (e) {
     toast("Fallo al escanear la red");
   }
-  btn.disabled = false; btn.textContent = "Escanear ahora";
+  btn.disabled = false; btn.textContent = "Escanear LAN";
 }
 
-function addFromDiscovered(host, sku) {
+async function scanCloud() {
+  const btn = document.getElementById("scan-cloud-btn");
+  btn.disabled = true; btn.textContent = "Buscando…";
+  try {
+    const r = await fetch(`${API}/discover_cloud`, {method: "POST"});
+    const body = await r.json();
+    if (!r.ok) { toast(body.error || "Fallo al buscar en la nube"); }
+    else { renderDiscovered((Array.isArray(body) ? body : []).map(d => ({...d, source: "cloud"}))); }
+  } catch (e) {
+    toast("Fallo al buscar en la nube");
+  }
+  btn.disabled = false; btn.textContent = "Buscar en la nube";
+}
+
+function addFromDiscovered(jsonStr) {
+  const d = JSON.parse(jsonStr);
   cancelDeviceForm();
-  fillDeviceForm({name: sku || "", host});
+  if (d.source === "cloud") {
+    fillDeviceForm({name: d.name || d.sku || "", host: "", govee_device_mac: d.device, govee_sku: d.sku});
+  } else {
+    fillDeviceForm({name: d.sku || "", host: d.host, govee_device_mac: d.device, govee_sku: d.sku});
+  }
   document.getElementById("add-device-details").open = true;
   document.getElementById("add-device-details").scrollIntoView({behavior: "smooth", block: "start"});
+}
+
+async function loadAccount() {
+  try {
+    const r = await fetch(`${API}/account`);
+    const s = await r.json();
+    document.getElementById("account-status").textContent = s.api_key_set ? "API key guardada" : "sin API key";
+  } catch (e) { /* red temporalmente caida */ }
+}
+
+async function saveAccount() {
+  const api_key = document.getElementById("account-api-key").value.trim();
+  const r = await fetch(`${API}/account`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({api_key})});
+  if (r.ok) { toast("Cuenta Cloud guardada"); document.getElementById("account-api-key").value = ""; loadAccount(); }
+  else { toast("Fallo al guardar la API key"); }
 }
 
 async function deleteDevice(id, name) {
@@ -198,6 +247,8 @@ function readDeviceForm() {
   return {
     name: document.getElementById("df-name").value.trim(),
     host: document.getElementById("df-host").value.trim(),
+    govee_device_mac: document.getElementById("df-mac").value.trim(),
+    govee_sku: document.getElementById("df-sku").value.trim(),
     expose_mqtt: document.getElementById("df-expose-mqtt").checked,
   };
 }
@@ -205,7 +256,10 @@ function readDeviceForm() {
 function fillDeviceForm(cfg) {
   document.getElementById("df-name").value = cfg.name || "";
   document.getElementById("df-host").value = cfg.host || "";
+  document.getElementById("df-mac").value = cfg.govee_device_mac || "";
+  document.getElementById("df-sku").value = cfg.govee_sku || "";
   document.getElementById("df-expose-mqtt").checked = !!cfg.expose_mqtt;
+  document.getElementById("df-cloud-note").style.display = (!cfg.host && cfg.govee_device_mac) ? "block" : "none";
 }
 
 function editDevice(id) {
@@ -221,6 +275,7 @@ function editDevice(id) {
 function cancelDeviceForm() {
   document.getElementById("device-form").reset();
   document.getElementById("df-id").value = "";
+  document.getElementById("df-cloud-note").style.display = "none";
   document.getElementById("df-submit-btn").textContent = "Añadir bombilla";
   document.getElementById("add-device-details").open = false;
 }
@@ -229,8 +284,12 @@ async function submitDeviceForm(ev) {
   ev.preventDefault();
   const id = document.getElementById("df-id").value;
   const payload = readDeviceForm();
-  if (!payload.name || !payload.host) {
-    toast("Nombre y dirección IP son obligatorios");
+  if (!payload.name) {
+    toast("El nombre es obligatorio");
+    return false;
+  }
+  if (!payload.host && !(payload.govee_device_mac && payload.govee_sku)) {
+    toast("Hace falta una dirección IP en la LAN, o una identidad de cuenta (añádela desde 'Buscar en la nube')");
     return false;
   }
   const url = id ? `${API}/devices/${id}` : `${API}/devices`;
@@ -249,6 +308,7 @@ async function submitDeviceForm(ev) {
 
 loadDevices();
 loadStatus();
+loadAccount();
 renderPluginSwitch("govee");
 setInterval(loadDevices, 8000);
 setInterval(loadStatus, 8000);

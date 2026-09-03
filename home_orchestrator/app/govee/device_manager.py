@@ -2,15 +2,17 @@
 Puente LAN con bombillas Govee -- protocolo UDP no oficial pero bien
 documentado por la comunidad (el mismo que usa la via "LAN" de
 govee2mqtt de wez, ver https://github.com/wez/govee2mqtt/blob/main/docs/
-LAN.md, y proyectos hermanos como govee-lan-hass) -- SOLO la via local,
-a proposito. govee2mqtt en si combina TRES canales (LAN, AWS IoT con
-email/contraseña de la cuenta -- protocolo NO documentado --, y la API
-REST oficial que exige pedir una API key al fabricante); ninguno de los
-dos ultimos encaja con el "sin cajas negras" del resto de Home
-Orchestrator -- mismo criterio que ya se aplico a Tuya (LAN unicamente,
-nunca la nube del fabricante). Un dispositivo sin la "Govee LAN API"
-activada en la app oficial (ajuste por dispositivo) simplemente no
-respondera aqui -- no hay forma de rodear eso sin la nube.
+LAN.md, y proyectos hermanos como govee-lan-hass) -- via PRIMARIA, pero
+ya no la unica: un dispositivo sin la "Govee LAN API" activada en la app
+oficial (ajuste por dispositivo), o un modelo que no la soporte en
+absoluto, cae al respaldo de la API Cloud oficial (ver govee_cloud.py,
+`_cloud_status`/`_cloud_control` mas abajo) -- a peticion expresa del
+usuario. govee2mqtt en si combina TRES canales (LAN, AWS IoT con
+email/contraseña de la cuenta -- protocolo NO documentado --, y esta
+misma API REST oficial); aqui SOLO se implementa LAN + la API REST
+documentada, nunca el canal AWS IoT no documentado -- mismo criterio de
+"sin cajas negras" aplicado al resto de Home Orchestrator, con lo que SI
+hay alternativa documentada.
 
 Puertos (fijos, del propio protocolo, no configurables):
   - 4001: el dispositivo ESCUCHA aqui el mensaje de "scan" (enviado por
@@ -39,6 +41,8 @@ import threading
 import time
 from typing import Callable
 
+import govee_cloud
+
 log = logging.getLogger("govee.device_manager")
 
 MULTICAST_IP = "239.255.255.250"
@@ -49,6 +53,14 @@ CONTROL_PORT = 4003
 POLL_INTERVAL_SECONDS = 5
 STALE_AFTER_SECONDS = 20  # sin devStatus en este margen, se considera "sin conexion"
 SCAN_WINDOW_SECONDS = 4
+
+# Cuanto se reutiliza un estado leido de la nube antes de volver a
+# preguntar -- a diferencia de LAN (que empuja `devStatus` cada
+# `POLL_INTERVAL_SECONDS` sin coste real, LAN), cada lectura de la API
+# Cloud cuenta contra el limite diario de la cuenta (ver govee_cloud.py),
+# asi que aqui se cachea mas tiempo -- el respaldo cloud es para
+# dispositivos que LAN no puede alcanzar, no para tiempo real.
+CLOUD_STATE_CACHE_SECONDS = 20
 
 MIN_KELVIN, MAX_KELVIN = 2000, 9000
 
@@ -83,6 +95,81 @@ class GoveeDeviceManager:
         # Un dict por escaneo EN CURSO (ver `discover`) -- antes era un unico
         # hueco compartido, y dos escaneos concurrentes se pisaban.
         self._active_scans: list[dict[str, dict]] = []
+        # Respaldo CLOUD (ver govee_cloud.py) -- identidad de cuenta
+        # (MAC+modelo) por dispositivo dado de alta, y la API key global
+        # de la cuenta. Ambos opcionales: sin api_key, o sin identidad
+        # cloud para un dispositivo dado, ese dispositivo sencillamente
+        # se queda sin respaldo si LAN no responde, como hasta ahora.
+        self._cloud_identity: dict[str, tuple[str, str]] = {}  # device_id -> (mac, sku)
+        self._cloud_api_key: str | None = None
+        self._cloud_state_cache: dict[str, dict] = {}  # mac -> {"status", "fetched_at"}
+
+    # ------------------------------------------------------------ cloud
+
+    def set_cloud_api_key(self, api_key: str | None) -> None:
+        self._cloud_api_key = api_key or None
+
+    def set_cloud_identity(self, device_id: str, mac: str | None, sku: str | None) -> None:
+        if mac and sku:
+            self._cloud_identity[device_id] = (mac, sku)
+        else:
+            self._cloud_identity.pop(device_id, None)
+
+    def _cloud_status(self, device_id: str, *, fresh: bool = False) -> dict | None:
+        """Estado del dispositivo tal y como lo ve la nube, mapeado a los
+        MISMOS nombres de campo que ya usa el estado LAN (`onOff`,
+        `brightness`, `colorTemInKelvin`) para que `GoveeLightHandle` no
+        tenga que saber de donde vino. `None` si no hay identidad cloud
+        para este dispositivo, no hay api_key configurada, o la nube no
+        responde."""
+        identity = self._cloud_identity.get(device_id)
+        if identity is None or not self._cloud_api_key:
+            return None
+        mac, sku = identity
+        cached = self._cloud_state_cache.get(mac)
+        if not fresh and cached is not None and (time.time() - cached["fetched_at"]) < CLOUD_STATE_CACHE_SECONDS:
+            return cached["status"]
+        raw = govee_cloud.get_state(self._cloud_api_key, mac, sku)
+        if raw is None:
+            return cached["status"] if cached is not None else None
+        status = {}
+        if "powerState" in raw:
+            status["onOff"] = 1 if raw["powerState"] == "on" else 0
+        if "brightness" in raw:
+            status["brightness"] = raw["brightness"]
+        if "colorTem" in raw and raw["colorTem"]:
+            status["colorTemInKelvin"] = raw["colorTem"]
+        self._cloud_state_cache[mac] = {"status": status, "fetched_at": time.time()}
+        return status
+
+    def _cloud_control(self, device_id: str, on: bool | None = None, brightness_pct: float | None = None,
+                        color_temp_kelvin: float | None = None) -> bool:
+        identity = self._cloud_identity.get(device_id)
+        if identity is None or not self._cloud_api_key:
+            return False
+        mac, sku = identity
+        ok = True
+        if on is not None:
+            ok = govee_cloud.control(self._cloud_api_key, mac, sku, "turn", "on" if on else "off") and ok
+        if brightness_pct is not None:
+            ok = govee_cloud.control(self._cloud_api_key, mac, sku, "brightness", int(_clamp(round(brightness_pct), 1, 100))) and ok
+        if color_temp_kelvin is not None:
+            kelvin = int(_clamp(round(color_temp_kelvin), MIN_KELVIN, MAX_KELVIN))
+            ok = govee_cloud.control(self._cloud_api_key, mac, sku, "colorTem", kelvin) and ok
+        if ok:
+            # Mismo repintado optimista que la via LAN -- el proximo
+            # sondeo (aqui, la siguiente lectura tras CLOUD_STATE_CACHE_SECONDS)
+            # ya confirma el valor real.
+            cached = self._cloud_state_cache.get(mac, {}).get("status", {})
+            status = dict(cached)
+            if on is not None:
+                status["onOff"] = 1 if on else 0
+            if brightness_pct is not None:
+                status["brightness"] = round(brightness_pct)
+            if color_temp_kelvin is not None:
+                status["colorTemInKelvin"] = round(color_temp_kelvin)
+            self._cloud_state_cache[mac] = {"status": status, "fetched_at": time.time()}
+        return ok
 
     # ------------------------------------------------------------ arranque
 
@@ -299,39 +386,60 @@ class GoveeDeviceManager:
 
     def light_handle(self, device_id: str) -> "GoveeLightHandle | None":
         with self._lock:
-            if device_id not in self._devices:
-                return None
+            has_lan = device_id in self._devices
+        # Un dispositivo SOLO cloud (nunca visto en LAN, o modelo sin
+        # soporte LAN) no tiene entrada en `self._devices` -- sigue
+        # siendo un handle valido si tiene identidad de cuenta registrada
+        # (ver `set_cloud_identity`), o `connected()`/`_cloud_status()`
+        # simplemente no encontrarian nada por ningun camino.
+        if not has_lan and device_id not in self._cloud_identity:
+            return None
         return GoveeLightHandle(self, device_id)
 
 
 class GoveeLightHandle:
     """Mismo contrato que `TplinkLightHandle`/`TuyaLightHandle`
     (available/is_on/brightness_pct/color_temp_kelvin/turn_on/turn_off)
-    -- Lighting no necesita saber que esto es Govee."""
+    -- Lighting no necesita saber que esto es Govee, ni si la orden fue
+    por LAN o por la nube.
+
+    LAN sigue siendo la via PRIMARIA (rapida, sin limite de peticiones):
+    cuando `manager.connected()` es True para este dispositivo, todo pasa
+    por LAN igual que siempre. Solo cuando LAN no responde (dispositivo
+    sin soporte LAN, o "LAN API" sin activar en la app oficial para ese
+    modelo) se cae al respaldo cloud, si hay identidad de cuenta e
+    api_key configuradas (ver `set_cloud_identity`/`set_cloud_api_key`)."""
 
     def __init__(self, manager: GoveeDeviceManager, device_id: str) -> None:
         self._manager = manager
         self._device_id = device_id
 
+    def _status(self) -> dict | None:
+        if self._manager.connected(self._device_id):
+            return self._manager.get_status(self._device_id)
+        return self._manager._cloud_status(self._device_id)
+
     @property
     def available(self) -> bool:
-        return self._manager.connected(self._device_id)
+        if self._manager.connected(self._device_id):
+            return True
+        return self._manager._cloud_status(self._device_id) is not None
 
     @property
     def is_on(self) -> bool:
-        status = self._manager.get_status(self._device_id)
+        status = self._status()
         return bool(status and status.get("onOff") == 1)
 
     @property
     def brightness_pct(self) -> float | None:
-        status = self._manager.get_status(self._device_id)
+        status = self._status()
         if not status or status.get("brightness") is None:
             return None
         return float(status["brightness"])
 
     @property
     def color_temp_kelvin(self) -> int | None:
-        status = self._manager.get_status(self._device_id)
+        status = self._status()
         if not status:
             return None
         kelvin = status.get("colorTemInKelvin")
@@ -342,7 +450,17 @@ class GoveeLightHandle:
 
     def turn_on(self, brightness_pct: float | None = None, color_temp_kelvin: float | None = None,
                 hs: tuple[float, float] | None = None) -> None:
-        self._manager.turn_on(self._device_id, brightness_pct=brightness_pct, color_temp_kelvin=color_temp_kelvin, hs=hs)
+        if self._manager.connected(self._device_id):
+            self._manager.turn_on(self._device_id, brightness_pct=brightness_pct, color_temp_kelvin=color_temp_kelvin, hs=hs)
+            return
+        # El respaldo cloud no soporta color HS -- solo temperatura de
+        # color y brillo (ver documentacion oficial); si el llamante solo
+        # pidio HS y no hay LAN, se enciende igualmente sin ese matiz en
+        # vez de no hacer nada.
+        self._manager._cloud_control(self._device_id, on=True, brightness_pct=brightness_pct, color_temp_kelvin=color_temp_kelvin)
 
     def turn_off(self) -> None:
-        self._manager.turn_off(self._device_id)
+        if self._manager.connected(self._device_id):
+            self._manager.turn_off(self._device_id)
+            return
+        self._manager._cloud_control(self._device_id, on=False)

@@ -1,9 +1,15 @@
 """
 Persistencia de los dispositivos Govee dados de alta -- mismo patron que
 tplink_store.py: namespace propio ("plugins.govee") en el fichero de
-config compartido del nucleo. Sin seccion de cuenta -- el protocolo LAN
-de Govee no usa ninguna credencial (a diferencia de TP-Link/Tapo), solo
-la IP del dispositivo en la LAN.
+config compartido del nucleo.
+
+Seccion de cuenta NUEVA (`load_account`/`save_account`, mismo patron que
+tplink_store.py): la API Cloud oficial de Govee (ver govee_cloud.py)
+necesita una API key de cuenta, a diferencia del protocolo LAN que no usa
+ninguna credencial. `govee_device_mac`/`govee_sku` en la config de CADA
+dispositivo son el identificador que la nube necesita (MAC + modelo,
+nunca la IP LAN) -- se rellenan solos al descubrir el dispositivo, por
+LAN o por nube.
 """
 
 from __future__ import annotations
@@ -21,7 +27,15 @@ DEFAULT_DEVICE_CONFIG = {
     # Ingestion interna por Lighting y exposicion por MQTT NO son
     # excluyentes -- mismo criterio que `expose_mqtt` de Tuya/TP-Link.
     "expose_mqtt": False,
+    # Identificador de CUENTA (MAC + modelo) -- lo necesita la API Cloud
+    # para controlar/leer este dispositivo cuando LAN no responde. Puede
+    # estar vacio si el dispositivo se dio de alta solo por LAN y nunca
+    # se ha visto tambien en el descubrimiento por nube.
+    "govee_device_mac": "",
+    "govee_sku": "",
 }
+
+DEFAULT_ACCOUNT = {"api_key": ""}
 
 
 def _read_section() -> dict:
@@ -85,3 +99,21 @@ def delete_device(device_id: str) -> bool:
         devices = [d for d in devices if d["id"] != device_id]
         save_devices(devices)
         return len(devices) < before
+
+
+def load_account() -> dict:
+    with config_store.transaction():
+        section = _read_section()
+        merged = dict(DEFAULT_ACCOUNT)
+        merged.update(section.get("account") or {})
+        return merged
+
+
+def save_account(account: dict) -> None:
+    with config_store.transaction():
+        section = _read_section()
+        merged = dict(DEFAULT_ACCOUNT)
+        merged.update(section.get("account") or {})
+        merged.update(account)
+        section["account"] = merged
+        _write_section(section)
