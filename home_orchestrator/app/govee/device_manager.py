@@ -103,6 +103,14 @@ class GoveeDeviceManager:
         self._cloud_identity: dict[str, tuple[str, str]] = {}  # device_id -> (mac, sku)
         self._cloud_api_key: str | None = None
         self._cloud_state_cache: dict[str, dict] = {}  # mac -> {"status", "fetched_at"}
+        # Rango REAL de temperatura de color por dispositivo (Kelvin),
+        # detectado automaticamente contra la API Cloud de Govee -- ver
+        # `detect_color_temp_ranges`. Sin esto, un valor generico
+        # (MIN_KELVIN/MAX_KELVIN mas abajo) puede caer fuera de lo que el
+        # modelo concreto admite de verdad (confirmado en produccion: un
+        # STREAM/H6008 solo admite 2700-6500K, un valor de 2200K -- valido
+        # para OTROS modelos -- la API lo rechaza con 400).
+        self._color_temp_range: dict[str, tuple[int, int]] = {}
 
     # ------------------------------------------------------------ cloud
 
@@ -114,6 +122,42 @@ class GoveeDeviceManager:
             self._cloud_identity[device_id] = (mac, sku)
         else:
             self._cloud_identity.pop(device_id, None)
+
+    def set_color_temp_range(self, device_id: str, min_kelvin: int | None, max_kelvin: int | None) -> None:
+        if min_kelvin is not None and max_kelvin is not None:
+            self._color_temp_range[device_id] = (int(min_kelvin), int(max_kelvin))
+        else:
+            self._color_temp_range.pop(device_id, None)
+
+    def color_temp_range(self, device_id: str) -> tuple[int, int] | None:
+        """Rango real (min, max) en Kelvin para ESTE dispositivo si se
+        detecto contra la cuenta cloud -- `None` si no se conoce (LAN no
+        expone esto, y sin api_key/identidad cloud tampoco hay forma de
+        preguntarlo). Quien llama decide el fallback (ver MIN_KELVIN/
+        MAX_KELVIN mas abajo, o `lighting/zone_runner.py` para el mismo
+        criterio aplicado ANTES de mandar nada, no solo aqui)."""
+        return self._color_temp_range.get(device_id)
+
+    def detect_color_temp_ranges(self, api_key: str) -> None:
+        """Deteccion AUTOMATICA del rango real de cada dispositivo dado
+        de alta, contra la API Cloud de Govee (`properties.colorTem.
+        range` en la respuesta de `/v1/devices`) -- a peticion expresa
+        del usuario, para no depender de que el rango generico
+        (MIN_KELVIN/MAX_KELVIN) coincida con lo que el modelo concreto
+        admite de verdad. Best-effort: si la cuenta no responde, o un
+        dispositivo dado de alta no aparece en la lista (SKU/MAC ya no
+        coincide), simplemente se queda sin rango detectado -- nunca
+        bloquea el arranque del plugin."""
+        devices = govee_cloud.list_devices(api_key)
+        if devices is None:
+            return
+        by_mac = {d.get("device"): d for d in devices if d.get("device")}
+        for device_id, (mac, _sku) in list(self._cloud_identity.items()):
+            info = by_mac.get(mac)
+            color_temp = ((info or {}).get("properties") or {}).get("colorTem") or {}
+            rng = color_temp.get("range") or {}
+            if rng.get("min") is not None and rng.get("max") is not None:
+                self.set_color_temp_range(device_id, rng["min"], rng["max"])
 
     def _cloud_status(self, device_id: str, *, fresh: bool = False) -> dict | None:
         """Estado del dispositivo tal y como lo ve la nube, mapeado a los
@@ -448,8 +492,26 @@ class GoveeLightHandle:
         # ahora mismo" (mismo criterio que `_color_temp_active` de TP-Link).
         return int(kelvin) if kelvin else None
 
+    @property
+    def color_temp_range(self) -> tuple[int, int] | None:
+        """Rango REAL de este dispositivo si se detecto contra la cuenta
+        cloud (ver `GoveeDeviceManager.detect_color_temp_ranges`,
+        `properties.colorTem.range` de la API oficial) -- confirmado en
+        produccion que varia por modelo (H6008: 2700-6500K, no el
+        generico 2000-9000K que asumia el protocolo LAN reimplementado
+        aqui). `None` si no se ha podido detectar (sin api_key, cuenta
+        sin ese dispositivo, o fallo de red) -- quien llama decide el
+        fallback."""
+        return self._manager.color_temp_range(self._device_id)
+
     def turn_on(self, brightness_pct: float | None = None, color_temp_kelvin: float | None = None,
                 hs: tuple[float, float] | None = None) -> None:
+        if color_temp_kelvin is not None:
+            rng = self.color_temp_range
+            if rng is not None:
+                color_temp_kelvin = max(rng[0], min(rng[1], round(color_temp_kelvin)))
+            else:
+                color_temp_kelvin = max(MIN_KELVIN, min(MAX_KELVIN, round(color_temp_kelvin)))
         if self._manager.connected(self._device_id):
             self._manager.turn_on(self._device_id, brightness_pct=brightness_pct, color_temp_kelvin=color_temp_kelvin, hs=hs)
             return

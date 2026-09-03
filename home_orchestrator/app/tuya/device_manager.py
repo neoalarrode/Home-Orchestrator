@@ -26,6 +26,8 @@ from .discovery import DiscoveredDevice, PersistentDiscovery
 from .discovery import active_scan as discovery_active_scan
 from .identify import identify as identify_unknown
 from .profile import (
+    LIGHT_WHITE_MAX_KELVIN,
+    LIGHT_WHITE_MIN_KELVIN,
     ClimateMapping,
     DeviceProfile,
     LightMapping,
@@ -568,6 +570,22 @@ class TuyaLightHandle:
             return None
         mireds = light_dp_to_mireds(raw, m)
         return round(1_000_000 / mireds) if mireds else None
+
+    @property
+    def color_temp_range(self) -> tuple[int, int] | None:
+        """`None` si este dispositivo no tiene DP de temperatura de
+        color -- si lo tiene, SIEMPRE la misma pareja fija
+        (`LIGHT_WHITE_MIN_KELVIN`/`MAX_KELVIN`, ver profile.py): el
+        protocolo LAN de Tuya no expone el Kelvin real de cada modelo,
+        solo una escala interna 0..`color_temp_max` propia del
+        fabricante -- la conversion de aqui (`mireds_to_light_dp`/
+        `light_dp_to_mireds`) YA asume ese rango fijo para los dos
+        sentidos, asi que es el mismo limite que Lighting debe conocer
+        para no pedir un Kelvin que la conversion recortaria en
+        silencio sin que la curva de la zona se entere."""
+        if self._mapping.color_temp_dp is None:
+            return None
+        return (LIGHT_WHITE_MIN_KELVIN, LIGHT_WHITE_MAX_KELVIN)
 
     def turn_on(self, brightness_pct: float | None = None, color_temp_kelvin: float | None = None,
                 hs: tuple[float, float] | None = None) -> None:

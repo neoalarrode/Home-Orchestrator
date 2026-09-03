@@ -579,6 +579,21 @@ class TplinkLightHandle:
             )
             return None
 
+    @property
+    def color_temp_range(self) -> tuple[int, int] | None:
+        """Rango REAL de este dispositivo en concreto -- python-kasa ya
+        lo conoce por modelo (`Light.valid_temperature_range`, lo mismo
+        que ya usa `turn_on` de aqui abajo para recortar). `None` si el
+        modelo no soporta temperatura de color en absoluto."""
+        light = self._light()
+        if not light or not light.is_variable_color_temp:
+            return None
+        try:
+            lo, hi = light.valid_temperature_range
+            return (int(lo), int(hi))
+        except (KeyError, TypeError, ValueError):
+            return None
+
     def turn_on(self, brightness_pct: float | None = None, color_temp_kelvin: float | None = None,
                 hs: tuple[float, float] | None = None) -> None:
         self._manager.turn_on(self._device_id, brightness_pct=brightness_pct, color_temp_kelvin=color_temp_kelvin, hs=hs)

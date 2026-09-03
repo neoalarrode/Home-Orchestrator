@@ -337,6 +337,25 @@ class ZoneRunner:
                 handle = self._resolve_bridge_handle(entity_id)
                 if handle is None:
                     return
+                # BUG REAL, confirmado en produccion: la curva solar de la
+                # zona no sabe (ni tiene por que saber) el limite fisico
+                # real de CADA bombilla -- un min/max_color_temp_kelvin de
+                # zona generico puede pedir un Kelvin que un modelo
+                # concreto no admite (Govee H6008: 2700-6500K real, no el
+                # 2000-9000K generico; la API lo rechazaba con 400 y la
+                # luz se quedaba sin brillo ni color aplicados). Cada
+                # bridge conoce su propio rango real si puede saberlo
+                # (Govee: detectado contra su Cloud API; TP-Link: python-
+                # kasa ya lo reporta por modelo; Tuya: el rango fijo
+                # asumido por la conversion mireds<->DP, ver profile.py) y
+                # lo expone via `color_temp_range` -- se recorta AQUI,
+                # antes de mandar nada, para que la zona nunca dependa de
+                # que su propio min/max este bien puesto para CADA luz.
+                if color_temp_kelvin is not None:
+                    handle_range = getattr(handle, "color_temp_range", None)
+                    if handle_range is not None:
+                        lo, hi = handle_range
+                        color_temp_kelvin = max(lo, min(hi, round(color_temp_kelvin)))
                 handle.turn_on(brightness_pct=brightness_pct, color_temp_kelvin=color_temp_kelvin, hs=hs)
             else:
                 service_data: dict = {}

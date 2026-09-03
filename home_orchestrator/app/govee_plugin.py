@@ -149,7 +149,13 @@ class GoveePlugin(Plugin):
         def _save_account():
             payload = flask.request.get_json(force=True) or {}
             govee_store.save_account({"api_key": payload.get("api_key", "")})
-            self._manager.set_cloud_api_key(govee_store.load_account().get("api_key"))
+            api_key = govee_store.load_account().get("api_key")
+            self._manager.set_cloud_api_key(api_key)
+            if api_key:
+                try:
+                    self._manager.detect_color_temp_ranges(api_key)
+                except Exception:
+                    log.exception("Govee: fallo detectando el rango real de temperatura de color")
             return flask.jsonify({"ok": True})
 
         @app.post("/api/discover_cloud")
@@ -203,6 +209,22 @@ class GoveePlugin(Plugin):
         devices = govee_store.load_devices()
         for device in devices:
             self._start_device(device)
+        # Deteccion AUTOMATICA del rango real de temperatura de color de
+        # cada bombilla, a peticion expresa del usuario (BUG REAL,
+        # confirmado en produccion: un H6008 solo admite 2700-6500K, muy
+        # por debajo del generico 2000-9000K que asumia el protocolo LAN
+        # -- pedirle un Kelvin fuera de su rango real lo rechaza la API
+        # con 400). DESPUES de dar de alta los dispositivos (necesita
+        # `_cloud_identity` ya poblada, ver `_start_device`). Best-effort:
+        # sin api_key, o si la cuenta cloud no responde, sencillamente no
+        # se detecta nada y cada dispositivo se queda con el fallback
+        # generico (ver `GoveeLightHandle.color_temp_range`).
+        api_key = govee_store.load_account().get("api_key")
+        if api_key:
+            try:
+                self._manager.detect_color_temp_ranges(api_key)
+            except Exception:
+                log.exception("Govee: fallo detectando el rango real de temperatura de color")
         log.info("Plugin Govee arrancado con %d dispositivo(s)", len(devices))
 
     def _start_device(self, device: dict) -> None:
