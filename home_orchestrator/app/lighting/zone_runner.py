@@ -225,8 +225,24 @@ class ZoneRunner:
             float(target_lux_cfg) if target_lux_cfg is not None else schedule.DEFAULT_TARGET_LUX,
             was_dark_enough,
         )
-        if was_dark_enough is None or candidate == was_dark_enough:
+        if was_dark_enough is None:
             self._state["lux_state_changed_ts"] = now
+            return candidate
+        if candidate == was_dark_enough:
+            # BUG REAL, confirmado en produccion (Dormitorio: se hizo de
+            # noche de verdad, lux cayo a 1, la zona seguia en "hay luz de
+            # sobra" indefinidamente): esta rama NO puede tocar
+            # `lux_state_changed_ts` -- antes lo hacia en CADA ciclo que
+            # confirmaba "sin cambio", asi que con el trigger reactivo
+            # corriendo cada pocos segundos ese timestamp se deslizaba casi
+            # continuamente hacia "ahora mismo". Cuando por fin llegaba una
+            # lectura de cambio real (verdadero anochecer), el margen de
+            # `LUX_STATE_MIN_INTERVAL_SECONDS` se media contra ese
+            # timestamp recien deslizado, nunca contra el ultimo cambio DE
+            # VERDAD -- la transicion quedaba practicamente bloqueada para
+            # siempre en vez de retrasada 60s. El timestamp solo debe
+            # marcar la ULTIMA TRANSICION ACEPTADA (o la primera lectura,
+            # arriba), nunca una confirmacion de que nada ha cambiado.
             return candidate
         last_change = self._state.get("lux_state_changed_ts")
         if last_change is not None and (now - last_change) < LUX_STATE_MIN_INTERVAL_SECONDS:
