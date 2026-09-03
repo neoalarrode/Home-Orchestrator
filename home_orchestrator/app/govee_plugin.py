@@ -208,27 +208,32 @@ class GoveePlugin(Plugin):
     def _start_device(self, device: dict) -> None:
         cfg = device["config"]
         self._manager.set_cloud_identity(device["id"], cfg.get("govee_device_mac"), cfg.get("govee_sku"))
-        if not cfg.get("host"):
-            # Dispositivo dado de alta SOLO por la nube (nunca visto en
-            # LAN, o modelo sin soporte LAN) -- valido si tiene identidad
-            # cloud, ya registrada arriba; sin eso, no hay forma de
-            # controlarlo por ningun camino.
-            if not (cfg.get("govee_device_mac") and cfg.get("govee_sku")):
-                log.warning("Dispositivo Govee '%s' sin host ni identidad cloud -- no se puede controlar", cfg.get("name") or device["id"])
-            return
-        # Mismo patron ya corregido en Shelly/Tuya/TP-Link: un fallo dando de
-        # alta UN dispositivo (poco probable aqui, `add_device` solo hace un
-        # `sendto` UDP ya protegido, pero cualquier error inesperado) no debe
-        # abortar el bucle de `start_background_threads` y dejar sin arrancar
-        # al resto de dispositivos Govee.
-        try:
-            self._manager.add_device(device["id"], cfg["host"])
-        except Exception:
-            log.exception("Fallo dando de alta el dispositivo Govee '%s'", cfg.get("name") or cfg["host"])
+        has_cloud_identity = bool(cfg.get("govee_device_mac") and cfg.get("govee_sku"))
+        if cfg.get("host"):
+            # Mismo patron ya corregido en Shelly/Tuya/TP-Link: un fallo dando de
+            # alta UN dispositivo (poco probable aqui, `add_device` solo hace un
+            # `sendto` UDP ya protegido, pero cualquier error inesperado) no debe
+            # abortar el bucle de `start_background_threads` y dejar sin arrancar
+            # al resto de dispositivos Govee.
+            try:
+                self._manager.add_device(device["id"], cfg["host"])
+            except Exception:
+                log.exception("Fallo dando de alta el dispositivo Govee '%s'", cfg.get("name") or cfg["host"])
+        elif not has_cloud_identity:
+            # Sin host LAN NI identidad de cuenta -- no hay forma de
+            # controlar este dispositivo por ningun camino.
+            log.warning("Dispositivo Govee '%s' sin host ni identidad cloud -- no se puede controlar", cfg.get("name") or device["id"])
             return
 
+        # BUG REAL, corregido antes de llegar a produccion: esto vivia
+        # DENTRO del bloque `if cfg.get("host")` de arriba -- un
+        # dispositivo dado de alta SOLO por la nube (sin host LAN) nunca
+        # llegaba a esta comprobacion, asi que `expose_mqtt` no hacia
+        # nada para el (la bombilla quedaba controlable desde Lighting
+        # pero invisible en Home Assistant). LAN o cloud, la exposicion a
+        # HA es una decision independiente de por donde se controla.
         if cfg.get("expose_mqtt"):
-            mqtt_dev = MqttGoveeDevice(self._mqtt, self._manager, device["id"], cfg.get("name") or cfg["host"])
+            mqtt_dev = MqttGoveeDevice(self._mqtt, self._manager, device["id"], cfg.get("name") or cfg.get("host") or device["id"])
             mqtt_dev.publish_discovery()
             # Mismo bug ya corregido en Tuya/TP-Link que se evita desde el
             # principio aqui: sin este publish_state() inicial, la
