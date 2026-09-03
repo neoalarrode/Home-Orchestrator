@@ -154,3 +154,31 @@ def set_discharging_task(
         extra["power_limit_w"] = power_limit_w
     resp = ha_client.call_service_with_response(DOMAIN, "set_discharging_task", extra, timeout=BLE_CALL_TIMEOUT_SECONDS)
     return bool(resp and resp.get("ok"))
+
+
+# Cuatro controles adicionales del STREAM (ver eflib/devices/stream_ac*.py
+# en Battery-Orchestrator-BLE-Bridge, vendorizado de rabits/ha-ef-ble) —
+# mismo patron de servicio HA que los dos de arriba. Requieren que el
+# puente tenga registrados los servicios correspondientes (ver ese repo).
+def set_backup_reserve(address: str, user_id: str, pct: float) -> bool:
+    extra = {"brand": BRAND, "address": address, "credentials": {"user_id": user_id}, "pct": pct}
+    resp = ha_client.call_service_with_response(DOMAIN, "set_backup_reserve", extra, timeout=BLE_CALL_TIMEOUT_SECONDS)
+    return bool(resp and resp.get("ok"))
+
+
+def set_feed_grid(address: str, user_id: str, enable: bool) -> bool:
+    extra = {"brand": BRAND, "address": address, "credentials": {"user_id": user_id}, "enable": enable}
+    resp = ha_client.call_service_with_response(DOMAIN, "set_feed_grid", extra, timeout=BLE_CALL_TIMEOUT_SECONDS)
+    return bool(resp and resp.get("ok"))
+
+
+def set_outlet(address: str, user_id: str, outlet: int, enable: bool) -> bool:
+    extra = {"brand": BRAND, "address": address, "credentials": {"user_id": user_id}, "outlet": outlet, "enable": enable}
+    resp = ha_client.call_service_with_response(DOMAIN, "set_outlet", extra, timeout=BLE_CALL_TIMEOUT_SECONDS)
+    return bool(resp and resp.get("ok"))
+
+
+def set_grid_import_limit(address: str, user_id: str, watts: float) -> bool:
+    extra = {"brand": BRAND, "address": address, "credentials": {"user_id": user_id}, "watts": watts}
+    resp = ha_client.call_service_with_response(DOMAIN, "set_grid_import_limit", extra, timeout=BLE_CALL_TIMEOUT_SECONDS)
+    return bool(resp and resp.get("ok"))

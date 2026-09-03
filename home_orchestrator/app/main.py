@@ -5,7 +5,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 from flask import Flask, Response, jsonify, request, send_from_directory
@@ -88,6 +88,13 @@ _reactive_trigger = ha_websocket.ReactiveTrigger(lambda: _run_cycle_locked())
 # su propia clave, y solo se le avisa de las entidades que EL vigila.
 _ha_ws_client = ha_websocket.shared()
 _ha_ws_client.subscribe("battery", lambda entity_id, new_state: _reactive_trigger.trigger())
+# Un cambio de SOC/potencia que llega por el feed MQTT de EcoFlow (fuera de
+# cualquier sensor de HA vigilado, ver `_watched_entities_from_cfg`) no
+# disparaba por si solo una reevaluacion -- esperaba al backstop periodico
+# o a que cambiara algun otro sensor mientras tanto. El dato en si ya era
+# en vivo (feed MQTT continuo, `_live_sensor_loop` cada 10s); lo que
+# faltaba era enganchar ESE canal al mismo disparador reactivo.
+ecoflow_cloud.set_live_update_callback(lambda: _reactive_trigger.trigger())
 
 _state_lock = threading.Lock()
 _last_status = {
@@ -1079,6 +1086,46 @@ def run_cycle():
     )
     log_lines = battery_exec.execute(batteries, distribution, dry_run=dry_run)
 
+    # Backstop AUTOMATICO de limite de importacion de red para baterias
+    # EcoFlow con `ecoflow_allow_grid_import_limit` -- a peticion expresa
+    # del usuario, para que aunque haya varias baterias cargando de red a
+    # la vez, la importacion total nunca haga que el consumo de la
+    # vivienda supere la potencia contratada (margen del 10%). Reutiliza
+    # `contracted_power_w`/el consumo en vivo ya calculados mas arriba
+    # para la señal de red, y `_round_preserving_sum` (mismo reparto de
+    # mayor resto que usa `plan_distribution`). No es dry_run-aware a
+    # proposito: si `dry_run` esta activo el usuario esta simulando el
+    # PLAN de carga/descarga, no las salvaguardas de seguridad del
+    # equipo real -- pero como estas nunca se activan si no hay baterias
+    # con el flag puesto, en la practica no manda nada mientras nadie lo
+    # autorice.
+    if not dry_run:
+        try:
+            contracted_power_w_limit = float(cfg["general"].get("contracted_power_w") or 0)
+            if contracted_power_w_limit > 0:
+                current_load_for_limit_w = live_base_load_w if live_base_load_w is not None else load_forecast[0]
+                budget_w = max(0.0, contracted_power_w_limit * 0.9 - current_load_for_limit_w)
+                b_cfg_by_id = {x["id"]: x for x in cfg["batteries"]}
+                eligible = [
+                    b for b in batteries
+                    if b.source == "ecoflow" and b_cfg_by_id.get(b.id, {}).get("ecoflow_allow_grid_import_limit")
+                ]
+                if eligible:
+                    shares = battery_exec._round_preserving_sum(
+                        {b.id: budget_w / len(eligible) for b in eligible}, budget_w
+                    )
+                    now_ts = datetime.now(timezone.utc)
+                    for b in eligible:
+                        debounce_key = f"{b.id}:grid_import_limit"
+                        signature = ("grid_import_limit", shares[b.id])
+                        if battery_exec._command_send_allowed(debounce_key, signature, now_ts):
+                            if b.ecoflow_set_grid_import_limit(shares[b.id]):
+                                battery_exec._note_command(debounce_key, signature, now_ts)
+                            else:
+                                log.warning(f"No se pudo aplicar el limite de importacion de red a {b.name}")
+        except Exception as e:  # nunca tumbar el ciclo por este backstop
+            log.warning(f"No se pudo aplicar el backstop de limite de importacion de red: {e}")
+
     for line in log_lines:
         log.info(line)
     log.info(f"Hora actual: {now_hp.tier} ({now_hp.price} EUR/kWh) - {now_hp.reason}")
@@ -1793,6 +1840,61 @@ def api_delete_battery(battery_id):
     cfg = config_store.load_config()
     ok = config_store.delete_battery(cfg, battery_id)
     return jsonify({"deleted": ok})
+
+
+def _ecoflow_battery_for_manual_control(cfg: dict, battery_id: str):
+    """Resuelve la entrada de config + el `battery_exec.Battery` de una
+    bateria EcoFlow para uno de los tres controles MANUALES (reserva,
+    vertido, salida AC) -- o `(None, None, <razon>)` si no procede,
+    para que el endpoint que llama decida el codigo HTTP."""
+    b_cfg = next((x for x in cfg["batteries"] if x["id"] == battery_id), None)
+    if b_cfg is None:
+        return None, None, "no encontrada"
+    if b_cfg.get("source") != "ecoflow":
+        return None, None, "no es una bateria EcoFlow"
+    if not b_cfg.get("ecoflow_allow_manual_controls"):
+        return None, None, "controles manuales no autorizados para esta bateria"
+    return b_cfg, _battery_from_cfg(b_cfg, cfg), None
+
+
+@app.post("/api/batteries/<battery_id>/ecoflow/backup_reserve")
+def api_ecoflow_set_backup_reserve(battery_id):
+    cfg = config_store.load_config()
+    _, battery, error = _ecoflow_battery_for_manual_control(cfg, battery_id)
+    if error:
+        return jsonify({"error": error}), 403 if "autorizados" in error else 404
+    pct = request.get_json(force=True).get("pct")
+    if pct is None:
+        return jsonify({"error": "falta 'pct'"}), 400
+    ok = battery.ecoflow_set_backup_reserve(float(pct))
+    return jsonify({"ok": ok}), 200 if ok else 502
+
+
+@app.post("/api/batteries/<battery_id>/ecoflow/feed_grid")
+def api_ecoflow_set_feed_grid(battery_id):
+    cfg = config_store.load_config()
+    _, battery, error = _ecoflow_battery_for_manual_control(cfg, battery_id)
+    if error:
+        return jsonify({"error": error}), 403 if "autorizados" in error else 404
+    enable = request.get_json(force=True).get("enable")
+    if enable is None:
+        return jsonify({"error": "falta 'enable'"}), 400
+    ok = battery.ecoflow_set_feed_grid(bool(enable))
+    return jsonify({"ok": ok}), 200 if ok else 502
+
+
+@app.post("/api/batteries/<battery_id>/ecoflow/outlet")
+def api_ecoflow_set_outlet(battery_id):
+    cfg = config_store.load_config()
+    _, battery, error = _ecoflow_battery_for_manual_control(cfg, battery_id)
+    if error:
+        return jsonify({"error": error}), 403 if "autorizados" in error else 404
+    payload = request.get_json(force=True)
+    outlet, enable = payload.get("outlet"), payload.get("enable")
+    if outlet not in (1, 2) or enable is None:
+        return jsonify({"error": "faltan 'outlet' (1 o 2) y/o 'enable'"}), 400
+    ok = battery.ecoflow_set_outlet(int(outlet), bool(enable))
+    return jsonify({"ok": ok}), 200 if ok else 502
 
 
 def _force_hybrid_if_ecoflow(array: dict) -> dict:

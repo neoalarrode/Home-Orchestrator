@@ -354,6 +354,12 @@ class EcoFlowCloudClient:
                 self._all_timer_task[sn] = payload["allTimerTask"]
                 self._all_timer_task_ts[sn] = time.time()
 
+        if _live_update_callback is not None:
+            try:
+                _live_update_callback()
+            except Exception:
+                log.exception("Fallo en el callback de actualizacion en vivo de EcoFlow")
+
     # -- lectura ------------------------------------------------------------
 
     def get_live_state(self, sn: str, required_fields: tuple[str, ...] | None = None) -> dict | None:
@@ -495,6 +501,28 @@ class EcoFlowCloudClient:
         necesitan leer nada antes, se mandan directos."""
         return self._publish_set(main_sn, {key: value})
 
+    def set_backup_reserve(self, main_sn: str, pct: float) -> bool:
+        """Reserva de emergencia (% de SOC que el STREAM se guarda como
+        colchon ante corte de red) — control MANUAL, requiere
+        `ecoflow_allow_manual_controls` en la bateria que lo llame."""
+        return self.set_simple(main_sn, "cfgBackupReverseSoc", int(pct))
+
+    def set_feed_grid(self, main_sn: str, enable: bool) -> bool:
+        """Vertido a red on/off. Control MANUAL."""
+        return self.set_simple(main_sn, "cfgFeedGridMode", 2 if enable else 1)
+
+    def set_outlet(self, main_sn: str, outlet: int, enable: bool) -> bool:
+        """Salida AC 1 o 2 del STREAM (relay2/relay3 en el protocolo).
+        Control MANUAL."""
+        return self.set_simple(main_sn, f"cfgRelay{outlet + 1}Onoff", enable)
+
+    def set_grid_import_limit(self, main_sn: str, watts: float) -> bool:
+        """Limite de potencia que el equipo puede tirar de la red para
+        cargar. Usado tanto por el backstop AUTOMATICO
+        (`ecoflow_allow_grid_import_limit`) como, si se expone, de forma
+        manual."""
+        return self.set_simple(main_sn, "cfgSysGridInPwrLimit", int(watts))
+
 
 # --------------------------------------------------------------------------
 # Un cliente MQTT por credenciales, reutilizado mientras el proceso viva —
@@ -503,6 +531,22 @@ class EcoFlowCloudClient:
 
 _clients: dict[tuple[str, str], EcoFlowCloudClient] = {}
 _clients_lock = threading.Lock()
+
+# Callback OPCIONAL que `main.py` engancha a `_reactive_trigger.trigger()`
+# (ver ha_websocket.ReactiveTrigger) -- avisado cada vez que llega una
+# actualizacion de /quota de CUALQUIER cuenta/dispositivo. El dato de
+# EcoFlow ya es en vivo (feed MQTT continuo); lo unico que faltaba era que
+# ese cambio disparase una reevaluacion del ciclo al instante, en vez de
+# esperar al backstop periodico o a que cambiara algun sensor de HA
+# vigilado. Global de modulo (no por cliente) porque solo hay UN
+# `_reactive_trigger` por proceso, sin importar cuantas cuentas EcoFlow
+# distintas haya configuradas.
+_live_update_callback = None
+
+
+def set_live_update_callback(callback) -> None:
+    global _live_update_callback
+    _live_update_callback = callback
 
 
 def get_client(access_key: str, secret_key: str) -> EcoFlowCloudClient | None:

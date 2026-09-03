@@ -8,12 +8,37 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import ecoflow_ble
 import ecoflow_cloud
 import ha_client
 
 log = logging.getLogger("battery_exec")
+
+# Debounce de comando (no de ciclo): si `execute()` se llama en rafaga para
+# la misma bateria con la MISMA orden (mismo action + misma potencia), no
+# se reenvia mas de una vez cada COMMAND_DEBOUNCE_SECONDS -- evita machacar
+# EcoFlow (cloud/BLE) o los switch.* reales con ordenes repetidas mientras
+# el equipo todavia esta aplicando la anterior (la lectura de estado tarda
+# en reflejarlo). Un cambio REAL de orden (accion o potencia distintas) se
+# manda siempre al instante, sin esperar el debounce -- mismo criterio que
+# `_delegate_send_allowed`/`_note_delegate_command` en climate/zone_runner.py,
+# adaptado a firma de comando en vez de puro tiempo transcurrido.
+COMMAND_DEBOUNCE_SECONDS = 8.0
+
+_last_command: dict[str, dict] = {}
+
+
+def _command_send_allowed(battery_id: str, signature: tuple, now: datetime) -> bool:
+    last = _last_command.get(battery_id)
+    if last is None or last["signature"] != signature:
+        return True
+    return (now - last["sent_at"]).total_seconds() >= COMMAND_DEBOUNCE_SECONDS
+
+
+def _note_command(battery_id: str, signature: tuple, now: datetime) -> None:
+    _last_command[battery_id] = {"signature": signature, "sent_at": now}
 
 # Campos del estado en vivo de EcoFlow Cloud que pueden traer el SOC, por
 # orden de preferencia. IMPORTANTE: "cmsBattSoc" es el SOC AGREGADO de
@@ -242,6 +267,94 @@ class Battery:
             return via_ble() or via_cloud()
         return via_cloud()
 
+    # Cuatro controles EcoFlow adicionales (reserva de emergencia, vertido a
+    # red, salidas AC, limite de importacion de red) — MISMO patron
+    # via_ble/via_cloud que carga/descarga de arriba. A diferencia de esas
+    # dos, estos no los llama `execute()` en cada ciclo: los tres primeros
+    # solo se disparan a mano desde la interfaz (endpoints protegidos por
+    # `ecoflow_allow_manual_controls`) y el cuarto solo desde el backstop
+    # automatico de `run_cycle` (protegido por `ecoflow_allow_grid_import_limit`)
+    # — ver main.py.
+    def ecoflow_set_backup_reserve(self, pct: float) -> bool:
+        def via_ble() -> bool:
+            if not (self.ecoflow_ble_address and self.ecoflow_user_id):
+                return False
+            return ecoflow_ble.set_backup_reserve(self.ecoflow_ble_address, self.ecoflow_user_id, pct)
+
+        def via_cloud() -> bool:
+            if not (self.ecoflow_access_key and self.ecoflow_secret_key and self.ecoflow_main_sn):
+                return False
+            client = ecoflow_cloud.get_client(self.ecoflow_access_key, self.ecoflow_secret_key)
+            if client is None:
+                return False
+            return client.set_backup_reserve(self.ecoflow_main_sn, pct)
+
+        if self.ecoflow_mode == "bluetooth":
+            return via_ble()
+        if self.ecoflow_mode == "hybrid":
+            return via_ble() or via_cloud()
+        return via_cloud()
+
+    def ecoflow_set_feed_grid(self, enable: bool) -> bool:
+        def via_ble() -> bool:
+            if not (self.ecoflow_ble_address and self.ecoflow_user_id):
+                return False
+            return ecoflow_ble.set_feed_grid(self.ecoflow_ble_address, self.ecoflow_user_id, enable)
+
+        def via_cloud() -> bool:
+            if not (self.ecoflow_access_key and self.ecoflow_secret_key and self.ecoflow_main_sn):
+                return False
+            client = ecoflow_cloud.get_client(self.ecoflow_access_key, self.ecoflow_secret_key)
+            if client is None:
+                return False
+            return client.set_feed_grid(self.ecoflow_main_sn, enable)
+
+        if self.ecoflow_mode == "bluetooth":
+            return via_ble()
+        if self.ecoflow_mode == "hybrid":
+            return via_ble() or via_cloud()
+        return via_cloud()
+
+    def ecoflow_set_outlet(self, outlet: int, enable: bool) -> bool:
+        def via_ble() -> bool:
+            if not (self.ecoflow_ble_address and self.ecoflow_user_id):
+                return False
+            return ecoflow_ble.set_outlet(self.ecoflow_ble_address, self.ecoflow_user_id, outlet, enable)
+
+        def via_cloud() -> bool:
+            if not (self.ecoflow_access_key and self.ecoflow_secret_key and self.ecoflow_main_sn):
+                return False
+            client = ecoflow_cloud.get_client(self.ecoflow_access_key, self.ecoflow_secret_key)
+            if client is None:
+                return False
+            return client.set_outlet(self.ecoflow_main_sn, outlet, enable)
+
+        if self.ecoflow_mode == "bluetooth":
+            return via_ble()
+        if self.ecoflow_mode == "hybrid":
+            return via_ble() or via_cloud()
+        return via_cloud()
+
+    def ecoflow_set_grid_import_limit(self, watts: float) -> bool:
+        def via_ble() -> bool:
+            if not (self.ecoflow_ble_address and self.ecoflow_user_id):
+                return False
+            return ecoflow_ble.set_grid_import_limit(self.ecoflow_ble_address, self.ecoflow_user_id, watts)
+
+        def via_cloud() -> bool:
+            if not (self.ecoflow_access_key and self.ecoflow_secret_key and self.ecoflow_main_sn):
+                return False
+            client = ecoflow_cloud.get_client(self.ecoflow_access_key, self.ecoflow_secret_key)
+            if client is None:
+                return False
+            return client.set_grid_import_limit(self.ecoflow_main_sn, watts)
+
+        if self.ecoflow_mode == "bluetooth":
+            return via_ble()
+        if self.ecoflow_mode == "hybrid":
+            return via_ble() or via_cloud()
+        return via_cloud()
+
 
 def _distribute(total_w: float, items: list[tuple[Battery, float, float]]) -> dict[str, float]:
     """
@@ -404,6 +517,7 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
     log_lines = []
     action = distribution["action"]
     by_id = {b.id: b for b in batteries}
+    now = datetime.now(timezone.utc)
 
     for entry in distribution["per_battery"]:
         b = by_id[entry["id"]]
@@ -438,6 +552,7 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
         is_ecoflow = b.source == "ecoflow"
 
         if action == "charge" and entry["enabled"]:
+            signature = ("charge", round(power))
             line = f"[{b.name}] CARGAR a {power:.0f} W ({entry['note']}, SOC {soc_txt})"
             if is_ecoflow:
                 def apply(b=b, power=power):
@@ -451,6 +566,7 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
                     if b.charge_power_limit_entity:
                         ha_client.set_number(b.charge_power_limit_entity, power)
         elif action == "discharge" and entry["enabled"]:
+            signature = ("discharge", round(power))
             line = f"[{b.name}] DESCARGA activada, limite {power:.0f} W ({entry['note']}, SOC {soc_txt})"
             if is_ecoflow:
                 def apply(b=b, power=power):
@@ -464,6 +580,7 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
                     if b.discharge_power_limit_entity:
                         ha_client.set_number(b.discharge_power_limit_entity, power)
         elif action == "discharge" and not entry["enabled"]:
+            signature = ("discharge_blocked",)
             line = f"[{b.name}] descarga BLOQUEADA a 0W ({entry['note']}, SOC {soc_txt})"
             # Misma exclusividad que la rama "sin accion" de abajo: bloquear
             # la descarga no debe dejar la carga activa de una orden previa
@@ -484,6 +601,7 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
                     else:
                         ha_client.turn_off(b.discharge_switch)
         else:
+            signature = ("none",)
             line = f"[{b.name}] sin accion (SOC {soc_txt})"
             if is_ecoflow:
                 def apply(b=b):
@@ -499,10 +617,14 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
                         ha_client.turn_off(b.discharge_switch)
 
         if not dry_run:
-            try:
-                apply()
-            except Exception as e:
-                line += f" — AVISO: no se pudo aplicar en Home Assistant ({e})"
+            if _command_send_allowed(b.id, signature, now):
+                try:
+                    apply()
+                    _note_command(b.id, signature, now)
+                except Exception as e:
+                    line += f" — AVISO: no se pudo aplicar en Home Assistant ({e})"
+            else:
+                line += " [debounce: misma orden reenviada hace poco, omitida]"
 
         log_lines.append(("[SIMULACION] " if dry_run else "") + line)
 

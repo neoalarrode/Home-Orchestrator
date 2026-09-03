@@ -438,6 +438,9 @@
         <div class="kv" id="b-ecoflow-sn-row" style="display:none"><span data-i18n="kv_ecoflow_sn">Número de serie</span><code id="b-ecoflow-sn-display"></code></div>
         <div class="kv" id="b-ecoflow-address-row" style="display:none"><span data-i18n="kv_ecoflow_address">Dirección Bluetooth</span><code id="b-ecoflow-address-display"></code></div>
       </div>
+
+      <div class="checkline"><input id="b-ecoflow-allow-manual-controls" type="checkbox"><label for="b-ecoflow-allow-manual-controls" data-i18n="label_ecoflow_allow_manual_controls">Permitir que Home Orchestrator controle la reserva de emergencia, el vertido a red y las salidas AC de esta batería</label></div>
+      <div class="checkline"><input id="b-ecoflow-allow-grid-import-limit" type="checkbox"><label for="b-ecoflow-allow-grid-import-limit" data-i18n="label_ecoflow_allow_grid_import_limit">Permitir que Home Orchestrator limite automáticamente la importación de red de esta batería para no superar la potencia contratada</label></div>
     </div>
 
     <div id="b-ecoflow-autofill" style="display:none">
@@ -892,6 +895,8 @@ es: {
   opt_source_ha: "Configuración manual",
   opt_source_ecoflow: "EcoFlow",
   label_ecoflow_mode: "Modo de conexión",
+  label_ecoflow_allow_manual_controls: "Permitir que Home Orchestrator controle la reserva de emergencia, el vertido a red y las salidas AC de esta batería",
+  label_ecoflow_allow_grid_import_limit: "Permitir que Home Orchestrator limite automáticamente la importación de red de esta batería para no superar la potencia contratada",
   opt_ecoflow_mode_bluetooth: "Bluetooth", opt_ecoflow_mode_cloud: "Cloud",
   opt_ecoflow_mode_hybrid: "Híbrido (Bluetooth con Cloud de respaldo)",
   help_ecoflow_cloud_creds: 'Crea un Access Key y Secret Key en <a href="https://developer-eu.ecoflow.com" target="_blank" rel="noopener">developer-eu.ecoflow.com</a> — son de toda tu cuenta, solo hace falta guardarlos una vez.',
@@ -1226,6 +1231,8 @@ en: {
   opt_source_ha: "Manual configuration",
   opt_source_ecoflow: "EcoFlow",
   label_ecoflow_mode: "Connection mode",
+  label_ecoflow_allow_manual_controls: "Allow Home Orchestrator to control this battery's emergency reserve, grid feed-in and AC outlets",
+  label_ecoflow_allow_grid_import_limit: "Allow Home Orchestrator to automatically limit this battery's grid import so the contracted power is never exceeded",
   opt_ecoflow_mode_bluetooth: "Bluetooth", opt_ecoflow_mode_cloud: "Cloud",
   opt_ecoflow_mode_hybrid: "Hybrid (Bluetooth with Cloud fallback)",
   help_ecoflow_cloud_creds: 'Create an Access Key and Secret Key at <a href="https://developer-eu.ecoflow.com" target="_blank" rel="noopener">developer-eu.ecoflow.com</a> — they belong to your whole account, only need saving once.',
@@ -2143,6 +2150,8 @@ function resetBatteryForm() {
   toggleBatteryPowerSensorMode();
   document.getElementById('b-source').value = 'ha';
   document.getElementById('b-ecoflow-mode').value = 'bluetooth';
+  document.getElementById('b-ecoflow-allow-manual-controls').checked = false;
+  document.getElementById('b-ecoflow-allow-grid-import-limit').checked = false;
   document.getElementById('b-ecoflow-name-display').textContent = '';
   document.getElementById('b-ecoflow-sn-display').textContent = '';
   document.getElementById('b-ecoflow-address-display').textContent = '';
@@ -2194,6 +2203,8 @@ function editBattery(id) {
   document.getElementById('b-source').value = source;
   if (source === 'ecoflow') {
     document.getElementById('b-ecoflow-mode').value = b.ecoflow_mode || 'cloud';
+    document.getElementById('b-ecoflow-allow-manual-controls').checked = !!b.ecoflow_allow_manual_controls;
+    document.getElementById('b-ecoflow-allow-grid-import-limit').checked = !!b.ecoflow_allow_grid_import_limit;
     document.getElementById('b-ecoflow-selected').style.display = 'block';
     document.getElementById('b-ecoflow-name-display').textContent = b.name;
     if (b.ecoflow_sn) {
@@ -2249,6 +2260,8 @@ async function addBattery() {
     battery.ecoflow_sn = (ecoflowMode === 'cloud' || ecoflowMode === 'hybrid') ? pendingEcoflowSn : null;
     battery.ecoflow_main_sn = (ecoflowMode === 'cloud' || ecoflowMode === 'hybrid') ? pendingEcoflowMainSn : null;
     battery.ecoflow_ble_address = (ecoflowMode === 'bluetooth' || ecoflowMode === 'hybrid') ? pendingEcoflowAddress : null;
+    battery.ecoflow_allow_manual_controls = document.getElementById('b-ecoflow-allow-manual-controls').checked;
+    battery.ecoflow_allow_grid_import_limit = document.getElementById('b-ecoflow-allow-grid-import-limit').checked;
     battery.soc_sensor = null; battery.charge_switch = null; battery.discharge_switch = null;
     battery.charge_power_limit_entity = null; battery.discharge_power_limit_entity = null;
     battery.power_sensor_mode = null; battery.power_sensor = null; battery.charge_power_sensor = null; battery.net_power_sensor = null;
