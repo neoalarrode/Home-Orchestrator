@@ -44,7 +44,7 @@ IDENTIFY_INTERVAL_SECONDS = 30 * 60
 class TuyaPlugin(Plugin):
     slug = "tuya"
     name = "Tuya Orchestrator"
-    version = "0.4.8"
+    version = "0.4.9"
 
     def __init__(self) -> None:
         self._manager = TuyaDeviceManager(
