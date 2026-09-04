@@ -24,6 +24,8 @@ broker, no una por zona.
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 
 import ha_mqtt
 
@@ -31,6 +33,18 @@ DISCOVERY_PREFIX = "homeassistant"
 NODE_ID = "home_orchestrator_lighting"
 
 log = logging.getLogger("lighting.mqtt")
+
+
+def _room_device_id(name: str) -> str:
+    """IDENTICA a `climate/mqtt_climate.py:_room_device_id` a proposito --
+    ver su docstring para el porque (fusionar en un solo dispositivo de
+    HA las entidades de Climate/Lighting/Persianas de la MISMA zona,
+    identificadas por su nombre normalizado en vez del `zone_id` interno
+    aleatorio). Si esta normalizacion diverge entre plugins, dos zonas
+    con el mismo nombre dejan de fusionarse."""
+    normalized = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode("ascii")
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized.lower()).strip("_")
+    return normalized or "sin_nombre"
 
 
 class MqttLightingZone:
@@ -123,10 +137,12 @@ class MqttLightingZone:
             "color_mode_state_topic": f"{t}/color_mode/state",
             "availability_topic": f"{t}/availability",
             "device": {
-                "identifiers": [f"home_orchestrator_lighting_{self.zone_id}"],
+                "identifiers": [f"home_orchestrator_room_{_room_device_id(self.zone_name)}"],
                 "name": self.zone_name,
                 "manufacturer": "neoalarrode",
-                "model": "Home Orchestrator — Lighting",
+                # SIN sufijo de plugin ("— Lighting") a proposito -- ver
+                # el comentario de `_room_device_id`.
+                "model": "Home Orchestrator",
             },
         }
         self._mqtt.publish(f"{t}/config", payload, retain=True)

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import unicodedata
 
 import ha_mqtt
 
@@ -25,6 +27,31 @@ DISCOVERY_PREFIX = "homeassistant"
 NODE_ID = "home_orchestrator_climate"
 
 log = logging.getLogger("climate.mqtt")
+
+
+def _room_device_id(name: str) -> str:
+    """Identificador ESTABLE del dispositivo de HA de esta zona, derivado
+    de su NOMBRE -- no del `zone_id` interno (un UUID aleatorio, distinto
+    en cada plugin aunque el usuario le ponga el mismo nombre a dos
+    zonas). A peticion expresa del usuario: una zona "Salon" en Climate y
+    otra "Salon" en Lighting (y manana en el futuro plugin de Persianas)
+    deben aparecer como UN solo dispositivo de HA con varias entidades,
+    no como dos/tres dispositivos separados con el mismo nombre --
+    MISMOS `identifiers` en el bloque "device" de MQTT Discovery, que HA
+    fusiona el solo, es el propio mecanismo del estandar, no hace falta
+    nada especial en Home Assistant.
+
+    IDENTICA en `lighting/mqtt_lighting.py` (y la que tenga el futuro
+    plugin de Persianas) a proposito -- si la normalizacion diverge entre
+    plugins, dos zonas con el mismo nombre dejan de fusionarse.
+
+    Riesgo aceptado explicitamente por el usuario: al basarse en el
+    NOMBRE en vez del `zone_id`, renombrar una zona crea un dispositivo
+    NUEVO en HA -- el viejo se queda huerfano sin entidades, hay que
+    borrarlo a mano desde Ajustes -> Dispositivos."""
+    normalized = unicodedata.normalize("NFKD", name or "").encode("ascii", "ignore").decode("ascii")
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized.lower()).strip("_")
+    return normalized or "sin_nombre"
 
 
 class MqttClimateZone:
@@ -154,10 +181,15 @@ class MqttClimateZone:
             "temp_step": 0.5,
             "availability_topic": f"{t}/availability",
             "device": {
-                "identifiers": [f"home_orchestrator_climate_{self.zone_id}"],
+                "identifiers": [f"home_orchestrator_room_{_room_device_id(self.zone_name)}"],
                 "name": self.zone_name,
                 "manufacturer": "neoalarrode",
-                "model": "Home Orchestrator — Climate",
+                # SIN sufijo de plugin ("— Climate") a proposito -- ahora
+                # es un dispositivo COMPARTIDO con Lighting (y manana
+                # Persianas) para la misma zona, un "model" distinto por
+                # plugin solo haria que el campo parpadeara entre valores
+                # segun cual publique ultimo.
+                "model": "Home Orchestrator",
             },
         }
         self._mqtt.publish(f"{t}/config", payload, retain=True)
