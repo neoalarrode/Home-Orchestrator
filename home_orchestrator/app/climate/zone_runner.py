@@ -293,17 +293,35 @@ class ZoneRunner:
         # el unico punto donde el problema puede salir a la luz.
         self._presets_error: str | None = None
         presets_text = (self.zone.get(CONF_PRESETS_TEXT, "") or "").strip()
-        try:
-            self._presets = presets_module.parse_presets(presets_text)
-        except ValueError as e:
+        # Una zona sin NINGUN actuador de calor/frio declarado (solo
+        # extractor de vapor y/o humidificador -- mismo "capacidad vacia
+        # LEGITIMA y PERMANENTE" que ya reconoce `_capability_still_pending`
+        # mas abajo) no tiene NADA a lo que aplicar la consigna de un
+        # preset -- exigir uno igualmente solo producia un ERROR en el log
+        # en cada arranque, para siempre, sin que hubiera nada que
+        # corregir de verdad (confirmado en produccion: zona "Bano Arriba",
+        # solo extractor). Si el usuario SI ha escrito algo en
+        # `presets_text` (aunque la zona no tenga actuadores todavia, por
+        # si los añade mas tarde) se sigue validando con normalidad --
+        # esto solo salta la obligacion de declarar UNO, no la validacion
+        # del texto si lo hay.
+        has_heat_cool_actuators = bool(
+            self.zone.get(CONF_HEAT_SWITCHES) or self.zone.get(CONF_COOL_SWITCHES) or self.zone.get(CONF_CLIMATE_ENTITIES)
+        )
+        if not has_heat_cool_actuators and not presets_text:
             self._presets = []
-            self._presets_error = str(e)
-            _LOGGER.error(
-                "zona «%s»: no se pueden leer los preajustes declarados (%s) — %s. "
-                "La zona seguira siendo controlable con consignas de respaldo, pero "
-                "revisa el texto de preajustes en la configuracion de la zona.",
-                self.zone.get("name") or zone_id, presets_text or "(vacio)", e,
-            )
+        else:
+            try:
+                self._presets = presets_module.parse_presets(presets_text)
+            except ValueError as e:
+                self._presets = []
+                self._presets_error = str(e)
+                _LOGGER.error(
+                    "zona «%s»: no se pueden leer los preajustes declarados (%s) — %s. "
+                    "La zona seguira siendo controlable con consignas de respaldo, pero "
+                    "revisa el texto de preajustes en la configuracion de la zona.",
+                    self.zone.get("name") or zone_id, presets_text or "(vacio)", e,
+                )
         self._preset_modes = [presets_module.PRESET_AUTO, presets_module.PRESET_MANUAL] + [p["name"] for p in self._presets]
         self._preset_mode = presets_module.PRESET_AUTO
 
