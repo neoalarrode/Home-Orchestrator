@@ -260,6 +260,21 @@
         <input type="checkbox" id="zf-respect-manual" checked>
         <label for="zf-respect-manual">Respetar brillo/color cambiados a mano (no lo pisa hasta que la luz se vuelva a encender)</label>
       </div>
+      <div class="checkline">
+        <input type="checkbox" id="zf-boost-enabled">
+        <label for="zf-boost-enabled">Subir el brillo al máximo si hay presencia sostenida</label>
+      </div>
+      <div class="grid2">
+        <div>
+          <label for="zf-boost-seconds">Presencia continua durante (segundos)</label>
+          <input id="zf-boost-seconds" type="number" step="1" min="1" value="30">
+        </div>
+        <div>
+          <label for="zf-boost-brightness">Brillo al activarse (%)</label>
+          <input id="zf-boost-brightness" type="number" step="1" min="1" max="100" value="100">
+        </div>
+      </div>
+      <p class="help">Con la zona ocupada de forma continua (tolera los mismos parpadeos del sensor que el margen antes de apagar) durante al menos este tiempo, el brillo de las luces de la regla activa sube a este valor -- se revierte solo en cuanto la presencia se corta de verdad.</p>
       <label for="zf-transition" style="margin-top:12px">Transición al cambiar brillo/color (segundos)</label>
       <input id="zf-transition" type="number" step="1" value="2" style="max-width:160px">
 
@@ -568,6 +583,9 @@ function readZoneForm() {
     off_delay_seconds: parseFloat(document.getElementById("zf-off-delay").value) || 0,
     reapply_minutes: parseFloat(document.getElementById("zf-reapply").value) || 5,
     respect_manual_changes: document.getElementById("zf-respect-manual").checked,
+    presence_boost_enabled: document.getElementById("zf-boost-enabled").checked,
+    presence_boost_seconds: parseFloat(document.getElementById("zf-boost-seconds").value) || 30,
+    presence_boost_brightness_pct: parseFloat(document.getElementById("zf-boost-brightness").value) || 100,
     transition_seconds: parseFloat(document.getElementById("zf-transition").value) || 0,
     min_brightness_pct: parseFloat(document.getElementById("zf-min-bright").value) || 1,
     max_brightness_pct: parseFloat(document.getElementById("zf-max-bright").value) || 100,
@@ -767,6 +785,9 @@ function fillZoneForm(cfg) {
   document.getElementById("zf-off-delay").value = cfg.off_delay_seconds ?? 120;
   document.getElementById("zf-reapply").value = cfg.reapply_minutes ?? 5;
   document.getElementById("zf-respect-manual").checked = cfg.respect_manual_changes !== false;
+  document.getElementById("zf-boost-enabled").checked = cfg.presence_boost_enabled === true;
+  document.getElementById("zf-boost-seconds").value = cfg.presence_boost_seconds ?? 30;
+  document.getElementById("zf-boost-brightness").value = cfg.presence_boost_brightness_pct ?? 100;
   document.getElementById("zf-transition").value = cfg.transition_seconds ?? 2;
   document.getElementById("zf-min-bright").value = cfg.min_brightness_pct ?? 25;
   document.getElementById("zf-max-bright").value = cfg.max_brightness_pct ?? 100;

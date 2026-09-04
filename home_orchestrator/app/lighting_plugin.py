@@ -46,7 +46,7 @@ DEFAULT_REAPPLY_MINUTES = 5
 class LightingPlugin(Plugin):
     slug = "lighting"
     name = "Lighting Orchestrator"
-    version = "0.7.18"
+    version = "0.7.19"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
@@ -58,6 +58,14 @@ class LightingPlugin(Plugin):
         # Un disparador reactivo POR ZONA: cada una se despierta solo por
         # sus propias entidades (ver `_on_entity_change`).
         self._zone_reactive: dict[str, ha_websocket.ReactiveTrigger] = {}
+        # Disparo UNICO por zona para el boost de brillo por presencia
+        # sostenida (`presence_boost_*`, ver zone_store.py) -- ni el
+        # ciclo reactivo (solo se despierta si cambia una entidad
+        # vigilada, y la presencia puede llevar rato en "on" sin volver a
+        # cambiar) ni el periodico (`reapply_minutes`, 5 min por defecto)
+        # llegan a tiempo para un umbral tipico de 30s. Ver
+        # `_schedule_boost_timer`/`ZoneRunner.seconds_until_presence_boost`.
+        self._boost_timers: dict[str, threading.Timer] = {}
         # Conexion COMPARTIDA del core -- ver ha_websocket.shared().
         self._ws = ha_websocket.shared()
         self._ws.subscribe("lighting", self._on_entity_change)
@@ -344,8 +352,32 @@ class LightingPlugin(Plugin):
         # periodico (que duerme `reapply_minutes` ANTES de su primera vuelta):
         # al arrancar, una zona ocupada tiene que encender sus luces ahora.
         disparador.trigger()
+        # Si la decision inicial de mas arriba ya encontro la zona ocupada
+        # (p.ej. un reinicio del addon con alguien ya dentro), programa el
+        # boost desde ya -- sin esperar al primer evento reactivo real.
+        self._schedule_boost_timer(zone_id, runner)
 
         self._refresh_watched_entities()
+
+    def _schedule_boost_timer(self, zone_id: str, runner: ZoneRunner) -> None:
+        """Programa (o cancela) el disparo unico del boost de presencia de
+        esta zona -- se llama tras CADA decision (inicial, reactiva o
+        periodica), asi que un cambio de config, una salida de la zona o
+        una nueva entrada siempre reprograman el temporizador en vez de
+        dejar uno viejo corriendo con un umbral que ya no aplica."""
+        old = self._boost_timers.pop(zone_id, None)
+        if old is not None:
+            old.cancel()
+        remaining = runner.seconds_until_presence_boost()
+        if remaining is None:
+            return
+        disparador = self._zone_reactive.get(zone_id)
+        if disparador is None:
+            return
+        timer = threading.Timer(remaining, disparador.trigger)
+        timer.daemon = True
+        self._boost_timers[zone_id] = timer
+        timer.start()
 
     def _stop_zone(self, zone_id: str) -> None:
         mqtt_zone = self._mqtt_zones.pop(zone_id, None)
@@ -360,6 +392,9 @@ class LightingPlugin(Plugin):
         if stop is not None:
             stop.set()
         self._zone_reactive.pop(zone_id, None)
+        boost_timer = self._boost_timers.pop(zone_id, None)
+        if boost_timer is not None:
+            boost_timer.cancel()
         self._refresh_watched_entities()
 
     def _refresh_watched_entities(self) -> None:
@@ -429,6 +464,7 @@ class LightingPlugin(Plugin):
             states = None
         try:
             runner.handle_reactive_event(states)
+            self._schedule_boost_timer(zone_id, runner)
             mqtt_zone = self._mqtt_zones.get(zone_id)
             if mqtt_zone:
                 mqtt_zone.publish_state(runner, states)
@@ -470,6 +506,7 @@ class LightingPlugin(Plugin):
                 return  # la zona se reinicio (o se borro): este hilo es el viejo
             try:
                 runner.handle_periodic_reapply()
+                self._schedule_boost_timer(zone_id, runner)
                 zone_store.update_zone_state(zone_id, runner.to_persisted_state())
                 mqtt_zone = self._mqtt_zones.get(zone_id)
                 if mqtt_zone:

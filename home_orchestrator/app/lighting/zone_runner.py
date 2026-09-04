@@ -459,6 +459,39 @@ class ZoneRunner:
             if mismatch:
                 overrides[entity_id] = True
 
+    def _presence_boost_active(self, cfg: dict, now: float) -> bool:
+        """True si toca el brillo maximo por presencia sostenida -- ver el
+        comentario de `presence_boost_*` en zone_store.DEFAULT_ZONE_CONFIG.
+        `occupied_since_ts` es None tanto si la zona esta vacia como si
+        acaba de arrancar sin haber pasado nunca por la transicion (mismo
+        criterio de "sin dato, no se activa" que el resto del motor)."""
+        if not cfg.get("presence_boost_enabled", False):
+            return False
+        since = self._state.get("occupied_since_ts")
+        if since is None:
+            return False
+        threshold = float(cfg.get("presence_boost_seconds", 30) or 30)
+        return (now - since) >= threshold
+
+    def seconds_until_presence_boost(self) -> float | None:
+        """Cuanto falta para que el boost de presencia se active, si esta
+        habilitado y la zona esta en mitad de una sesion de presencia que
+        aun no lo ha alcanzado -- `None` si no aplica (boost desactivado,
+        zona vacia, o ya activo). `LightingPlugin` lo usa para programar
+        UN disparo exacto (`threading.Timer`) en vez de esperar al
+        siguiente evento de HA o a la reaplicacion periodica (hasta
+        `reapply_minutes`, 5 min por defecto -- demasiado lento para un
+        umbral tipico de 30s de este boost)."""
+        cfg = self.zone
+        if not cfg.get("presence_boost_enabled", False):
+            return None
+        since = self._state.get("occupied_since_ts")
+        if since is None:
+            return None
+        threshold = float(cfg.get("presence_boost_seconds", 30) or 30)
+        remaining = threshold - (time.time() - since)
+        return remaining if remaining > 0 else None
+
     # --------------------------------------------------------- decision --
 
     def decide_and_act(self, states: dict[str, dict] | None = None) -> None:
@@ -511,6 +544,18 @@ class ZoneRunner:
         was_occupied = bool(self._state.get("occupied", False))
         self._state["occupied"] = occupied
         self.occupied = occupied
+
+        # Arranque de la "sesion" de presencia continua para el boost de
+        # brillo (ver `_presence_boost_active`) -- se ancla a `occupied`
+        # (ya con el margen de `off_delay_seconds` aplicado), no a
+        # `raw_occupied`: un parpadeo del sensor que el resto de la zona
+        # ya tolera sin apagar tampoco debe reiniciar la cuenta de
+        # "cuanto llevo aqui de verdad". Se limpia al vaciarse la zona
+        # para que la siguiente entrada empiece a contar desde cero.
+        if occupied and not was_occupied:
+            self._state["occupied_since_ts"] = now
+        elif not occupied:
+            self._state.pop("occupied_since_ts", None)
 
         all_zone_lights = rules.all_lights(self._rules)
         # deteccion de "tocado a mano" sobre TODAS las luces que la zona
@@ -642,7 +687,18 @@ class ZoneRunner:
             self.reason = "luz natural suficiente -> apagado"
             return
 
+        # `self.current_values` (la curva solar en si) se deja SIN tocar --
+        # sigue reflejando "lo que tocaria ahora mismo segun la hora del
+        # dia" para la previsualizacion del dashboard (ver su comentario
+        # mas arriba). El boost es un override puntual sobre lo que se
+        # APLICA de verdad, no sobre la curva -- se revierte solo en
+        # cuanto la presencia continua se corta (occupied_since_ts se
+        # limpia arriba), sin marcarse nunca como "tocado a mano".
         values = self.current_values
+        if self._presence_boost_active(cfg, now):
+            boosted = dict(values) if values else {}
+            boosted["brightness_pct"] = float(cfg.get("presence_boost_brightness_pct", 100) or 100)
+            values = boosted
 
         if selected is None:
             self.reason = "presencia detectada, ninguna regla coincide -- nada que encender"

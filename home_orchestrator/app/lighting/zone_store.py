@@ -48,6 +48,17 @@ DEFAULT_ZONE_CONFIG = {
     # lighting/schedule.py:_lux_boosted_brightness_pct.
     "lux_sensor": "",
     "target_lux": schedule.DEFAULT_TARGET_LUX,
+    # Boost de brillo por presencia sostenida: con presencia CONTINUA
+    # (tolerando el mismo margen de flicker que `off_delay_seconds`, ver
+    # ZoneRunner._presence_boost_active) durante al menos
+    # `presence_boost_seconds`, se sube el brillo de las luces de la
+    # regla activa a `presence_boost_brightness_pct` -- pensado para
+    # "llevo un rato de verdad en la cocina cocinando, dame toda la luz",
+    # no para una pasada rapida. Desactivado por defecto: no cambia el
+    # comportamiento de ninguna zona existente hasta que se active.
+    "presence_boost_enabled": False,
+    "presence_boost_seconds": 30,
+    "presence_boost_brightness_pct": 100,
     # reglas condicionales, primera que coincide gana -- texto declarado
     # por el usuario, ver lighting/rules.py:parse_rules_text.
     "rules_text": "",
