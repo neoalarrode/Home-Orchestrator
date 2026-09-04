@@ -120,7 +120,7 @@ def _router_handle_url() -> str:
 class StarlinkPlugin(Plugin):
     slug = "starlink"
     name = "Starlink Orchestrator"
-    version = "0.3.1"
+    version = "0.3.2"
 
     def __init__(self) -> None:
         self._app = flask.Flask("starlink_plugin", static_folder=_DIST_DIR, static_url_path="")
@@ -175,13 +175,22 @@ class StarlinkPlugin(Plugin):
         with self._node_lock:
             historian_env = dict(env, HISTORIAN_DATA_DIR="/data/starlink/historian", HISTORIAN_PORT=str(HISTORIAN_PORT))
             self._historian_proc = subprocess.Popen(
-                ["npx", "tsx", "collector/historian.mts"],
+                # "node --import tsx" en vez de "npx tsx": invocar tsx como
+                # CLI mete un proceso wrapper de por medio que se traga
+                # SIGTERM (confirmado contra la propia produccion: un
+                # restart de contenedor dejaba el historian.lock huerfano
+                # con un PID que ya no existia, bloqueando el arranque
+                # siguiente creyendo que otro collector seguia vivo) --
+                # ver el propio Dockerfile oficial de Dishylink, que
+                # arranca igual con "node --import tsx" precisamente por
+                # esto.
+                ["node", "--import", "tsx", "collector/historian.mts"],
                 cwd=_NODE_DIR, env=historian_env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
             )
             cloud_env = dict(env, CLOUD_PORT=str(CLOUD_PORT), CLOUD_COOKIE_FILE=_COOKIE_FILE)
             self._cloud_proc = subprocess.Popen(
-                ["npx", "tsx", "cloud-server.mts"],
+                ["node", "--import", "tsx", "cloud-server.mts"],
                 cwd=_NODE_DIR, env=cloud_env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
             )
