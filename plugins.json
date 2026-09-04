@@ -80,10 +80,10 @@
       "description": "Iluminacion adaptativa por zona -- color y brillo por hora, encendido/apagado por presencia y reglas condicionales",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.7.19",
+      "version": "0.7.20",
       "downloadable": true,
-      "tag": "v0.77.46",
-      "sha256": "54bb4c1b0da1a5385cbb857483c905f9b83c42248c97b299832e46273b7830fd",
+      "tag": "v0.77.48",
+      "sha256": "7fda0940b30b4cc0b0be843187d2123d0320e15954ee803d3e6975e6588325cd",
       "files": [
         "lighting_plugin.py",
         "lighting",
