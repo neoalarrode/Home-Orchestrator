@@ -554,6 +554,60 @@ class ZoneRunner:
         self._state["plant_lux_dark_enough"] = result
         return result
 
+    def _apply_plant_mode(self, cfg: dict, states: dict[str, dict], plant_mode_active: bool,
+                           plant_lights: set[str], selected_lights: set[str] = frozenset()) -> None:
+        """Aplica el modo plantas a sus luces declaradas -- SIEMPRE que
+        `plant_mode_active` sea verdadero, sea cual sea la regla activa
+        (o si no hay ninguna), y haya o no presencia real. A peticion
+        expresa del usuario, el modo plantas tiene PRIORIDAD sobre la
+        regla habitual -- no es un respaldo solo para cuando no hay
+        nadie: si llegas a casa y enciendes la tele, la regla de la tele
+        puede seguir apagando el techo para las lamparas, pero si esa es
+        la luz declarada aqui, se queda encendida igual.
+
+        Se llama justo antes de CADA punto de salida de
+        `_decide_and_act_locked` (sin presencia, luz de sobra, sin regla
+        que encaje, y el final normal) para que ningun camino de apagado
+        se salte estas luces mientras el modo plantas las necesite.
+
+        BUG REAL, atrapado por un test dirigido antes de desplegar: una
+        luz del modo plantas que NO aparece en ninguna regla (el caso
+        normal -- es una luz "extra" que el motor de reglas no gestiona)
+        se quedaba encendida PARA SIEMPRE en cuanto `plant_mode_active`
+        pasaba a False (anochecer, o ya hay luz de sobra): nada mas en
+        toda la funcion sabe que esa luz existe, asi que nada la volvia a
+        apagar. Con `plant_mode_active` False, ahora se apaga aqui mismo
+        -- salvo que la regla activa (presencia real) la quiera encendida
+        de todas formas (`selected_lights`), en cuyo caso no hay nada que
+        hacer, el motor normal ya la gestiona.
+
+        Respeta `respect_manual_changes` igual que el resto del motor --
+        si el usuario la apago/ajusto a mano, la automatizacion no pelea
+        con ella. Idempotente si la luz ya esta en el valor correcto
+        (misma comparacion que el resto de la zona, ver `_needs_reapply`)
+        -- no importa que la regla activa TAMBIEN la gestione a la vez,
+        no se duplican ordenes."""
+        if not plant_lights:
+            return
+        respect_manual = cfg.get("respect_manual_changes", True)
+        manual_marks = self._state.get("manual_override") or {}
+        if plant_mode_active:
+            values = self.current_values
+            for entity_id in plant_lights:
+                if respect_manual and manual_marks.get(entity_id):
+                    continue
+                if self._is_on(states, entity_id):
+                    if self._needs_reapply(entity_id, values, False):
+                        self._apply_values(entity_id, values, False)
+                else:
+                    self._apply_values(entity_id, values, True)
+        else:
+            for entity_id in plant_lights - set(selected_lights):
+                if respect_manual and manual_marks.get(entity_id):
+                    continue
+                if self._is_on(states, entity_id):
+                    self._turn_off(entity_id)
+
     # --------------------------------------------------------- decision --
 
     def decide_and_act(self, states: dict[str, dict] | None = None) -> None:
@@ -613,22 +667,31 @@ class ZoneRunner:
         # encenderia si entrase alguien.
         self.current_values = schedule.value_at(cfg, states.get("sun.sun"))
 
+        # `occupied` es PURAMENTE presencia humana real -- el modo plantas
+        # (mas abajo) NUNCA participa en esto. Al principio del diseño de
+        # esta funcion se probo a mezclar los dos (un OR), pero eso hacia
+        # que TODA la regla activa sin condicion ("Normal", la que no
+        # exige nada para encajar) se disparase igual sin nadie en casa
+        # -- encendiendo lo que sea que esa regla incluya, no solo la luz
+        # del modo plantas, y ademas se saltaba el apagado normal por
+        # "sin presencia" para EL RESTO de la zona. El modo plantas tiene
+        # que ser quirurgico: solo sus luces declaradas, nunca el motor
+        # de reglas entero.
         raw_occupied = self._is_occupied(states)
-        human_occupied = self._occupied_with_delay(raw_occupied, now)
-        was_human_occupied = bool(self._state.get("human_occupied", False))
-        self._state["human_occupied"] = human_occupied
+        occupied = self._occupied_with_delay(raw_occupied, now)
+        was_occupied = bool(self._state.get("occupied", False))
+        self._state["occupied"] = occupied
+        self.occupied = occupied
 
         # Arranque de la "sesion" de presencia continua para el boost de
-        # brillo (ver `_presence_boost_active`) -- se ancla a la presencia
-        # HUMANA real (con el margen de `off_delay_seconds` ya aplicado),
-        # NUNCA al modo plantas: forzar la luz de dia sin que haya nadie
-        # no debe disparar "brillo al 100% por llevar aqui un rato", ese
-        # boost es para gente de verdad, no para macetas. Un parpadeo del
-        # sensor que el resto de la zona ya tolera sin apagar tampoco debe
-        # reiniciar la cuenta de "cuanto llevo aqui de verdad".
-        if human_occupied and not was_human_occupied:
+        # brillo (ver `_presence_boost_active`) -- se ancla a `occupied`
+        # (presencia real, con `off_delay_seconds` ya aplicado). Un
+        # parpadeo del sensor que el resto de la zona ya tolera sin
+        # apagar tampoco debe reiniciar la cuenta de "cuanto llevo aqui
+        # de verdad".
+        if occupied and not was_occupied:
             self._state["occupied_since_ts"] = now
-        elif not human_occupied:
+        elif not occupied:
             self._state.pop("occupied_since_ts", None)
 
         # Lectura del sensor de lux para el sparkline -- UNA vez por
@@ -636,16 +699,19 @@ class ZoneRunner:
         # consuman despues (ver `_record_lux_sparkline`).
         self._record_lux_sparkline(cfg, states)
 
-        # Modo plantas (opcional, ver `_plant_mode_active`): puede forzar
-        # la zona a "ocupada" durante el dia aunque no haya presencia real
-        # -- se evalua ANTES de decidir la ocupacion efectiva porque
-        # participa en ella.
+        # Modo plantas (opcional, ver `_plant_mode_active`): senal
+        # INDEPENDIENTE de la presencia -- de dia, con poca luz, tiene
+        # PRIORIDAD sobre la regla que este activa (a peticion expresa
+        # del usuario: "si llego a las tres y me pongo a ver una serie,
+        # las plantas no pueden quedarse sin luz hasta el dia siguiente
+        # solo porque la regla de la tele no incluye su bombilla"). Sus
+        # luces declaradas (`plant_mode_lights`) se aplican SIEMPRE que
+        # esto sea verdadero, mediante `_apply_plant_mode` -- llamado
+        # antes de CADA punto de salida de esta funcion, para que ningun
+        # camino de apagado (sin presencia, luz de sobra, sin regla) se
+        # las salte.
         plant_mode_active = self._plant_mode_active(cfg, states, now)
-
-        occupied = human_occupied or plant_mode_active
-        was_occupied = bool(self._state.get("occupied", False))
-        self._state["occupied"] = occupied
-        self.occupied = occupied
+        plant_lights = {e for e in (cfg.get("plant_mode_lights") or []) if e}
 
         all_zone_lights = rules.all_lights(self._rules)
         # deteccion de "tocado a mano" sobre TODAS las luces que la zona
@@ -654,24 +720,25 @@ class ZoneRunner:
         # cuando la zona se queda vacia.
         self._detect_manual_overrides(states, all_zone_lights)
 
-        # Nota para el "reason" expuesto al dashboard cuando lo que
-        # mantiene la zona encendida es SOLO el modo plantas, sin nadie
-        # de verdad presente -- para que no parezca un fallo de deteccion
-        # de presencia.
-        plant_suffix = " (modo plantas: sin presencia real, luz de dia insuficiente)" if (
-            plant_mode_active and not human_occupied
-        ) else ""
+        plant_suffix = " (+ modo plantas activo)" if plant_mode_active and plant_lights else ""
 
         if not occupied:
             self.active_rule = None
             self._state["active_rule"] = None
             if cfg.get("auto_off", True):
-                for entity_id in all_zone_lights:
+                # `plant_lights` quedan excluidas del apagado por "sin
+                # presencia" mientras el modo plantas las necesite -- son
+                # las UNICAS luces de la zona que se quedan al margen del
+                # motor de reglas/presencia normal; el resto se apaga
+                # exactamente igual que si el modo plantas no existiera.
+                protected = plant_lights if plant_mode_active else set()
+                for entity_id in all_zone_lights - protected:
                     if self._is_on(states, entity_id):
                         self._turn_off(entity_id)
-                self.reason = "sin presencia -> apagado"
+                self.reason = f"sin presencia -> apagado{plant_suffix}"
             else:
                 self.reason = "sin presencia (apagado automatico desactivado)"
+            self._apply_plant_mode(cfg, states, plant_mode_active, plant_lights)
             return
 
         selected = rules.select_rule(self._rules, states)
@@ -704,19 +771,6 @@ class ZoneRunner:
         # lectura que cruza el margen demasiado pronto despues del ultimo
         # cambio se ignora, se mantiene el estado anterior.
         dark_enough = self._lux_dark_enough_debounced(cfg, states, now)
-        # Cuando el modo plantas es lo UNICO que mantiene la zona
-        # ocupada (sin presencia humana real), su propio criterio de luz
-        # (umbral fijo, ya evaluado en `plant_mode_active`) manda sobre el
-        # `dark_enough` normal de la zona -- que usa el `target_lux`
-        # configurable de la zona, a menudo mucho mas bajo (pensado para
-        # confort humano). Sin esto, una zona con un target_lux bajo
-        # (p.ej. Cocina, 20 lux) se apagaria por "luz de sobra" nada mas
-        # amanecer, antes de que el modo plantas llegara a hacer nada de
-        # verdad -- su umbral de 1000 lux nunca tendria ocasion de
-        # decidir. Con presencia humana real a la vez, esto no cambia
-        # nada: el criterio normal de la zona sigue mandando igual que
-        # siempre.
-        effective_dark_enough = dark_enough or (plant_mode_active and not human_occupied)
         # "Se acaba de hacer de noche" SI sigue siendo un flanco -- para
         # ENCENDER solo en el momento en que se hace necesario (no en
         # cada ciclo mientras siga oscuro, eso ya lo cubre `transitioned`
@@ -763,29 +817,37 @@ class ZoneRunner:
             # mismo `manual_override` que ya usa el reajuste de color/
             # brillo mas abajo -- una luz marcada ahi se deja en paz hasta
             # que una transicion real de la zona limpie la marca.
+            # `plant_lights` quedan EXCLUIDAS de este apagado mientras el
+            # modo plantas las necesite -- tienen prioridad sobre
+            # cualquier regla, sea cual sea (ver el comentario de mas
+            # arriba sobre `plant_mode_active`).
+            protected = plant_lights if plant_mode_active else set()
             respect_manual = cfg.get("respect_manual_changes", True)
             manual_marks = self._state.get("manual_override") or {}
-            for entity_id in all_zone_lights - selected_lights:
+            for entity_id in (all_zone_lights - selected_lights) - protected:
                 if respect_manual and manual_marks.get(entity_id):
                     continue
                 if self._is_on(states, entity_id):
                     self._turn_off(entity_id)
 
-        if not effective_dark_enough and cfg.get("lux_sensor"):
+        if not dark_enough and cfg.get("lux_sensor"):
             # Hay luz de sobra AHORA MISMO -- apaga cualquier luz de la
             # zona que siga encendida, cada ciclo mientras siga claro, no
             # solo la primera vez que se detecta. Mismo alcance que el
             # apagado por "sin presencia" (auto_off): todas las luces de
             # la zona, no solo las de la regla activa. Mismo respeto por
-            # `respect_manual_changes` que el bucle de arriba.
+            # `respect_manual_changes` que el bucle de arriba -- y mismo
+            # criterio de `plant_lights` protegidas que el bucle anterior.
+            protected = plant_lights if plant_mode_active else set()
             respect_manual = cfg.get("respect_manual_changes", True)
             manual_marks = self._state.get("manual_override") or {}
-            for entity_id in all_zone_lights:
+            for entity_id in all_zone_lights - protected:
                 if respect_manual and manual_marks.get(entity_id):
                     continue
                 if self._is_on(states, entity_id):
                     self._turn_off(entity_id)
             self.reason = "luz natural suficiente -> apagado"
+            self._apply_plant_mode(cfg, states, plant_mode_active, plant_lights, selected_lights)
             return
 
         # `self.current_values` (la curva solar en si) se deja SIN tocar --
@@ -803,6 +865,7 @@ class ZoneRunner:
 
         if selected is None:
             self.reason = f"presencia detectada, ninguna regla coincide -- nada que encender{plant_suffix}"
+            self._apply_plant_mode(cfg, states, plant_mode_active, plant_lights, selected_lights)
             return
 
         # `auto_on` solo dispara el ENCENDIDO en la propia transicion
@@ -842,7 +905,7 @@ class ZoneRunner:
                     continue
                 if not overrides.get(entity_id) and self._needs_reapply(entity_id, values, only_brightness):
                     pending.append((entity_id, values, False, only_brightness, None, False))
-            elif auto_on and transitioned and effective_dark_enough:
+            elif auto_on and transitioned and dark_enough:
                 pending.append((entity_id, values, True, only_brightness, None, only_on_off))
         if len(pending) == 1:
             self._apply_values(*pending[0])
@@ -855,6 +918,7 @@ class ZoneRunner:
                 concurrent.futures.wait(futures)
 
         self.reason = f"regla activa: {selected_name or '(sin nombre)'}{plant_suffix}"
+        self._apply_plant_mode(cfg, states, plant_mode_active, plant_lights, selected_lights)
 
     # -------------------------------------------------------- reactivo/periodico -
 

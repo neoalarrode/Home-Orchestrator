@@ -63,11 +63,16 @@ DEFAULT_ZONE_CONFIG = {
     # ver ZoneRunner._plant_mode_active), si la luz real medida por
     # `lux_sensor` esta por debajo de un umbral FIJO (1000 lux -- no
     # configurable, a peticion expresa del usuario; ver PLANT_MODE_
-    # TARGET_LUX en zone_runner.py y su justificacion) la zona se
-    # enciende aunque no haya presencia -- para gente con plantas que
-    # necesitan luz de verdad durante el dia. Se apaga sola al anochecer
-    # si sigue sin haber presencia. Desactivado por defecto.
+    # TARGET_LUX en zone_runner.py y su justificacion) las luces
+    # declaradas en `plant_mode_lights` se encienden con PRIORIDAD sobre
+    # la regla que este activa -- a peticion expresa del usuario: no es
+    # un respaldo solo para cuando no hay presencia, sino que tiene que
+    # ganarle a cualquier regla condicional (p.ej. "con la tele encendida,
+    # apaga el techo") mientras haga falta luz de dia. Se apaga sola al
+    # anochecer si no hay presencia real. Desactivado por defecto, y sin
+    # ningun efecto si `plant_mode_lights` esta vacio.
     "plant_mode_enabled": False,
+    "plant_mode_lights": [],
     # reglas condicionales, primera que coincide gana -- texto declarado
     # por el usuario, ver lighting/rules.py:parse_rules_text.
     "rules_text": "",
