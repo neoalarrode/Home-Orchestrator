@@ -67,6 +67,19 @@ COLOR_TEMP_TOLERANCE_KELVIN = 150
 # una lectura que cruza el margen demasiado pronto se ignora sin mas.
 LUX_STATE_MIN_INTERVAL_SECONDS = 60
 
+# Umbral fijo (no configurable, a peticion expresa del usuario) del modo
+# plantas -- ver `_plant_mode_active`. NO es el mismo concepto que
+# `target_lux` de la zona (pensado para confort humano, "bien iluminado
+# para estar", a menudo declarado mucho mas bajo -- 20-50 lux -- porque
+# a una persona le basta con eso). 1000 lux es el umbral que la
+# literatura de horticultura de interior cita como minimo razonable
+# para sostener crecimiento saludable en plantas de interior comunes
+# (no las de "poca luz" tipo sansevieria, que toleran 200-500 lux; ni
+# las mas exigentes tipo Monstera deliciosa, que prefieren luz brillante
+# indirecta de 1500-10000 lux) -- un punto medio defendible sin volverlo
+# configurable, a proposito.
+PLANT_MODE_TARGET_LUX = 1000
+
 
 class ZoneRunner:
     def __init__(self, zone_id: str, cfg: dict, ws, mqtt_zone=None, state: dict | None = None, bridges=None) -> None:
@@ -195,7 +208,23 @@ class ZoneRunner:
         delay = float(self.zone.get("off_delay_seconds", 120) or 0)
         return (now - last) < delay
 
-    def _lux_dark_enough_debounced(self, cfg: dict, states: dict[str, dict], now: float) -> bool:
+    def _record_lux_sparkline(self, cfg: dict, states: dict[str, dict]) -> None:
+        """Lectura CRUDA de lux, sin histeresis ni debounce -- solo para el
+        sparkline del dashboard (ver renderSparkline), para que se vea la
+        oscilacion real del sensor tal cual es. Separado de
+        `_lux_dark_enough_debounced` para que llamarla mas de una vez por
+        ciclo (hoy: el canal normal y el del modo plantas, ver
+        `_plant_mode_active`, ambos leen el MISMO sensor) no duplique
+        puntos en el historico."""
+        lux_state = states.get(cfg.get("lux_sensor") or "")
+        try:
+            raw_lux = float((lux_state or {}).get("state"))
+        except (TypeError, ValueError):
+            return
+        self.lux_history.append(raw_lux)
+
+    def _lux_dark_enough_debounced(self, cfg: dict, states: dict[str, dict], now: float,
+                                    *, target_lux: float | None = None, state_prefix: str = "lux") -> bool:
         """`schedule.lux_dark_enough` con histeresis, mas un segundo
         escudo por encima: un cambio de "oscuro" a "claro" (o al reves)
         no se acepta hasta que haya pasado `LUX_STATE_MIN_INTERVAL_SECONDS`
@@ -203,30 +232,33 @@ class ZoneRunner:
         constante. Sin esto, una rafaga de lecturas que cruza igualmente
         el margen de histeresis en un par de minutos (visto de verdad
         contra un Aqara FP300: 36 -> 66 -> 36 en menos de un minuto)
-        seguia parpadeando, solo que menos."""
-        lux_state = states.get(cfg.get("lux_sensor") or "")
-        try:
-            raw_lux = float((lux_state or {}).get("state"))
-        except (TypeError, ValueError):
-            raw_lux = None
-        # Solo para el sparkline del dashboard (ver renderSparkline) -- la
-        # lectura CRUDA, sin histeresis ni debounce, para que se vea la
-        # oscilacion real del sensor tal cual es (la histeresis/debounce
-        # de abajo es sobre la DECISION de encender/apagar, no sobre esto).
-        if raw_lux is not None:
-            self.lux_history.append(raw_lux)
+        seguia parpadeando, solo que menos.
 
-        was_dark_enough = self._state.get("lux_dark_enough")
-        # `cfg.get(key, default)` solo cae al default si la CLAVE falta, no
-        # si esta presente pero vale `None` -- mismo bug que en schedule.py.
-        target_lux_cfg = cfg.get("target_lux")
-        candidate = schedule.lux_dark_enough(
-            lux_state,
-            float(target_lux_cfg) if target_lux_cfg is not None else schedule.DEFAULT_TARGET_LUX,
-            was_dark_enough,
-        )
+        `target_lux`/`state_prefix`: permiten un SEGUNDO canal independiente
+        sobre el MISMO sensor, con su propio umbral y su propia memoria de
+        histeresis -- usado por el modo plantas (`PLANT_MODE_TARGET_LUX`,
+        prefijo "plant_lux") para no compartir estado ni umbral con el
+        canal normal (`target_lux` configurable de la zona, pensado para
+        confort humano, prefijo "lux" por defecto -- MISMAS claves que
+        antes de generalizar esto, ningun estado persistido existente se
+        pierde). Quien llama es responsable de persistir el resultado en
+        `self._state[f"{state_prefix}_dark_enough"]` tras cada llamada --
+        esta funcion solo LEE esa clave para saber si hubo cambio, igual
+        que ya hacia antes de generalizarse."""
+        lux_state = states.get(cfg.get("lux_sensor") or "")
+        key_dark = f"{state_prefix}_dark_enough"
+        key_ts = f"{state_prefix}_state_changed_ts"
+
+        was_dark_enough = self._state.get(key_dark)
+        if target_lux is None:
+            # `cfg.get(key, default)` solo cae al default si la CLAVE falta,
+            # no si esta presente pero vale `None` -- mismo bug que en
+            # schedule.py.
+            target_lux_cfg = cfg.get("target_lux")
+            target_lux = float(target_lux_cfg) if target_lux_cfg is not None else schedule.DEFAULT_TARGET_LUX
+        candidate = schedule.lux_dark_enough(lux_state, float(target_lux), was_dark_enough)
         if was_dark_enough is None:
-            self._state["lux_state_changed_ts"] = now
+            self._state[key_ts] = now
             return candidate
         if candidate == was_dark_enough:
             # BUG REAL, confirmado en produccion (Dormitorio: se hizo de
@@ -244,10 +276,10 @@ class ZoneRunner:
             # marcar la ULTIMA TRANSICION ACEPTADA (o la primera lectura,
             # arriba), nunca una confirmacion de que nada ha cambiado.
             return candidate
-        last_change = self._state.get("lux_state_changed_ts")
+        last_change = self._state.get(key_ts)
         if last_change is not None and (now - last_change) < LUX_STATE_MIN_INTERVAL_SECONDS:
             return was_dark_enough  # cambio real, pero demasiado pronto -- se ignora esta vez
-        self._state["lux_state_changed_ts"] = now
+        self._state[key_ts] = now
         return candidate
 
     # -------------------------------------------------------------- luz --
@@ -492,6 +524,36 @@ class ZoneRunner:
         remaining = threshold - (time.time() - since)
         return remaining if remaining > 0 else None
 
+    def _plant_mode_active(self, cfg: dict, states: dict[str, dict], now: float) -> bool:
+        """Modo plantas (opcional, `plant_mode_enabled`, desactivado por
+        defecto): entre el amanecer y el atardecer -- misma posicion del
+        sol (`sun_position > 0`) que ya usa la curva de brillo/color, ver
+        `schedule.py` -- si la luz real medida por el `lux_sensor` de la
+        zona esta por debajo de `PLANT_MODE_TARGET_LUX` (fijo, no el
+        `target_lux` configurable de la zona -- ver el comentario de esa
+        constante), la zona se enciende AUNQUE no haya presencia real --
+        para plantas que necesitan luz de verdad durante el dia, no solo
+        cuando hay alguien para verla. Se apaga sola en cuanto se pone el
+        sol si sigue sin haber presencia (esto deja de ser True, y sin
+        presencia real `_decide_and_act_locked` apaga por la via normal
+        de "sin presencia").
+
+        Requiere su PROPIO canal de histeresis/debounce (ver
+        `_lux_dark_enough_debounced`, prefijo "plant_lux") -- reutilizar
+        el canal normal (umbral `target_lux` de la zona, a menudo mucho
+        mas bajo, pensado para confort humano) haria que una zona con un
+        target_lux bajo nunca activase el modo plantas de verdad."""
+        if not cfg.get("plant_mode_enabled", False):
+            return False
+        sun_position = (self.current_values or {}).get("sun_position")
+        if sun_position is None or sun_position <= 0:
+            return False
+        result = self._lux_dark_enough_debounced(
+            cfg, states, now, target_lux=PLANT_MODE_TARGET_LUX, state_prefix="plant_lux",
+        )
+        self._state["plant_lux_dark_enough"] = result
+        return result
+
     # --------------------------------------------------------- decision --
 
     def decide_and_act(self, states: dict[str, dict] | None = None) -> None:
@@ -539,23 +601,51 @@ class ZoneRunner:
             )
             return
 
+        # `current_values` se calcula ANTES de decidir ocupacion -- el modo
+        # plantas (`_plant_mode_active`, mas abajo) necesita saber la
+        # posicion del sol AHORA MISMO para decidir si estamos en la
+        # ventana amanecer-atardecer, y reutiliza este mismo calculo en
+        # vez de repetirlo. Ademas es la curva solar en si (brillo/color
+        # que TOCARIA ahora mismo segun la hora del dia), independiente de
+        # si hay alguien para aplicarsela -- desde fuera (interfaz, API)
+        # se distingue de "sun.sun no disponible": sin presencia con sol
+        # legible sigue mostrando la previsualizacion de lo que se
+        # encenderia si entrase alguien.
+        self.current_values = schedule.value_at(cfg, states.get("sun.sun"))
+
         raw_occupied = self._is_occupied(states)
-        occupied = self._occupied_with_delay(raw_occupied, now)
+        human_occupied = self._occupied_with_delay(raw_occupied, now)
+        was_human_occupied = bool(self._state.get("human_occupied", False))
+        self._state["human_occupied"] = human_occupied
+
+        # Arranque de la "sesion" de presencia continua para el boost de
+        # brillo (ver `_presence_boost_active`) -- se ancla a la presencia
+        # HUMANA real (con el margen de `off_delay_seconds` ya aplicado),
+        # NUNCA al modo plantas: forzar la luz de dia sin que haya nadie
+        # no debe disparar "brillo al 100% por llevar aqui un rato", ese
+        # boost es para gente de verdad, no para macetas. Un parpadeo del
+        # sensor que el resto de la zona ya tolera sin apagar tampoco debe
+        # reiniciar la cuenta de "cuanto llevo aqui de verdad".
+        if human_occupied and not was_human_occupied:
+            self._state["occupied_since_ts"] = now
+        elif not human_occupied:
+            self._state.pop("occupied_since_ts", None)
+
+        # Lectura del sensor de lux para el sparkline -- UNA vez por
+        # ciclo, independiente de cuantos canales de histeresis lo
+        # consuman despues (ver `_record_lux_sparkline`).
+        self._record_lux_sparkline(cfg, states)
+
+        # Modo plantas (opcional, ver `_plant_mode_active`): puede forzar
+        # la zona a "ocupada" durante el dia aunque no haya presencia real
+        # -- se evalua ANTES de decidir la ocupacion efectiva porque
+        # participa en ella.
+        plant_mode_active = self._plant_mode_active(cfg, states, now)
+
+        occupied = human_occupied or plant_mode_active
         was_occupied = bool(self._state.get("occupied", False))
         self._state["occupied"] = occupied
         self.occupied = occupied
-
-        # Arranque de la "sesion" de presencia continua para el boost de
-        # brillo (ver `_presence_boost_active`) -- se ancla a `occupied`
-        # (ya con el margen de `off_delay_seconds` aplicado), no a
-        # `raw_occupied`: un parpadeo del sensor que el resto de la zona
-        # ya tolera sin apagar tampoco debe reiniciar la cuenta de
-        # "cuanto llevo aqui de verdad". Se limpia al vaciarse la zona
-        # para que la siguiente entrada empiece a contar desde cero.
-        if occupied and not was_occupied:
-            self._state["occupied_since_ts"] = now
-        elif not occupied:
-            self._state.pop("occupied_since_ts", None)
 
         all_zone_lights = rules.all_lights(self._rules)
         # deteccion de "tocado a mano" sobre TODAS las luces que la zona
@@ -564,15 +654,13 @@ class ZoneRunner:
         # cuando la zona se queda vacia.
         self._detect_manual_overrides(states, all_zone_lights)
 
-        # `current_values` se calcula SIEMPRE, este ocupada o no la zona
-        # -- es la curva solar en si (brillo/color que TOCARIA ahora
-        # mismo segun la hora del dia), independiente de si hay alguien
-        # para aplicarsela. Antes se dejaba en None sin presencia, lo que
-        # desde fuera (interfaz, API) era indistinguible de "sun.sun no
-        # disponible" -- ahora ambos casos se ven distintos: sin
-        # presencia con sol legible sigue mostrando la previsualizacion
-        # de lo que se encenderia si entrase alguien.
-        self.current_values = schedule.value_at(cfg, states.get("sun.sun"))
+        # Nota para el "reason" expuesto al dashboard cuando lo que
+        # mantiene la zona encendida es SOLO el modo plantas, sin nadie
+        # de verdad presente -- para que no parezca un fallo de deteccion
+        # de presencia.
+        plant_suffix = " (modo plantas: sin presencia real, luz de dia insuficiente)" if (
+            plant_mode_active and not human_occupied
+        ) else ""
 
         if not occupied:
             self.active_rule = None
@@ -616,6 +704,19 @@ class ZoneRunner:
         # lectura que cruza el margen demasiado pronto despues del ultimo
         # cambio se ignora, se mantiene el estado anterior.
         dark_enough = self._lux_dark_enough_debounced(cfg, states, now)
+        # Cuando el modo plantas es lo UNICO que mantiene la zona
+        # ocupada (sin presencia humana real), su propio criterio de luz
+        # (umbral fijo, ya evaluado en `plant_mode_active`) manda sobre el
+        # `dark_enough` normal de la zona -- que usa el `target_lux`
+        # configurable de la zona, a menudo mucho mas bajo (pensado para
+        # confort humano). Sin esto, una zona con un target_lux bajo
+        # (p.ej. Cocina, 20 lux) se apagaria por "luz de sobra" nada mas
+        # amanecer, antes de que el modo plantas llegara a hacer nada de
+        # verdad -- su umbral de 1000 lux nunca tendria ocasion de
+        # decidir. Con presencia humana real a la vez, esto no cambia
+        # nada: el criterio normal de la zona sigue mandando igual que
+        # siempre.
+        effective_dark_enough = dark_enough or (plant_mode_active and not human_occupied)
         # "Se acaba de hacer de noche" SI sigue siendo un flanco -- para
         # ENCENDER solo en el momento en que se hace necesario (no en
         # cada ciclo mientras siga oscuro, eso ya lo cubre `transitioned`
@@ -670,7 +771,7 @@ class ZoneRunner:
                 if self._is_on(states, entity_id):
                     self._turn_off(entity_id)
 
-        if not dark_enough and cfg.get("lux_sensor"):
+        if not effective_dark_enough and cfg.get("lux_sensor"):
             # Hay luz de sobra AHORA MISMO -- apaga cualquier luz de la
             # zona que siga encendida, cada ciclo mientras siga claro, no
             # solo la primera vez que se detecta. Mismo alcance que el
@@ -701,7 +802,7 @@ class ZoneRunner:
             values = boosted
 
         if selected is None:
-            self.reason = "presencia detectada, ninguna regla coincide -- nada que encender"
+            self.reason = f"presencia detectada, ninguna regla coincide -- nada que encender{plant_suffix}"
             return
 
         # `auto_on` solo dispara el ENCENDIDO en la propia transicion
@@ -741,7 +842,7 @@ class ZoneRunner:
                     continue
                 if not overrides.get(entity_id) and self._needs_reapply(entity_id, values, only_brightness):
                     pending.append((entity_id, values, False, only_brightness, None, False))
-            elif auto_on and transitioned and dark_enough:
+            elif auto_on and transitioned and effective_dark_enough:
                 pending.append((entity_id, values, True, only_brightness, None, only_on_off))
         if len(pending) == 1:
             self._apply_values(*pending[0])
@@ -753,7 +854,7 @@ class ZoneRunner:
                 ]
                 concurrent.futures.wait(futures)
 
-        self.reason = f"regla activa: {selected_name or '(sin nombre)'}"
+        self.reason = f"regla activa: {selected_name or '(sin nombre)'}{plant_suffix}"
 
     # -------------------------------------------------------- reactivo/periodico -
 

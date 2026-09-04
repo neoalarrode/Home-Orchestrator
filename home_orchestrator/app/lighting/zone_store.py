@@ -59,6 +59,15 @@ DEFAULT_ZONE_CONFIG = {
     "presence_boost_enabled": False,
     "presence_boost_seconds": 30,
     "presence_boost_brightness_pct": 100,
+    # Modo plantas: entre el amanecer y el atardecer (posicion del sol,
+    # ver ZoneRunner._plant_mode_active), si la luz real medida por
+    # `lux_sensor` esta por debajo de un umbral FIJO (1000 lux -- no
+    # configurable, a peticion expresa del usuario; ver PLANT_MODE_
+    # TARGET_LUX en zone_runner.py y su justificacion) la zona se
+    # enciende aunque no haya presencia -- para gente con plantas que
+    # necesitan luz de verdad durante el dia. Se apaga sola al anochecer
+    # si sigue sin haber presencia. Desactivado por defecto.
+    "plant_mode_enabled": False,
     # reglas condicionales, primera que coincide gana -- texto declarado
     # por el usuario, ver lighting/rules.py:parse_rules_text.
     "rules_text": "",

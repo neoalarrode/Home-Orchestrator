@@ -275,6 +275,11 @@
         </div>
       </div>
       <p class="help">Con la zona ocupada de forma continua (tolera los mismos parpadeos del sensor que el margen antes de apagar) durante al menos este tiempo, el brillo de las luces de la regla activa sube a este valor -- se revierte solo en cuanto la presencia se corta de verdad.</p>
+      <div class="checkline">
+        <input type="checkbox" id="zf-plant-mode">
+        <label for="zf-plant-mode">Modo plantas: encender de amanecer a atardecer aunque no haya presencia, si falta luz</label>
+      </div>
+      <p class="help">Entre el amanecer y el atardecer, si el sensor de lux mide menos de 1000 lux (umbral fijo, pensado para plantas de interior, no configurable) la zona se enciende con la curva normal aunque no haya nadie -- se apaga sola al anochecer si sigue sin haber presencia. Sin un sensor de lux declarado arriba, se enciende sin más durante todo el día (no hay forma de saber si hace falta o no).</p>
       <label for="zf-transition" style="margin-top:12px">Transición al cambiar brillo/color (segundos)</label>
       <input id="zf-transition" type="number" step="1" value="2" style="max-width:160px">
 
@@ -586,6 +591,7 @@ function readZoneForm() {
     presence_boost_enabled: document.getElementById("zf-boost-enabled").checked,
     presence_boost_seconds: parseFloat(document.getElementById("zf-boost-seconds").value) || 30,
     presence_boost_brightness_pct: parseFloat(document.getElementById("zf-boost-brightness").value) || 100,
+    plant_mode_enabled: document.getElementById("zf-plant-mode").checked,
     transition_seconds: parseFloat(document.getElementById("zf-transition").value) || 0,
     min_brightness_pct: parseFloat(document.getElementById("zf-min-bright").value) || 1,
     max_brightness_pct: parseFloat(document.getElementById("zf-max-bright").value) || 100,
@@ -788,6 +794,7 @@ function fillZoneForm(cfg) {
   document.getElementById("zf-boost-enabled").checked = cfg.presence_boost_enabled === true;
   document.getElementById("zf-boost-seconds").value = cfg.presence_boost_seconds ?? 30;
   document.getElementById("zf-boost-brightness").value = cfg.presence_boost_brightness_pct ?? 100;
+  document.getElementById("zf-plant-mode").checked = cfg.plant_mode_enabled === true;
   document.getElementById("zf-transition").value = cfg.transition_seconds ?? 2;
   document.getElementById("zf-min-bright").value = cfg.min_brightness_pct ?? 25;
   document.getElementById("zf-max-bright").value = cfg.max_brightness_pct ?? 100;
