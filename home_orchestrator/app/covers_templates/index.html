@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Covers Orchestrator</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #12151a; color: #e6e6e6; margin: 0; padding: 24px; }
+  h1 { font-size: 20px; }
+  .zone { background: #1b1f27; border: 1px solid #2a2f3a; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .zone h2 { margin: 0 0 8px 0; font-size: 16px; }
+  .reason { color: #9fb3c8; font-size: 13px; margin-bottom: 12px; }
+  label { display: block; font-size: 13px; margin-top: 10px; color: #cfd8e3; }
+  input[type="text"], input[type="number"], textarea { width: 100%; box-sizing: border-box; background: #0f1216; border: 1px solid #2a2f3a; color: #e6e6e6; border-radius: 6px; padding: 6px 8px; margin-top: 4px; }
+  .checkline { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+  button { background: #2d6cdf; color: white; border: none; border-radius: 6px; padding: 8px 14px; cursor: pointer; margin-top: 12px; margin-right: 8px; }
+  button.secondary { background: #3a4150; }
+  button.danger { background: #b3372c; }
+  .help { color: #7c8aa0; font-size: 12px; margin-top: 4px; }
+  #new-zone { background: #1b1f27; border: 1px solid #2a2f3a; border-radius: 8px; padding: 16px; }
+</style>
+</head>
+<body>
+  <h1>Covers Orchestrator — persianas/toldos</h1>
+  <div id="zones"></div>
+
+  <div id="new-zone">
+    <h2>Nueva zona</h2>
+    <label>Nombre</label>
+    <input type="text" id="zf-name" placeholder="Salón">
+    <label>Persianas (entity_id de HA, separadas por comas)</label>
+    <input type="text" id="zf-covers" placeholder="cover.ventana_patio">
+    <div class="checkline"><input type="checkbox" id="zf-night-close"><label for="zf-night-close">Cerrar de noche (privacidad)</label></div>
+    <div class="checkline"><input type="checkbox" id="zf-day-open"><label for="zf-day-open">Abrir de día</label></div>
+    <div class="checkline"><input type="checkbox" id="zf-sun-protection"><label for="zf-sun-protection">Protección solar (baja parcialmente si el sol da directo a la ventana)</label></div>
+    <div class="grid3">
+      <div>
+        <label>Azimut mínimo (°)</label>
+        <input type="number" id="zf-az-min" value="90">
+      </div>
+      <div>
+        <label>Azimut máximo (°)</label>
+        <input type="number" id="zf-az-max" value="270">
+      </div>
+      <div>
+        <label>Elevación mínima (°)</label>
+        <input type="number" id="zf-elevation-min" value="20">
+      </div>
+    </div>
+    <p class="help">Azimut = orientación de la ventana en grados de brújula (0=norte, 90=este, 180=sur, 270=oeste). Si el sol está entre el mínimo y el máximo, y por encima de la elevación mínima, se considera que da directo a esta ventana.</p>
+    <label>Posición al proteger del sol (%)</label>
+    <input type="number" id="zf-sun-position" value="30" style="max-width:160px">
+    <div>
+      <button onclick="createZone()">Crear zona</button>
+    </div>
+  </div>
+
+<script>
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  return res.json();
+}
+
+function listToCsv(list) { return (list || []).join(", "); }
+function csvToList(id) { return document.getElementById(id).value.split(",").map(s => s.trim()).filter(Boolean); }
+
+async function loadZones() {
+  const zones = await api("/api/zones");
+  const container = document.getElementById("zones");
+  container.innerHTML = "";
+  for (const z of zones) {
+    const cfg = z.config;
+    const live = z.live || {};
+    const div = document.createElement("div");
+    div.className = "zone";
+    div.innerHTML = `
+      <h2>${cfg.name || z.id}</h2>
+      <div class="reason">${live.reason || "sin evaluar todavía"} ${live.desired_position != null ? `(objetivo: ${live.desired_position}%)` : ""}</div>
+      <div class="help">Persianas: ${listToCsv(cfg.cover_entities)}</div>
+      <div class="help">
+        ${cfg.night_close_enabled ? "✓ cierre nocturno" : ""}
+        ${cfg.day_open_enabled ? "✓ apertura diurna" : ""}
+        ${cfg.sun_protection_enabled ? `✓ protección solar (azimut ${cfg.window_azimuth_min}-${cfg.window_azimuth_max}°, elevación ≥${cfg.sun_protection_min_elevation}°, baja a ${cfg.sun_protection_position_pct}%)` : ""}
+      </div>
+      <button class="secondary" onclick="refreshZone('${z.id}')">Forzar decisión ahora</button>
+      <button class="danger" onclick="deleteZone('${z.id}')">Borrar zona</button>
+    `;
+    container.appendChild(div);
+  }
+}
+
+async function createZone() {
+  const payload = {
+    name: document.getElementById("zf-name").value.trim(),
+    cover_entities: csvToList("zf-covers"),
+    night_close_enabled: document.getElementById("zf-night-close").checked,
+    day_open_enabled: document.getElementById("zf-day-open").checked,
+    sun_protection_enabled: document.getElementById("zf-sun-protection").checked,
+    window_azimuth_min: parseFloat(document.getElementById("zf-az-min").value) || 0,
+    window_azimuth_max: parseFloat(document.getElementById("zf-az-max").value) || 360,
+    sun_protection_min_elevation: parseFloat(document.getElementById("zf-elevation-min").value) || 20,
+    sun_protection_position_pct: parseFloat(document.getElementById("zf-sun-position").value) || 30,
+  };
+  await api("/api/zones", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
+  loadZones();
+}
+
+async function refreshZone(id) {
+  await api(`/api/zones/${id}/refresh`, { method: "POST" });
+  loadZones();
+}
+
+async function deleteZone(id) {
+  if (!confirm("¿Borrar esta zona?")) return;
+  await api(`/api/zones/${id}`, { method: "DELETE" });
+  loadZones();
+}
+
+loadZones();
+setInterval(loadZones, 10000);
+</script>
+</body>
+</html>
