@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.77.56
+
+**Covers Orchestrator no abria desde la pestaña "Configuración" -- faltaba en un mapa del CORE, no en el plugin.**
+
+BUG REAL, reportado por el usuario ("dentro de configuracion clico el plugin y no abre nada"): `templates/index.html` (la pagina principal, servida por `main.py`, parte del CORE -- no de `plugins.json`, igual que el bug de `PLUGIN_CATALOG`/`PLUGIN_REGISTRY` de la 0.77.34/0.77.36) tiene un mapa `CONFIG_PLUGIN_HREF` a mano por slug que decide a donde navega cada icono de la rejilla de "Configuración". Al plugin Covers, recien añadido, nunca se le añadio su entrada -- el clic caia en el `onclick="openPluginConfig(slug)"` generico, que solo maneja el caso especial de `battery` y no hace nada con cualquier otro slug sin `href`. Añadidas las entradas de Covers en `CONFIG_PLUGIN_HREF` (`plugins/covers/`), `PLUGIN_SWITCH_LABEL` e icono propio en `PLUGIN_SWITCH_ICONS`/`CONFIG_PLUGIN_ICONS`. Deliberadamente NO se añade a `PLUGIN_SWITCH_VISIBLE` (selector de nivel superior) -- mismo criterio que Tuya/TP-Link/Govee/Shelly, se entra desde la pestaña Configuración.
+
 ## 0.77.36
 
 **Covers Orchestrator, parte 2: faltaba registrar el slug en `PLUGIN_REGISTRY`.**

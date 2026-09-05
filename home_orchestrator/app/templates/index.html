@@ -1768,8 +1768,9 @@ const PLUGIN_SWITCH_ICONS = {
   starlink: '<path d="M12 3a9 9 0 0 1 9 9h-2a7 7 0 0 0-7-7V3Z" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M12 14v7M9 21h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/>',
   govee: '<circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 4v2.5M12 17.5V20M4 12h2.5M17.5 12H20M6.5 6.5l1.8 1.8M15.7 15.7l1.8 1.8M6.5 17.5l1.8-1.8M15.7 8.3l1.8-1.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>',
   shelly: '<path d="M12 2 3 8v13h6v-6h6v6h6V8L12 2Z" fill="currentColor"/>',
+  covers: '<path d="M4 3h16v2H4V3Zm0 4h16v2H4V7Zm0 4h16v2H4v-2Zm0 4h16v2H4v-2Zm0 4h16v2H4v-2Z" fill="currentColor"/>',
 };
-const PLUGIN_SWITCH_LABEL = { battery: 'Energy', climate: 'Climate', tuya: 'Tuya', lighting: 'Lighting', tplink: 'TP-Link', starlink: 'Starlink', govee: 'Govee', shelly: 'Shelly' };
+const PLUGIN_SWITCH_LABEL = { battery: 'Energy', climate: 'Climate', tuya: 'Tuya', lighting: 'Lighting', tplink: 'TP-Link', starlink: 'Starlink', govee: 'Govee', shelly: 'Shelly', covers: 'Covers' };
 
 // "Configuración" (antes una pestaña MAS dentro de Energy) vive ahora en
 // este mismo selector de nivel superior, junto a Energy/Climate/
@@ -1796,7 +1797,7 @@ const PLUGIN_SWITCH_VISIBLE = new Set(['battery', 'climate', 'lighting', 'starli
 // Tuya/TP-Link incluidos -- es el sitio para ir a configurarlos, a
 // proposito distinto del selector de nivel superior de arriba.
 const CONFIG_PLUGIN_ICONS = { ...PLUGIN_SWITCH_ICONS };
-const CONFIG_PLUGIN_HREF = { battery: null, climate: 'plugins/climate/', tuya: 'plugins/tuya/', lighting: 'plugins/lighting/', tplink: 'plugins/tplink/', starlink: 'plugins/starlink/', govee: 'plugins/govee/', shelly: 'plugins/shelly/' };
+const CONFIG_PLUGIN_HREF = { battery: null, climate: 'plugins/climate/', tuya: 'plugins/tuya/', lighting: 'plugins/lighting/', tplink: 'plugins/tplink/', starlink: 'plugins/starlink/', govee: 'plugins/govee/', shelly: 'plugins/shelly/', covers: 'plugins/covers/' };
 async function renderConfigPluginGrid() {
   const grid = document.getElementById('config-plugin-grid');
   try {
