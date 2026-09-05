@@ -20,6 +20,17 @@ DEFAULT_ZONE_CONFIG = {
     # misma orientacion (p.ej. dos ventanas del mismo salon) para que se
     # muevan juntas.
     "cover_entities": [],
+    # Algunos dispositivos (confirmado con ciertos Aqara Roller Shade
+    # Driver, entre otros) reportan `current_position`/aceptan
+    # `set_cover_position` al REVES de la convencion estandar de HA
+    # (100=abierta, 0=cerrada) -- con esto activo, el motor de decision
+    # SIGUE razonando siempre en la convencion normal (0=cerrada,
+    # 100=abierta) y solo se invierte el numero justo antes de leerlo/
+    # mandarlo a HA (ver ZoneRunner._current_position/_apply_position).
+    # Por zona, no por persiana individual -- si una zona mezcla
+    # persianas con convenciones distintas, hace falta separarlas en
+    # zonas distintas.
+    "invert_position": False,
     "respect_manual_changes": True,
     "reapply_minutes": 5,
     # Cierre nocturno (privacidad) / apertura diurna -- independientes

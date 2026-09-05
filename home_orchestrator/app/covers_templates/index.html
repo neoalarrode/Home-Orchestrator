@@ -31,6 +31,7 @@
     <input type="text" id="zf-name" placeholder="Salón">
     <label>Persianas (entity_id de HA, separadas por comas)</label>
     <input type="text" id="zf-covers" placeholder="cover.ventana_patio">
+    <div class="checkline"><input type="checkbox" id="zf-invert"><label for="zf-invert">Invertir posición (activar si esta persiana reporta 100%=cerrada / 0%=abierta, al revés de lo normal)</label></div>
     <div class="checkline"><input type="checkbox" id="zf-night-close"><label for="zf-night-close">Cerrar de noche (privacidad)</label></div>
     <div class="checkline"><input type="checkbox" id="zf-day-open"><label for="zf-day-open">Abrir de día</label></div>
     <div class="checkline"><input type="checkbox" id="zf-sun-protection"><label for="zf-sun-protection">Protección solar (baja parcialmente si el sol da directo a la ventana)</label></div>
@@ -105,7 +106,7 @@ async function loadZones() {
     div.innerHTML = `
       <h2>${cfg.name || z.id}</h2>
       <div class="reason">${live.reason || "sin evaluar todavía"} ${live.desired_position != null ? `(objetivo: ${live.desired_position}%)` : ""}</div>
-      <div class="help">Persianas: ${listToCsv(cfg.cover_entities)}</div>
+      <div class="help">Persianas: ${listToCsv(cfg.cover_entities)}${cfg.invert_position ? " (posición invertida)" : ""}</div>
       <div class="help">
         ${cfg.night_close_enabled ? "✓ cierre nocturno" : ""}
         ${cfg.day_open_enabled ? "✓ apertura diurna" : ""}
@@ -123,6 +124,7 @@ async function createZone() {
   const payload = {
     name: document.getElementById("zf-name").value.trim(),
     cover_entities: csvToList("zf-covers"),
+    invert_position: document.getElementById("zf-invert").checked,
     night_close_enabled: document.getElementById("zf-night-close").checked,
     day_open_enabled: document.getElementById("zf-day-open").checked,
     sun_protection_enabled: document.getElementById("zf-sun-protection").checked,

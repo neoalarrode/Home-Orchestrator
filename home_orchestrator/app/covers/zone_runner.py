@@ -101,9 +101,19 @@ class ZoneRunner:
         attrs = st.get("attributes") or {}
         pos = attrs.get("current_position")
         if pos is not None:
-            return round(pos)
+            pos = round(pos)
+            # `invert_position` (ver zone_store.py): el motor de decision
+            # SIEMPRE razona en la convencion normal (0=cerrada,
+            # 100=abierta) -- si el dispositivo real reporta al reves, se
+            # invierte AQUI, en el unico punto de lectura, para que el
+            # resto del codigo nunca tenga que saberlo.
+            if self.zone.get("invert_position", False):
+                pos = FULLY_OPEN - pos
+            return pos
         # Sin `current_position` (persiana solo abierto/cerrado, sin
-        # posicion intermedia) -- se aproxima por el propio `state`.
+        # posicion intermedia) -- se aproxima por el propio `state`, que
+        # HA ya normaliza el solo (open/closed son semanticos, no un
+        # numero que se pueda invertir).
         state = st.get("state")
         if state == "open":
             return FULLY_OPEN
@@ -293,11 +303,12 @@ class ZoneRunner:
             overrides.pop(entity_id, None)
 
     def _apply_position(self, states: dict[str, dict], entity_id: str, position: int) -> None:
+        raw_position = FULLY_OPEN - position if self.zone.get("invert_position", False) else position
         try:
             if self._supports_position(states, entity_id):
                 self.ws.call_service(
                     "cover", "set_cover_position",
-                    service_data={"position": position}, target={"entity_id": entity_id},
+                    service_data={"position": raw_position}, target={"entity_id": entity_id},
                 )
             elif position >= 50:
                 self.ws.call_service("cover", "open_cover", target={"entity_id": entity_id})

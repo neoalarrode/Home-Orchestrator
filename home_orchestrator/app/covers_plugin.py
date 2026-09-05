@@ -38,7 +38,7 @@ DEFAULT_REAPPLY_MINUTES = 5
 class CoversPlugin(Plugin):
     slug = "covers"
     name = "Covers Orchestrator"
-    version = "0.2.0"
+    version = "0.3.0"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
