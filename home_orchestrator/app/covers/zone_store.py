@@ -107,6 +107,17 @@ DEFAULT_ZONE_CONFIG = {
     "indoor_temp_sensor": "",
     "sun_protection_max_warming_deg_h": 0.8,
     "sun_protection_learn_step_pct": 5,
+    # Orientacion de la ventana (opcional, DESACTIVADO por defecto) --
+    # mismo `indoor_temp_sensor` de arriba, pero para aprender el propio
+    # RANGO de acimut (`window_azimuth_min/max`) en vez de solo el % de
+    # cierre: sin esto, ese rango hay que declararlo a mano (HA no
+    # guarda en ningun sitio hacia donde da una ventana) -- con esto
+    # activo, se deduce solo del historico real (ver
+    # covers/orientation_learning.py) y los dos campos manuales se
+    # ignoran mientras haya un dato aprendido fiable. Requiere el mismo
+    # `indoor_temp_sensor` -- sin sensor, no hay ninguna señal de la que
+    # deducirlo, esto no hace nada aunque este activado.
+    "auto_learn_window_orientation_enabled": False,
 }
 
 

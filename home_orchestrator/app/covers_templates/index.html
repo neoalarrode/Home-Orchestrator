@@ -35,13 +35,15 @@
     <div class="checkline"><input type="checkbox" id="zf-night-close"><label for="zf-night-close">Cerrar de noche (privacidad)</label></div>
     <div class="checkline"><input type="checkbox" id="zf-day-open"><label for="zf-day-open">Abrir de día</label></div>
     <div class="checkline"><input type="checkbox" id="zf-sun-protection"><label for="zf-sun-protection">Protección solar (baja parcialmente si el sol da directo a la ventana)</label></div>
+    <div class="checkline"><input type="checkbox" id="zf-auto-orientation"><label for="zf-auto-orientation">Aprender la orientación de la ventana automáticamente (requiere el sensor de temperatura de abajo)</label></div>
+    <p class="help">Con esto activo se ignoran los grados de abajo -- se deducen solos del histórico real (varios días) comparando el sensor de temperatura de la zona con la posición del sol, sin protección mientras no haya dato fiable todavía. Sin esto, hay que declarar los grados a mano.</p>
     <div class="grid3">
       <div>
-        <label>Azimut mínimo (°)</label>
+        <label>Azimut mínimo (°) -- manual</label>
         <input type="number" id="zf-az-min" value="90">
       </div>
       <div>
-        <label>Azimut máximo (°)</label>
+        <label>Azimut máximo (°) -- manual</label>
         <input type="number" id="zf-az-max" value="270">
       </div>
       <div>
@@ -125,7 +127,7 @@ async function loadZones() {
       <div class="help">
         ${cfg.night_close_enabled ? "✓ cierre nocturno" : ""}
         ${cfg.day_open_enabled ? "✓ apertura diurna" : ""}
-        ${cfg.sun_protection_enabled ? `✓ protección solar (azimut ${cfg.window_azimuth_min}-${cfg.window_azimuth_max}°, elevación ≥${cfg.sun_protection_min_elevation}°, baja a ${cfg.sun_protection_position_pct}%${cfg.climate_entity ? `, vinculada a ${cfg.climate_entity}` : ""}${cfg.auto_learn_sun_protection_enabled ? `, aprendida${live.learned_sun_protection_position_pct != null ? ` (ahora: ${live.learned_sun_protection_position_pct}%)` : " (sin datos todavía)"} vía ${cfg.indoor_temp_sensor || "sin sensor"}` : ""})` : ""}
+        ${cfg.sun_protection_enabled ? `✓ protección solar (azimut ${cfg.auto_learn_window_orientation_enabled ? (live.learned_window_azimuth_min != null ? `${live.learned_window_azimuth_min}-${live.learned_window_azimuth_max}° (aprendido)` : "sin datos todavía (aprendiendo)") : `${cfg.window_azimuth_min}-${cfg.window_azimuth_max}° (manual)`}, elevación ≥${cfg.sun_protection_min_elevation}°, baja a ${cfg.sun_protection_position_pct}%${cfg.climate_entity ? `, vinculada a ${cfg.climate_entity}` : ""}${cfg.auto_learn_sun_protection_enabled ? `, % aprendido${live.learned_sun_protection_position_pct != null ? ` (ahora: ${live.learned_sun_protection_position_pct}%)` : " (sin datos todavía)"} vía ${cfg.indoor_temp_sensor || "sin sensor"}` : ""})` : ""}
         ${cfg.day_rhythm_enabled ? `✓ ritmo diario (${cfg.day_rhythm_min_position_pct}%-${cfg.day_rhythm_max_position_pct}%)` : ""}
       </div>
       <button class="secondary" onclick="refreshZone('${z.id}')">Forzar decisión ahora</button>
@@ -145,6 +147,7 @@ async function createZone() {
     sun_protection_enabled: document.getElementById("zf-sun-protection").checked,
     window_azimuth_min: parseFloat(document.getElementById("zf-az-min").value) || 0,
     window_azimuth_max: parseFloat(document.getElementById("zf-az-max").value) || 360,
+    auto_learn_window_orientation_enabled: document.getElementById("zf-auto-orientation").checked,
     sun_protection_min_elevation: parseFloat(document.getElementById("zf-elevation-min").value) || 20,
     sun_protection_position_pct: parseFloat(document.getElementById("zf-sun-position").value) || 0,
     climate_entity: document.getElementById("zf-climate-entity").value.trim(),

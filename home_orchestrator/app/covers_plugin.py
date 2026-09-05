@@ -38,7 +38,7 @@ DEFAULT_REAPPLY_MINUTES = 5
 class CoversPlugin(Plugin):
     slug = "covers"
     name = "Covers Orchestrator"
-    version = "0.4.0"
+    version = "0.5.0"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
@@ -94,6 +94,8 @@ class CoversPlugin(Plugin):
                         "desired_position": runner.desired_position,
                         "sun_position_ok": runner.sun_position_ok,
                         "learned_sun_protection_position_pct": z.get("state", {}).get("learned_sun_protection_position_pct"),
+                        "learned_window_azimuth_min": z.get("state", {}).get("learned_window_azimuth_min"),
+                        "learned_window_azimuth_max": z.get("state", {}).get("learned_window_azimuth_max"),
                     }
                 out.append(item)
             return flask.jsonify(out)

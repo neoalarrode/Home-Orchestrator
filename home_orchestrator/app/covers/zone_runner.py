@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 import time
 
-from covers import schedule, sun_learning
+from covers import orientation_learning, schedule, sun_learning
 
 log = logging.getLogger("covers.zone_runner")
 
@@ -53,6 +53,14 @@ POSITION_TOLERANCE_PCT = 4
 
 FULLY_OPEN = 100
 FULLY_CLOSED = 0
+
+# Cadencia del recalculo de orientacion -- caro (historico real de varios
+# dias), no se hace en cada ciclo reactivo/periodico normal. Mismo orden
+# de magnitud que MODEL_RECOMPUTE_MIN_INTERVAL_SECONDS en
+# climate/zone_runner.py (6h) -- la orientacion de una ventana no cambia
+# nunca, solo hace falta re-intentarlo mientras no haya dato fiable
+# todavia y refrescarlo de cuando en cuando despues por si acaso.
+ORIENTATION_RECOMPUTE_MIN_INTERVAL_SECONDS = 21600
 
 
 def _azimuth_in_range(azimuth: float, lo: float, hi: float) -> bool:
@@ -204,6 +212,44 @@ class ZoneRunner:
         learned = self._state.get("learned_sun_protection_position_pct")
         return configured if learned is None else int(learned)
 
+    def _maybe_refresh_orientation(self, cfg: dict) -> None:
+        """Recalcula `window_azimuth_min/max` aprendido si esta activo,
+        con el mismo throttle que Climate aplica a su inercia termica
+        (ORIENTATION_RECOMPUTE_MIN_INTERVAL_SECONDS) -- una consulta de
+        varios dias de historico no se hace en cada ciclo. Se reintenta
+        mas a menudo mientras no haya dato fiable todavia (nada que
+        perder, y cuanto antes haya un rango aprendido, antes deja de
+        depender del configurado a mano)."""
+        if not cfg.get("auto_learn_window_orientation_enabled", False):
+            return
+        if not cfg.get("indoor_temp_sensor"):
+            return
+        last_ts = self._state.get("_orientation_last_computed_ts")
+        already_reliable = self._state.get("learned_window_azimuth_min") is not None
+        if already_reliable and last_ts is not None and time.time() - last_ts < ORIENTATION_RECOMPUTE_MIN_INTERVAL_SECONDS:
+            return
+        result = orientation_learning.compute_orientation(self.ws, cfg)
+        self._state["_orientation_last_computed_ts"] = time.time()
+        if result.get("reliable"):
+            self._state["learned_window_azimuth_min"] = result["azimuth_min"]
+            self._state["learned_window_azimuth_max"] = result["azimuth_max"]
+
+    def _effective_azimuth_range(self, cfg: dict) -> tuple[float, float] | None:
+        """Rango de acimut a usar ahora mismo: el aprendido (ver
+        `covers/orientation_learning.py`) si el aprendizaje esta activo,
+        o `None` si esta activo pero TODAVIA no hay un dato fiable --
+        nunca se cae al configurado a mano en ese caso, para no proteger
+        con un rango que el usuario nunca declaro a proposito. Sin el
+        aprendizaje activado, el configurado de siempre (comportamiento
+        identico al de antes de que existiera esta funcion)."""
+        if not cfg.get("auto_learn_window_orientation_enabled", False):
+            return float(cfg.get("window_azimuth_min", 0) or 0), float(cfg.get("window_azimuth_max", 360) or 360)
+        lo = self._state.get("learned_window_azimuth_min")
+        hi = self._state.get("learned_window_azimuth_max")
+        if lo is None or hi is None:
+            return None
+        return float(lo), float(hi)
+
     def _sun_protection_position(self, cfg: dict, sun_attrs: dict, states: dict[str, dict]) -> int | None:
         """Posicion que pide la proteccion solar ahora mismo, o `None` si
         no aplica en absoluto (fuera de la ventana de azimut, de noche,
@@ -234,8 +280,12 @@ class ZoneRunner:
             return None
         if elevation <= 0:
             return None  # de noche/al ras del horizonte, nunca hay nada que proteger
-        lo = float(cfg.get("window_azimuth_min", 0) or 0)
-        hi = float(cfg.get("window_azimuth_max", 360) or 360)
+
+        self._maybe_refresh_orientation(cfg)
+        azimuth_range = self._effective_azimuth_range(cfg)
+        if azimuth_range is None:
+            return None  # aprendizaje de orientacion activo, pero sin dato fiable todavia
+        lo, hi = azimuth_range
         if not _azimuth_in_range(azimuth, lo, hi):
             return None
         if self._climate_wants_heat(states, cfg):
