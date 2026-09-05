@@ -171,11 +171,17 @@ def _shelly():
     return ShellyPlugin()
 
 
+def _covers():
+    _prefer_downloaded("covers")
+    from covers_plugin import CoversPlugin
+    return CoversPlugin()
+
+
 # Slug -> constructor.
 PLUGIN_REGISTRY = {
     "battery": _battery, "climate": _climate, "tuya": _tuya,
     "lighting": _lighting, "tplink": _tplink, "starlink": _starlink,
-    "govee": _govee, "shelly": _shelly,
+    "govee": _govee, "shelly": _shelly, "covers": _covers,
 }
 
 # Metadatos + procedencia verificada para la tienda de plugins de la

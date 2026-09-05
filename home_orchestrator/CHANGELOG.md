@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.77.36
+
+**Covers Orchestrator, parte 2: faltaba registrar el slug en `PLUGIN_REGISTRY`.**
+
+La 0.77.34 sembro "covers" en `PLUGIN_CATALOG` (metadatos/descarga) pero
+`POST /api/core/plugins/covers/install` seguia devolviendo "plugin
+desconocido" -- `PLUGIN_REGISTRY` (slug -> funcion que de verdad
+instancia la clase del plugin) es un diccionario APARTE, tambien
+horneado en la imagen, y necesitaba su propia entrada `_covers()`.
+
 ## 0.77.34
 
 **Nuevo plugin: Covers Orchestrator (persianas/toldos) — release del CORE, no solo de plugins.json.**
