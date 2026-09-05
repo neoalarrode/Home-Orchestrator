@@ -2,182 +2,388 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<title>Covers Orchestrator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home Orchestrator — Covers</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%3E%3Crect%20width%3D%2724%27%20height%3D%2724%27%20rx%3D%276%27%20fill%3D%27%2338bdf8%27%2F%3E%3Cpath%20d%3D%27M4%203h16v2H4V3Zm0%204h16v2H4V7Zm0%204h16v2H4v-2Zm0%204h16v2H4v-2Zm0%204h16v2H4v-2Z%27%20fill%3D%27%23000000%27%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="../../shared/design-system.css">
 <style>
-  body { font-family: system-ui, sans-serif; background: #12151a; color: #e6e6e6; margin: 0; padding: 24px; }
-  h1 { font-size: 20px; }
-  .zone { background: #1b1f27; border: 1px solid #2a2f3a; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-  .zone h2 { margin: 0 0 8px 0; font-size: 16px; }
-  .reason { color: #9fb3c8; font-size: 13px; margin-bottom: 12px; }
-  label { display: block; font-size: 13px; margin-top: 10px; color: #cfd8e3; }
-  input[type="text"], input[type="number"], textarea { width: 100%; box-sizing: border-box; background: #0f1216; border: 1px solid #2a2f3a; color: #e6e6e6; border-radius: 6px; padding: 6px 8px; margin-top: 4px; }
-  .checkline { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
-  button { background: #2d6cdf; color: white; border: none; border-radius: 6px; padding: 8px 14px; cursor: pointer; margin-top: 12px; margin-right: 8px; }
-  button.secondary { background: #3a4150; }
-  button.danger { background: #b3372c; }
-  .help { color: #7c8aa0; font-size: 12px; margin-top: 4px; }
-  #new-zone { background: #1b1f27; border: 1px solid #2a2f3a; border-radius: 8px; padding: 16px; }
+  /* Mismo lenguaje visual que el resto de Home Orchestrator, via el
+     sistema de diseño compartido (ver /shared/design-system.css) --
+     aqui solo lo especifico de esta pagina, mismo patron que Lighting/
+     Climate (zone-grid/zone-card/icon-btn no viven en el compartido). */
+  .subtitle { max-width: 62ch; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 16px; }
+  @media (max-width: 700px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+
+  .zone-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .zone-card {
+    border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 18px 20px;
+    background: var(--glass-bg); backdrop-filter: var(--glass-blur-soft); -webkit-backdrop-filter: var(--glass-blur-soft);
+    box-shadow: var(--shadow);
+  }
+  .zone-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 2px; flex-wrap: wrap; }
+  .zone-name { font-family: var(--font-display); font-weight: 700; font-size: 1rem; }
+
+  /* Hero: posicion en grande (mismo peso visual que la temperatura de
+     Climate o el brillo de Lighting) + una barra horizontal que
+     representa la propia persiana, rellena hasta el % real -- lectura
+     inmediata de "cuanto esta abierta" sin tener que leer el numero. */
+  .zone-hero { display: flex; align-items: center; gap: 12px; margin: 8px 0 2px; }
+  .zone-hero .val { font-family: var(--font-body); font-size: 2.1rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; flex: none; }
+  .blind-bar { flex: 1; height: 14px; border-radius: 7px; background: var(--bg-alt); box-shadow: inset 0 0 0 1px var(--border); overflow: hidden; }
+  .blind-bar-fill { height: 100%; background: var(--accent); border-radius: inherit; transition: width .3s; }
+
+  .zone-meta { font-size: .8rem; color: var(--muted); margin-top: 5px; }
+  .zone-meta strong { color: var(--text); font-weight: 600; }
+  .zone-reason { font-size: 0.78rem; color: var(--muted); margin-top: 8px; min-height: 2.2em; }
+
+  .badge-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .badge {
+    font-size: .72rem; font-weight: 600; padding: 3px 9px; border-radius: 20px;
+    background: var(--accent-soft); color: var(--accent); white-space: nowrap;
+  }
+  .badge.dim { background: var(--bg-alt); color: var(--muted); }
+
+  .zone-actions { display: flex; align-items: center; gap: 6px; margin-top: 14px; }
+  .zone-actions .spacer { flex: 1; }
+  .zone-actions button.secondary { padding: 7px 12px; font-size: .78rem; }
+  .icon-btn {
+    width: 30px; height: 30px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+    background: var(--card); color: var(--muted); box-shadow: 0 0 0 1px var(--border); border-radius: 8px; flex: none;
+  }
+  .icon-btn:hover { color: var(--text); filter: none; }
+  .icon-btn.danger:hover { color: var(--red); }
 </style>
 </head>
 <body>
-  <h1>Covers Orchestrator — persianas/toldos</h1>
-  <div id="zones"></div>
 
-  <div id="new-zone">
-    <h2>Nueva zona</h2>
-    <label>Nombre</label>
-    <input type="text" id="zf-name" placeholder="Salón">
-    <label>Persianas (entity_id de HA, separadas por comas)</label>
-    <input type="text" id="zf-covers" placeholder="cover.ventana_patio">
-    <div class="checkline"><input type="checkbox" id="zf-invert"><label for="zf-invert">Invertir posición (activar si esta persiana reporta 100%=cerrada / 0%=abierta, al revés de lo normal)</label></div>
-    <div class="checkline"><input type="checkbox" id="zf-night-close"><label for="zf-night-close">Cerrar de noche (privacidad)</label></div>
-    <div class="checkline"><input type="checkbox" id="zf-day-open"><label for="zf-day-open">Abrir de día</label></div>
-    <div class="checkline"><input type="checkbox" id="zf-sun-protection"><label for="zf-sun-protection">Protección solar (baja parcialmente si el sol da directo a la ventana)</label></div>
-    <div class="checkline"><input type="checkbox" id="zf-auto-orientation"><label for="zf-auto-orientation">Aprender la orientación de la ventana automáticamente (requiere el sensor de temperatura de abajo)</label></div>
-    <p class="help">Con esto activo se ignoran los grados de abajo -- se deducen solos del histórico real (varios días) comparando el sensor de temperatura de la zona con la posición del sol, sin protección mientras no haya dato fiable todavía. Sin esto, hay que declarar los grados a mano.</p>
-    <div class="grid3">
-      <div>
-        <label>Azimut mínimo (°) -- manual</label>
-        <input type="number" id="zf-az-min" value="90">
-      </div>
-      <div>
-        <label>Azimut máximo (°) -- manual</label>
-        <input type="number" id="zf-az-max" value="270">
-      </div>
-      <div>
-        <label>Elevación mínima (°)</label>
-        <input type="number" id="zf-elevation-min" value="20">
-      </div>
-    </div>
-    <p class="help">Azimut = orientación de la ventana en grados de brújula (0=norte, 90=este, 180=sur, 270=oeste). Si el sol está entre el mínimo y el máximo, y por encima de la elevación mínima, se considera que da directo a esta ventana.</p>
-    <label>Posición al proteger del sol (%) — 0 = cerrada del todo (por defecto)</label>
-    <input type="number" id="zf-sun-position" value="0" style="max-width:160px">
-
-    <label>Zona de Climate vinculada (entity_id climate.*, opcional)</label>
-    <input type="text" id="zf-climate-entity" placeholder="climate.salon">
-    <p class="help">Con esto declarado: si esa zona está pidiendo calor ahora mismo, la protección solar se salta (el sol es calefacción gratis en invierno). Si además esa entidad expone previsión de temperatura exterior, la protección se cierra de forma gradual según se acerca la subida prevista, en vez de un salto brusco al cruzar la elevación mínima.</p>
-    <div class="grid2">
-      <div>
-        <label>Previsión: horas a mirar por delante</label>
-        <input type="number" id="zf-forecast-lookahead" value="3">
-      </div>
-      <div>
-        <label>Previsión: subida (°C) que cuenta como "fuerte"</label>
-        <input type="number" id="zf-forecast-threshold" value="3">
-      </div>
-    </div>
-
-    <div class="checkline"><input type="checkbox" id="zf-day-rhythm"><label for="zf-day-rhythm">Ritmo diario (se abre progresivamente hasta mediodía solar, se cierra progresivamente hasta el atardecer)</label></div>
-    <div class="grid2">
-      <div>
-        <label>Ritmo diario: posición mínima (%)</label>
-        <input type="number" id="zf-rhythm-min" value="0">
-      </div>
-      <div>
-        <label>Ritmo diario: posición máxima (%)</label>
-        <input type="number" id="zf-rhythm-max" value="100">
-      </div>
-    </div>
-    <p class="help">Caso de uso DISTINTO de la protección solar (no depende de si el sol da directo a esta ventana en concreto) — un ritmo suave a lo largo del día entero.</p>
-
-    <div class="checkline"><input type="checkbox" id="zf-auto-learn"><label for="zf-auto-learn">Aprender el % de protección solar automáticamente (a partir de un sensor de temperatura propio de la zona)</label></div>
-    <label>Sensor de temperatura interior (entity_id sensor.*, propio de esta zona)</label>
-    <input type="text" id="zf-indoor-sensor" placeholder="sensor.salon_temperatura">
-    <p class="help">Independiente de Climate a propósito: si con la posición actual la zona sigue calentando más de lo aceptable, se cierra un poco más en el próximo ciclo; si apenas calienta, se abre un poco para aprovechar más luz. Sin este sensor declarado, el aprendizaje no hace nada aunque esté activado.</p>
-    <div class="grid2">
-      <div>
-        <label>Subida máx. aceptable (°C/hora)</label>
-        <input type="number" id="zf-learn-max-warming" value="0.8" step="0.1">
-      </div>
-      <div>
-        <label>Paso de ajuste (%)</label>
-        <input type="number" id="zf-learn-step" value="5">
-      </div>
-    </div>
-
-    <div>
-      <button onclick="createZone()">Crear zona</button>
-    </div>
+<div class="topbar">
+  <div>
+    <h1><span class="brand-mark" aria-hidden="true">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4 3h16v2H4V3Zm0 4h16v2H4V7Zm0 4h16v2H4v-2Zm0 4h16v2H4v-2Zm0 4h16v2H4v-2Z" fill="currentColor"/>
+      </svg>
+    </span>Home Orchestrator<span class="plugin-badge">Covers</span></h1>
+    <div class="subtitle">Persianas/toldos por zona — protección solar (orientación y % de cierre aprendidos solos vía sensor de temperatura propio de la zona, o declarados a mano), ritmo diario, cierre nocturno y apertura diurna.</div>
   </div>
+  <div class="topbar-right">
+    <nav class="plugin-switch" id="plugin-switch-nav" aria-label="Cambiar de plugin"></nav>
+  </div>
+</div>
 
+<div class="card">
+  <h2>
+    <span>Zonas</span>
+    <span class="hint"><span id="conn-ws" class="conn-dot"><span class="dot"></span>WebSocket</span></span>
+  </h2>
+  <div id="zone-grid" class="zone-grid"></div>
+  <div id="zone-empty" class="empty" style="display:none">Todavía no hay ninguna zona configurada — añade la primera abajo.</div>
+</div>
+
+<div class="card">
+  <details id="add-zone-details">
+    <summary><span class="add-toggle">＋ Nueva zona</span></summary>
+    <form id="zone-form" style="margin-top:16px" onsubmit="return submitZoneForm(event)">
+      <datalist id="cover-ref-options"></datalist>
+      <input type="hidden" id="zf-id" value="">
+
+      <label for="zf-name">Nombre</label>
+      <input id="zf-name" required placeholder="Salón">
+
+      <label for="zf-covers">Persianas (entity_id de HA, separadas por comas)</label>
+      <input id="zf-covers" list="cover-ref-options" placeholder="cover.ventana_patio, cover.puerta_patio">
+      <p class="help">Varias en la misma zona se mueven siempre juntas (misma orientación, p.ej. dos ventanas del mismo salón).</p>
+
+      <div class="checkline"><input type="checkbox" id="zf-invert"><label for="zf-invert">Invertir posición (activar si esta persiana reporta 100%=cerrada / 0%=abierta, al revés de lo normal)</label></div>
+
+      <p class="help" style="margin-top:14px">Reglas independientes — la primera que aplique manda, no se combinan. Ninguna activada por defecto.</p>
+
+      <div class="checkline"><input type="checkbox" id="zf-night-close"><label for="zf-night-close">Cerrar de noche (privacidad)</label></div>
+      <div class="checkline"><input type="checkbox" id="zf-day-open"><label for="zf-day-open">Abrir de día</label></div>
+
+      <div class="checkline"><input type="checkbox" id="zf-sun-protection"><label for="zf-sun-protection">Protección solar (baja parcialmente si el sol da directo a la ventana)</label></div>
+      <div class="checkline"><input type="checkbox" id="zf-auto-orientation"><label for="zf-auto-orientation">Aprender la orientación de la ventana automáticamente (requiere el sensor de temperatura de abajo)</label></div>
+      <p class="help">Con esto activo se ignoran los grados de abajo — se deducen solos del histórico real (varios días) comparando el sensor de temperatura de la zona con la posición del sol; sin dato fiable todavía, la protección simplemente no actúa. Sin esto, hay que declarar los grados a mano.</p>
+      <div class="grid3">
+        <div>
+          <label>Azimut mínimo (°) — manual</label>
+          <input type="number" id="zf-az-min" value="90">
+        </div>
+        <div>
+          <label>Azimut máximo (°) — manual</label>
+          <input type="number" id="zf-az-max" value="270">
+        </div>
+        <div>
+          <label>Elevación mínima (°)</label>
+          <input type="number" id="zf-elevation-min" value="20">
+        </div>
+      </div>
+      <p class="help">Azimut = orientación de la ventana en grados de brújula (0=norte, 90=este, 180=sur, 270=oeste). Si el sol está entre el mínimo y el máximo, y por encima de la elevación mínima, se considera que da directo a esta ventana.</p>
+      <label>Posición al proteger del sol (%) — 0 = cerrada del todo (por defecto)</label>
+      <input type="number" id="zf-sun-position" value="0" style="max-width:160px">
+
+      <label>Zona de Climate vinculada (entity_id climate.*, opcional)</label>
+      <input id="zf-climate-entity" placeholder="climate.salon">
+      <p class="help">Con esto declarado: si esa zona está pidiendo calor ahora mismo, la protección solar se salta (el sol es calefacción gratis en invierno). Si además esa entidad expone previsión de temperatura exterior, la protección se cierra de forma gradual según se acerca la subida prevista, en vez de un salto brusco.</p>
+      <div class="grid2">
+        <div>
+          <label>Previsión: horas a mirar por delante</label>
+          <input type="number" id="zf-forecast-lookahead" value="3">
+        </div>
+        <div>
+          <label>Previsión: subida (°C) que cuenta como "fuerte"</label>
+          <input type="number" id="zf-forecast-threshold" value="3">
+        </div>
+      </div>
+
+      <div class="checkline"><input type="checkbox" id="zf-auto-learn"><label for="zf-auto-learn">Aprender el % de protección solar automáticamente (a partir de un sensor de temperatura propio de la zona)</label></div>
+      <label>Sensor de temperatura interior (entity_id sensor.*, propio de esta zona)</label>
+      <input id="zf-indoor-sensor" placeholder="sensor.salon_temperatura">
+      <p class="help">Independiente de Climate a propósito: sirve tanto para aprender el % de cierre como la orientación de arriba. Sin este sensor declarado, ninguno de los dos aprendizajes hace nada aunque estén activados.</p>
+      <div class="grid2">
+        <div>
+          <label>Subida máx. aceptable (°C/hora)</label>
+          <input type="number" id="zf-learn-max-warming" value="0.8" step="0.1">
+        </div>
+        <div>
+          <label>Paso de ajuste (%)</label>
+          <input type="number" id="zf-learn-step" value="5">
+        </div>
+      </div>
+
+      <div class="checkline"><input type="checkbox" id="zf-day-rhythm"><label for="zf-day-rhythm">Ritmo diario (se abre progresivamente hasta mediodía solar, se cierra progresivamente hasta el atardecer)</label></div>
+      <div class="grid2">
+        <div>
+          <label>Ritmo diario: posición mínima (%)</label>
+          <input type="number" id="zf-rhythm-min" value="0">
+        </div>
+        <div>
+          <label>Ritmo diario: posición máxima (%)</label>
+          <input type="number" id="zf-rhythm-max" value="100">
+        </div>
+      </div>
+      <p class="help">Caso de uso DISTINTO de la protección solar (no depende de si el sol da directo a esta ventana en concreto) — un ritmo suave a lo largo del día entero.</p>
+
+      <div class="actions">
+        <button type="submit" id="zf-submit-btn">Crear zona</button>
+        <button type="button" class="ghost" onclick="cancelZoneForm()">Cancelar</button>
+      </div>
+    </form>
+  </details>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="../../shared/plugin-switch.js"></script>
 <script>
-async function api(path, opts) {
-  const res = await fetch(path, opts);
-  return res.json();
+const API = "api";
+
+function toast(msg) {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(() => t.classList.remove("show"), 2200);
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function jsAttr(s) {
+  return esc(String(s ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+}
+function csvToList(id) {
+  const v = document.getElementById(id).value.trim();
+  return v ? v.split(",").map(s => s.trim()).filter(Boolean) : [];
+}
+function listToCsv(list) { return (list || []).join(", "); }
+
+const ICON_EDIT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
+const ICON_TRASH = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 7h14M10 7V5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2M7 7l1 13h8l1-13" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+function ruleBadges(cfg, live) {
+  const badges = [];
+  if (cfg.night_close_enabled) badges.push({txt: "cierre nocturno"});
+  if (cfg.day_open_enabled) badges.push({txt: "apertura diurna"});
+  if (cfg.sun_protection_enabled) {
+    const orient = cfg.auto_learn_window_orientation_enabled
+      ? (live.learned_window_azimuth_min != null ? `${live.learned_window_azimuth_min}-${live.learned_window_azimuth_max}° aprendido` : "orientación: aprendiendo…")
+      : `${cfg.window_azimuth_min}-${cfg.window_azimuth_max}° manual`;
+    badges.push({txt: `protección solar (${orient})`});
+    if (cfg.climate_entity) badges.push({txt: `vinculada a ${cfg.climate_entity}`, dim: true});
+    if (cfg.auto_learn_sun_protection_enabled) {
+      badges.push({txt: live.learned_sun_protection_position_pct != null ? `% aprendido: ${live.learned_sun_protection_position_pct}%` : "% aprendiendo…", dim: true});
+    }
+  }
+  if (cfg.day_rhythm_enabled) badges.push({txt: `ritmo diario (${cfg.day_rhythm_min_position_pct}-${cfg.day_rhythm_max_position_pct}%)`});
+  if (cfg.invert_position) badges.push({txt: "posición invertida", dim: true});
+  if (!badges.length) badges.push({txt: "sin reglas activas", dim: true});
+  return badges.map(b => `<span class="badge ${b.dim ? "dim" : ""}">${esc(b.txt)}</span>`).join("");
 }
 
-function listToCsv(list) { return (list || []).join(", "); }
-function csvToList(id) { return document.getElementById(id).value.split(",").map(s => s.trim()).filter(Boolean); }
+function renderZones(zones) {
+  const grid = document.getElementById("zone-grid");
+  const empty = document.getElementById("zone-empty");
+  if (!zones.length) { grid.innerHTML = ""; empty.style.display = "block"; return; }
+  empty.style.display = "none";
+
+  grid.innerHTML = zones.map(z => {
+    const cfg = z.config || {};
+    const live = z.live || {};
+    const pos = live.desired_position;
+    return `
+    <div class="zone-card">
+      <div class="zone-card-head">
+        <span class="zone-name">${esc(cfg.name || z.id)}</span>
+      </div>
+      <div class="zone-hero">
+        <span class="val">${pos != null ? pos + "%" : "—"}</span>
+        <div class="blind-bar"><div class="blind-bar-fill" style="width:${pos != null ? pos : 0}%"></div></div>
+      </div>
+      <div class="zone-meta">Persianas: <strong>${esc(listToCsv(cfg.cover_entities))}</strong></div>
+      <div class="badge-row">${ruleBadges(cfg, live)}</div>
+      <div class="zone-reason">${esc(live.reason || "")}</div>
+      <div class="zone-actions">
+        <button class="secondary" onclick="refreshZone('${z.id}')">Forzar decisión</button>
+        <span class="spacer"></span>
+        <button class="icon-btn" title="Editar" aria-label="Editar" onclick="editZone('${z.id}')">${ICON_EDIT}</button>
+        <button class="icon-btn danger" title="Eliminar" aria-label="Eliminar" onclick="deleteZone('${z.id}', '${jsAttr(cfg.name || z.id)}')">${ICON_TRASH}</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+let lastZones = [];
 
 async function loadZones() {
-  const zones = await api("/api/zones");
-  const container = document.getElementById("zones");
-  container.innerHTML = "";
-  for (const z of zones) {
-    const cfg = z.config;
-    const live = z.live || {};
-    const div = document.createElement("div");
-    div.className = "zone";
-    div.innerHTML = `
-      <h2>${cfg.name || z.id}</h2>
-      <div class="reason">${live.reason || "sin evaluar todavía"} ${live.desired_position != null ? `(objetivo: ${live.desired_position}%)` : ""}</div>
-      <div class="help">Persianas: ${listToCsv(cfg.cover_entities)}${cfg.invert_position ? " (posición invertida)" : ""}</div>
-      <div class="help">
-        ${cfg.night_close_enabled ? "✓ cierre nocturno" : ""}
-        ${cfg.day_open_enabled ? "✓ apertura diurna" : ""}
-        ${cfg.sun_protection_enabled ? `✓ protección solar (azimut ${cfg.auto_learn_window_orientation_enabled ? (live.learned_window_azimuth_min != null ? `${live.learned_window_azimuth_min}-${live.learned_window_azimuth_max}° (aprendido)` : "sin datos todavía (aprendiendo)") : `${cfg.window_azimuth_min}-${cfg.window_azimuth_max}° (manual)`}, elevación ≥${cfg.sun_protection_min_elevation}°, baja a ${cfg.sun_protection_position_pct}%${cfg.climate_entity ? `, vinculada a ${cfg.climate_entity}` : ""}${cfg.auto_learn_sun_protection_enabled ? `, % aprendido${live.learned_sun_protection_position_pct != null ? ` (ahora: ${live.learned_sun_protection_position_pct}%)` : " (sin datos todavía)"} vía ${cfg.indoor_temp_sensor || "sin sensor"}` : ""})` : ""}
-        ${cfg.day_rhythm_enabled ? `✓ ritmo diario (${cfg.day_rhythm_min_position_pct}%-${cfg.day_rhythm_max_position_pct}%)` : ""}
-      </div>
-      <button class="secondary" onclick="refreshZone('${z.id}')">Forzar decisión ahora</button>
-      <button class="danger" onclick="deleteZone('${z.id}')">Borrar zona</button>
-    `;
-    container.appendChild(div);
-  }
+  try {
+    const r = await fetch(`${API}/zones`);
+    lastZones = await r.json();
+    renderZones(lastZones);
+  } catch (e) { /* red temporalmente caida -- se reintenta solo en el proximo ciclo */ }
 }
 
-async function createZone() {
-  const payload = {
+async function loadStatus() {
+  try {
+    const r = await fetch(`${API}/status`);
+    const s = await r.json();
+    document.getElementById("conn-ws").classList.toggle("ok", !!s.ws_connected);
+  } catch (e) { /* idem */ }
+}
+
+async function loadCoversRef() {
+  const list = document.getElementById("cover-ref-options");
+  try {
+    const covers = await (await fetch(`${API}/covers`)).json();
+    list.innerHTML = covers.map(c => `<option value="${esc(c.entity_id)}" label="${esc(c.name)}"></option>`).join("");
+  } catch (e) { /* sin autocompletado, se puede seguir escribiendo a mano */ }
+}
+document.getElementById("add-zone-details").addEventListener("toggle", (e) => { if (e.target.open) loadCoversRef(); });
+
+async function refreshZone(id) {
+  const r = await fetch(`${API}/zones/${id}/refresh`, {method: "POST"});
+  if (r.ok) { toast("Decisión forzada"); loadZones(); } else { toast("Fallo al forzar la decisión"); }
+}
+
+async function deleteZone(id, name) {
+  if (!confirm(`¿Eliminar la zona "${name}"? Las persianas que gestiona no cambian de posición al eliminarla.`)) return;
+  const r = await fetch(`${API}/zones/${id}`, {method: "DELETE"});
+  if (r.ok) { toast("Zona eliminada"); loadZones(); } else { toast("Fallo al eliminar"); }
+}
+
+function readZoneForm() {
+  return {
     name: document.getElementById("zf-name").value.trim(),
     cover_entities: csvToList("zf-covers"),
     invert_position: document.getElementById("zf-invert").checked,
     night_close_enabled: document.getElementById("zf-night-close").checked,
     day_open_enabled: document.getElementById("zf-day-open").checked,
     sun_protection_enabled: document.getElementById("zf-sun-protection").checked,
+    auto_learn_window_orientation_enabled: document.getElementById("zf-auto-orientation").checked,
     window_azimuth_min: parseFloat(document.getElementById("zf-az-min").value) || 0,
     window_azimuth_max: parseFloat(document.getElementById("zf-az-max").value) || 360,
-    auto_learn_window_orientation_enabled: document.getElementById("zf-auto-orientation").checked,
     sun_protection_min_elevation: parseFloat(document.getElementById("zf-elevation-min").value) || 20,
     sun_protection_position_pct: parseFloat(document.getElementById("zf-sun-position").value) || 0,
     climate_entity: document.getElementById("zf-climate-entity").value.trim(),
     sun_protection_forecast_lookahead_hours: parseFloat(document.getElementById("zf-forecast-lookahead").value) || 3,
     sun_protection_forecast_rise_threshold_deg: parseFloat(document.getElementById("zf-forecast-threshold").value) || 3,
-    day_rhythm_enabled: document.getElementById("zf-day-rhythm").checked,
-    day_rhythm_min_position_pct: parseFloat(document.getElementById("zf-rhythm-min").value) || 0,
-    day_rhythm_max_position_pct: parseFloat(document.getElementById("zf-rhythm-max").value) || 100,
     auto_learn_sun_protection_enabled: document.getElementById("zf-auto-learn").checked,
     indoor_temp_sensor: document.getElementById("zf-indoor-sensor").value.trim(),
     sun_protection_max_warming_deg_h: parseFloat(document.getElementById("zf-learn-max-warming").value) || 0.8,
     sun_protection_learn_step_pct: parseFloat(document.getElementById("zf-learn-step").value) || 5,
+    day_rhythm_enabled: document.getElementById("zf-day-rhythm").checked,
+    day_rhythm_min_position_pct: parseFloat(document.getElementById("zf-rhythm-min").value) || 0,
+    day_rhythm_max_position_pct: parseFloat(document.getElementById("zf-rhythm-max").value) || 100,
   };
-  await api("/api/zones", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
-  loadZones();
 }
 
-async function refreshZone(id) {
-  await api(`/api/zones/${id}/refresh`, { method: "POST" });
-  loadZones();
+function fillZoneForm(cfg) {
+  document.getElementById("zf-name").value = cfg.name || "";
+  document.getElementById("zf-covers").value = listToCsv(cfg.cover_entities);
+  document.getElementById("zf-invert").checked = cfg.invert_position === true;
+  document.getElementById("zf-night-close").checked = cfg.night_close_enabled === true;
+  document.getElementById("zf-day-open").checked = cfg.day_open_enabled === true;
+  document.getElementById("zf-sun-protection").checked = cfg.sun_protection_enabled === true;
+  document.getElementById("zf-auto-orientation").checked = cfg.auto_learn_window_orientation_enabled === true;
+  document.getElementById("zf-az-min").value = cfg.window_azimuth_min ?? 90;
+  document.getElementById("zf-az-max").value = cfg.window_azimuth_max ?? 270;
+  document.getElementById("zf-elevation-min").value = cfg.sun_protection_min_elevation ?? 20;
+  document.getElementById("zf-sun-position").value = cfg.sun_protection_position_pct ?? 0;
+  document.getElementById("zf-climate-entity").value = cfg.climate_entity || "";
+  document.getElementById("zf-forecast-lookahead").value = cfg.sun_protection_forecast_lookahead_hours ?? 3;
+  document.getElementById("zf-forecast-threshold").value = cfg.sun_protection_forecast_rise_threshold_deg ?? 3;
+  document.getElementById("zf-auto-learn").checked = cfg.auto_learn_sun_protection_enabled === true;
+  document.getElementById("zf-indoor-sensor").value = cfg.indoor_temp_sensor || "";
+  document.getElementById("zf-learn-max-warming").value = cfg.sun_protection_max_warming_deg_h ?? 0.8;
+  document.getElementById("zf-learn-step").value = cfg.sun_protection_learn_step_pct ?? 5;
+  document.getElementById("zf-day-rhythm").checked = cfg.day_rhythm_enabled === true;
+  document.getElementById("zf-rhythm-min").value = cfg.day_rhythm_min_position_pct ?? 0;
+  document.getElementById("zf-rhythm-max").value = cfg.day_rhythm_max_position_pct ?? 100;
 }
 
-async function deleteZone(id) {
-  if (!confirm("¿Borrar esta zona?")) return;
-  await api(`/api/zones/${id}`, { method: "DELETE" });
-  loadZones();
+function editZone(id) {
+  const z = lastZones.find(x => x.id === id);
+  if (!z) return;
+  document.getElementById("zf-id").value = id;
+  fillZoneForm(z.config || {});
+  document.getElementById("zf-submit-btn").textContent = "Guardar cambios";
+  document.getElementById("add-zone-details").open = true;
+  document.getElementById("add-zone-details").scrollIntoView({behavior: "smooth", block: "start"});
 }
 
+function cancelZoneForm() {
+  document.getElementById("zone-form").reset();
+  document.getElementById("zf-id").value = "";
+  document.getElementById("zf-submit-btn").textContent = "Crear zona";
+  document.getElementById("add-zone-details").open = false;
+}
+
+async function submitZoneForm(ev) {
+  ev.preventDefault();
+  const id = document.getElementById("zf-id").value;
+  const payload = readZoneForm();
+  if (!payload.name) {
+    toast("El nombre es obligatorio");
+    return false;
+  }
+  const url = id ? `${API}/zones/${id}` : `${API}/zones`;
+  const method = id ? "PUT" : "POST";
+  const r = await fetch(url, {method, headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)});
+  if (r.ok) {
+    toast(id ? "Zona actualizada" : "Zona creada");
+    cancelZoneForm();
+    loadZones();
+  } else {
+    const body = await r.json().catch(() => ({}));
+    toast(body.error || "Fallo al guardar la zona");
+  }
+  return false;
+}
+
+loadCoversRef();
 loadZones();
-setInterval(loadZones, 10000);
+loadStatus();
+renderPluginSwitch("covers");
+setInterval(loadZones, 8000);
+setInterval(loadStatus, 8000);
 </script>
 </body>
 </html>

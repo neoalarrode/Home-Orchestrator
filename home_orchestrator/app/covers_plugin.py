@@ -38,7 +38,7 @@ DEFAULT_REAPPLY_MINUTES = 5
 class CoversPlugin(Plugin):
     slug = "covers"
     name = "Covers Orchestrator"
-    version = "0.5.0"
+    version = "0.6.0"
 
     def __init__(self) -> None:
         self._runners: dict[str, ZoneRunner] = {}
@@ -140,7 +140,10 @@ class CoversPlugin(Plugin):
 
         @app.get("/api/status")
         def _status():
-            return flask.jsonify({"version": self.version, "zones": len(self._runners)})
+            return flask.jsonify({
+                "version": self.version, "zones": len(self._runners),
+                "ws_connected": getattr(self._ws, "connected", False),
+            })
 
     # ------------------------------------------------------------ arranque -
 
