@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.77.34
+
+**Nuevo plugin: Covers Orchestrator (persianas/toldos) — release del CORE, no solo de plugins.json.**
+
+Zona por persiana(s), mismo patron que Climate/Lighting, pero plugin propio: una persiana no es una luz ni un actuador de calor/frio, es su propio dominio de HA (`cover.*`, posicion 0-100%). Tres reglas independientes por prioridad (ninguna activada por defecto): proteccion solar (azimut/elevacion reales de `sun.sun` dentro del rango que declara la orientacion de la ventana -> baja a una posicion parcial configurable), cierre nocturno (privacidad), apertura diurna. Controla directamente `cover.set_cover_position`/`open_cover`/`close_cover` de HA, respeta `manual_override` igual que Climate/Lighting.
+
+BUG REAL DE ARQUITECTURA descubierto al desplegar esto: `plugin_loader.py:PLUGIN_CATALOG` va horneado en la imagen del addon (`COPY app/ /app/` en el Dockerfile) y `catalogo_efectivo()` solo fusiona `plugins.json` sobre slugs que YA existen en esa semilla -- nunca añade un slug genuinamente nuevo. Por eso un plugin NUEVO (a diferencia de actualizar uno existente) necesita una release del core como esta, no solo un tag+sha256 en `plugins.json`.
+
 ## 0.77.35
 
 **Selector de dispositivos integrado en el propio campo, no solo en una lista aparte (plugins Lighting 0.7.16 y Climate 0.7.5).**

@@ -277,6 +277,26 @@ PLUGIN_CATALOG = {
         "sha256": "5b4e11ca7ed9f657a9e9f66fe4ea53d40f87e29e5883c92f675b586883f72d10",  # sha256 real del tarball de v0.77.28, verificado contra una descarga real antes de fijarlo aqui (registro compartido de dispositivos device_registry.py: get_handle/list_actuators generico)
         "files": ["shelly_plugin.py", "shelly", "shelly_templates", "shelly_store.py"],
     },
+    # BUG REAL DE ARQUITECTURA, encontrado desplegando este mismo plugin:
+    # `catalogo_efectivo()` (ver plugin_manifest.py) solo fusiona el
+    # manifiesto REMOTO (plugins.json) sobre slugs que YA existen aqui --
+    # itera `for slug, meta in base.items()`, nunca añade un slug nuevo
+    # que solo exista en el remoto. Un plugin genuinamente NUEVO (nunca
+    # visto en ninguna imagen anterior) necesita, por tanto, una release
+    # del CORE (este fichero va horneado en la imagen, `COPY app/ /app/`
+    # en el Dockerfile) -- a diferencia de ACTUALIZAR uno ya existente,
+    # que si es solo cosa de plugins.json. Documentado aqui para que la
+    # proxima vez que se añada un plugin de verdad nuevo no haya que
+    # redescubrirlo.
+    "covers": {
+        "name": "Covers Orchestrator",
+        "description": "Persianas/toldos por zona — protección solar por orientación de ventana, cierre nocturno y apertura diurna, sobre cover.* ya expuestas en HA",
+        "version": "0.1.0",
+        "downloadable": True,
+        "tag": "v0.77.51",
+        "sha256": "af6b056a482b26a3db45e549528d07f530afa15520ba6b4c5d53bda970b5ff02",  # sha256 real del tarball de v0.77.51, verificado contra una descarga real antes de fijarlo aqui (primera version del plugin)
+        "files": ["covers_plugin.py", "covers", "covers_templates"],
+    },
 }
 
 
