@@ -165,10 +165,10 @@
       "description": "Persianas/toldos por zona -- proteccion solar (orientacion de ventana y % de cierre aprendidos solos via sensor de temperatura propio de la zona, o declarados a mano; con enlace opcional a Climate y previsión), ritmo diario, cierre nocturno, apertura diurna e inversion de posicion por zona, sobre cover.* ya expuestas en HA",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "downloadable": true,
-      "tag": "v0.77.55",
-      "sha256": "64a121d799bd135a3a99d653136b69e5753c40bf66e6daaa8d12499b0bb5d758",
+      "tag": "v0.77.58",
+      "sha256": "eba6e922047f979b40f0f4c02d64c6ecdb439963d29badab23480dc559d5ef5a",
       "files": [
         "covers_plugin.py",
         "covers",
