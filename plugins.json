@@ -158,6 +158,22 @@
         "shelly_templates",
         "shelly_store.py"
       ]
+    },
+    {
+      "slug": "covers",
+      "name": "Covers Orchestrator",
+      "description": "Persianas/toldos por zona -- proteccion solar por orientacion de ventana, cierre nocturno y apertura diurna, sobre cover.* ya expuestas en HA",
+      "path": "home_orchestrator",
+      "repo": "neoalarrode/Home-Orchestrator",
+      "version": "0.1.0",
+      "downloadable": true,
+      "tag": "v0.77.51",
+      "sha256": "af6b056a482b26a3db45e549528d07f530afa15520ba6b4c5d53bda970b5ff02",
+      "files": [
+        "covers_plugin.py",
+        "covers",
+        "covers_templates"
+      ]
     }
   ]
 }
