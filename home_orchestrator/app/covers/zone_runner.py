@@ -42,7 +42,7 @@ from __future__ import annotations
 import logging
 import time
 
-from covers import schedule
+from covers import schedule, sun_learning
 
 log = logging.getLogger("covers.zone_runner")
 
@@ -191,6 +191,19 @@ class ZoneRunner:
             return None
         return max(0.0, min(1.0, rise / threshold))
 
+    def _effective_target(self, cfg: dict) -> int:
+        """`sun_protection_position_pct` a usar ahora mismo: el
+        aprendido (ver `covers/sun_learning.py`) si el aprendizaje esta
+        activo y ya hay uno calculado, si no el configurado de siempre.
+        Nunca se inventa un numero -- sin aprendizaje activo, o con el
+        activado pero sin datos todavia, se comporta exactamente igual
+        que antes de que existiera esta funcion."""
+        configured = int(cfg.get("sun_protection_position_pct", 0) or 0)
+        if not cfg.get("auto_learn_sun_protection_enabled", False):
+            return configured
+        learned = self._state.get("learned_sun_protection_position_pct")
+        return configured if learned is None else int(learned)
+
     def _sun_protection_position(self, cfg: dict, sun_attrs: dict, states: dict[str, dict]) -> int | None:
         """Posicion que pide la proteccion solar ahora mismo, o `None` si
         no aplica en absoluto (fuera de la ventana de azimut, de noche,
@@ -202,9 +215,17 @@ class ZoneRunner:
         real al umbral configurado (0 lejos, 1 en el umbral o mas alla)
         con la fuerza de la subida de temperatura prevista
         (`_forecast_heat_risk`), y solo entonces interpola entre
-        FULLY_OPEN y `sun_protection_position_pct`. Sin eso legible, se
-        comporta igual que siempre: binario, de golpe al cruzar
-        `sun_protection_min_elevation`."""
+        FULLY_OPEN y el target. Sin eso legible, se comporta igual que
+        siempre: binario, de golpe al cruzar `sun_protection_min_
+        elevation`.
+
+        El target en si (`_effective_target`) puede venir de
+        `sun_protection_position_pct` (config, de siempre) o de
+        `covers/sun_learning.py` (aprendido a partir del sensor interior
+        PROPIO de la zona, sin depender de Climate) -- el aprendizaje
+        solo se ejecuta/ajusta en el tramo BINARIO (proteccion a pleno
+        rendimiento, no durante la rampa gradual de la prevision, que
+        mezclaria pendientes con distinta intensidad de sombra)."""
         if not cfg.get("sun_protection_enabled", False):
             return None
         elevation = sun_attrs.get("elevation")
@@ -220,14 +241,20 @@ class ZoneRunner:
         if self._climate_wants_heat(states, cfg):
             return None
 
-        target = int(cfg.get("sun_protection_position_pct", 0) or 0)
         min_elevation = float(cfg.get("sun_protection_min_elevation", 20) or 20)
         heat_risk = self._forecast_heat_risk(states, cfg)
         if heat_risk is None:
-            if elevation < min_elevation:
+            protecting = elevation >= min_elevation
+            target = sun_learning.update(
+                cfg, self._state, self.ws,
+                protecting_now=protecting, current_target=self._effective_target(cfg),
+            )
+            if not protecting:
                 return None
             return target
 
+        target = self._effective_target(cfg)
+        sun_learning.update(cfg, self._state, self.ws, protecting_now=False, current_target=target)
         elevation_factor = max(0.0, min(1.0, elevation / min_elevation)) if min_elevation > 0 else 1.0
         factor = elevation_factor * heat_risk
         if factor <= 0:

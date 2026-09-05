@@ -93,6 +93,20 @@ DEFAULT_ZONE_CONFIG = {
     "day_rhythm_enabled": False,
     "day_rhythm_min_position_pct": 0,
     "day_rhythm_max_position_pct": 100,
+    # Aprendizaje del % de proteccion solar (opcional, DESACTIVADO por
+    # defecto) -- a peticion expresa del usuario: en vez de fiarse de un
+    # numero fijo (`sun_protection_position_pct`), la zona ajusta ese
+    # numero sola a partir de su PROPIO sensor de temperatura interior
+    # (`indoor_temp_sensor`, deliberadamente independiente de
+    # `climate_entity`/Climate -- ver covers/sun_learning.py) -- si
+    # protegiendo a la posicion actual la zona sigue subiendo mas de lo
+    # aceptable, se cierra un poco mas; si apenas sube (sombra de sobra,
+    # luz desperdiciada), se abre un poco. Sin `indoor_temp_sensor`
+    # declarado, esto no hace nada aunque este activado.
+    "auto_learn_sun_protection_enabled": False,
+    "indoor_temp_sensor": "",
+    "sun_protection_max_warming_deg_h": 0.8,
+    "sun_protection_learn_step_pct": 5,
 }
 
 

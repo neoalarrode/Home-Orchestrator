@@ -80,6 +80,21 @@
     </div>
     <p class="help">Caso de uso DISTINTO de la protección solar (no depende de si el sol da directo a esta ventana en concreto) — un ritmo suave a lo largo del día entero.</p>
 
+    <div class="checkline"><input type="checkbox" id="zf-auto-learn"><label for="zf-auto-learn">Aprender el % de protección solar automáticamente (a partir de un sensor de temperatura propio de la zona)</label></div>
+    <label>Sensor de temperatura interior (entity_id sensor.*, propio de esta zona)</label>
+    <input type="text" id="zf-indoor-sensor" placeholder="sensor.salon_temperatura">
+    <p class="help">Independiente de Climate a propósito: si con la posición actual la zona sigue calentando más de lo aceptable, se cierra un poco más en el próximo ciclo; si apenas calienta, se abre un poco para aprovechar más luz. Sin este sensor declarado, el aprendizaje no hace nada aunque esté activado.</p>
+    <div class="grid2">
+      <div>
+        <label>Subida máx. aceptable (°C/hora)</label>
+        <input type="number" id="zf-learn-max-warming" value="0.8" step="0.1">
+      </div>
+      <div>
+        <label>Paso de ajuste (%)</label>
+        <input type="number" id="zf-learn-step" value="5">
+      </div>
+    </div>
+
     <div>
       <button onclick="createZone()">Crear zona</button>
     </div>
@@ -110,7 +125,7 @@ async function loadZones() {
       <div class="help">
         ${cfg.night_close_enabled ? "✓ cierre nocturno" : ""}
         ${cfg.day_open_enabled ? "✓ apertura diurna" : ""}
-        ${cfg.sun_protection_enabled ? `✓ protección solar (azimut ${cfg.window_azimuth_min}-${cfg.window_azimuth_max}°, elevación ≥${cfg.sun_protection_min_elevation}°, baja a ${cfg.sun_protection_position_pct}%${cfg.climate_entity ? `, vinculada a ${cfg.climate_entity}` : ""})` : ""}
+        ${cfg.sun_protection_enabled ? `✓ protección solar (azimut ${cfg.window_azimuth_min}-${cfg.window_azimuth_max}°, elevación ≥${cfg.sun_protection_min_elevation}°, baja a ${cfg.sun_protection_position_pct}%${cfg.climate_entity ? `, vinculada a ${cfg.climate_entity}` : ""}${cfg.auto_learn_sun_protection_enabled ? `, aprendida${live.learned_sun_protection_position_pct != null ? ` (ahora: ${live.learned_sun_protection_position_pct}%)` : " (sin datos todavía)"} vía ${cfg.indoor_temp_sensor || "sin sensor"}` : ""})` : ""}
         ${cfg.day_rhythm_enabled ? `✓ ritmo diario (${cfg.day_rhythm_min_position_pct}%-${cfg.day_rhythm_max_position_pct}%)` : ""}
       </div>
       <button class="secondary" onclick="refreshZone('${z.id}')">Forzar decisión ahora</button>
@@ -138,6 +153,10 @@ async function createZone() {
     day_rhythm_enabled: document.getElementById("zf-day-rhythm").checked,
     day_rhythm_min_position_pct: parseFloat(document.getElementById("zf-rhythm-min").value) || 0,
     day_rhythm_max_position_pct: parseFloat(document.getElementById("zf-rhythm-max").value) || 100,
+    auto_learn_sun_protection_enabled: document.getElementById("zf-auto-learn").checked,
+    indoor_temp_sensor: document.getElementById("zf-indoor-sensor").value.trim(),
+    sun_protection_max_warming_deg_h: parseFloat(document.getElementById("zf-learn-max-warming").value) || 0.8,
+    sun_protection_learn_step_pct: parseFloat(document.getElementById("zf-learn-step").value) || 5,
   };
   await api("/api/zones", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
   loadZones();
