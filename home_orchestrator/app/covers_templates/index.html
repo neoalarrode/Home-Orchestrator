@@ -49,8 +49,36 @@
       </div>
     </div>
     <p class="help">Azimut = orientación de la ventana en grados de brújula (0=norte, 90=este, 180=sur, 270=oeste). Si el sol está entre el mínimo y el máximo, y por encima de la elevación mínima, se considera que da directo a esta ventana.</p>
-    <label>Posición al proteger del sol (%)</label>
-    <input type="number" id="zf-sun-position" value="30" style="max-width:160px">
+    <label>Posición al proteger del sol (%) — 0 = cerrada del todo (por defecto)</label>
+    <input type="number" id="zf-sun-position" value="0" style="max-width:160px">
+
+    <label>Zona de Climate vinculada (entity_id climate.*, opcional)</label>
+    <input type="text" id="zf-climate-entity" placeholder="climate.salon">
+    <p class="help">Con esto declarado: si esa zona está pidiendo calor ahora mismo, la protección solar se salta (el sol es calefacción gratis en invierno). Si además esa entidad expone previsión de temperatura exterior, la protección se cierra de forma gradual según se acerca la subida prevista, en vez de un salto brusco al cruzar la elevación mínima.</p>
+    <div class="grid2">
+      <div>
+        <label>Previsión: horas a mirar por delante</label>
+        <input type="number" id="zf-forecast-lookahead" value="3">
+      </div>
+      <div>
+        <label>Previsión: subida (°C) que cuenta como "fuerte"</label>
+        <input type="number" id="zf-forecast-threshold" value="3">
+      </div>
+    </div>
+
+    <div class="checkline"><input type="checkbox" id="zf-day-rhythm"><label for="zf-day-rhythm">Ritmo diario (se abre progresivamente hasta mediodía solar, se cierra progresivamente hasta el atardecer)</label></div>
+    <div class="grid2">
+      <div>
+        <label>Ritmo diario: posición mínima (%)</label>
+        <input type="number" id="zf-rhythm-min" value="0">
+      </div>
+      <div>
+        <label>Ritmo diario: posición máxima (%)</label>
+        <input type="number" id="zf-rhythm-max" value="100">
+      </div>
+    </div>
+    <p class="help">Caso de uso DISTINTO de la protección solar (no depende de si el sol da directo a esta ventana en concreto) — un ritmo suave a lo largo del día entero.</p>
+
     <div>
       <button onclick="createZone()">Crear zona</button>
     </div>
@@ -81,7 +109,8 @@ async function loadZones() {
       <div class="help">
         ${cfg.night_close_enabled ? "✓ cierre nocturno" : ""}
         ${cfg.day_open_enabled ? "✓ apertura diurna" : ""}
-        ${cfg.sun_protection_enabled ? `✓ protección solar (azimut ${cfg.window_azimuth_min}-${cfg.window_azimuth_max}°, elevación ≥${cfg.sun_protection_min_elevation}°, baja a ${cfg.sun_protection_position_pct}%)` : ""}
+        ${cfg.sun_protection_enabled ? `✓ protección solar (azimut ${cfg.window_azimuth_min}-${cfg.window_azimuth_max}°, elevación ≥${cfg.sun_protection_min_elevation}°, baja a ${cfg.sun_protection_position_pct}%${cfg.climate_entity ? `, vinculada a ${cfg.climate_entity}` : ""})` : ""}
+        ${cfg.day_rhythm_enabled ? `✓ ritmo diario (${cfg.day_rhythm_min_position_pct}%-${cfg.day_rhythm_max_position_pct}%)` : ""}
       </div>
       <button class="secondary" onclick="refreshZone('${z.id}')">Forzar decisión ahora</button>
       <button class="danger" onclick="deleteZone('${z.id}')">Borrar zona</button>
@@ -100,7 +129,13 @@ async function createZone() {
     window_azimuth_min: parseFloat(document.getElementById("zf-az-min").value) || 0,
     window_azimuth_max: parseFloat(document.getElementById("zf-az-max").value) || 360,
     sun_protection_min_elevation: parseFloat(document.getElementById("zf-elevation-min").value) || 20,
-    sun_protection_position_pct: parseFloat(document.getElementById("zf-sun-position").value) || 30,
+    sun_protection_position_pct: parseFloat(document.getElementById("zf-sun-position").value) || 0,
+    climate_entity: document.getElementById("zf-climate-entity").value.trim(),
+    sun_protection_forecast_lookahead_hours: parseFloat(document.getElementById("zf-forecast-lookahead").value) || 3,
+    sun_protection_forecast_rise_threshold_deg: parseFloat(document.getElementById("zf-forecast-threshold").value) || 3,
+    day_rhythm_enabled: document.getElementById("zf-day-rhythm").checked,
+    day_rhythm_min_position_pct: parseFloat(document.getElementById("zf-rhythm-min").value) || 0,
+    day_rhythm_max_position_pct: parseFloat(document.getElementById("zf-rhythm-max").value) || 100,
   };
   await api("/api/zones", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload) });
   loadZones();
