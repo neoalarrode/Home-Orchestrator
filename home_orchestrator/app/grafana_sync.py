@@ -143,8 +143,9 @@ def check_datasource(grafana_url: str, grafana_token: str) -> dict:
             f"{grafana_url}/api/datasources/uid/{DATASOURCE_UID}",
             headers=_headers(grafana_token), timeout=REQUEST_TIMEOUT_SECONDS,
         )
-    except requests.RequestException as e:
-        return {"ok": False, "error": f"No se pudo contactar con Grafana: {e}"}
+    except requests.RequestException:
+        log.warning("Grafana: fallo contactando para comprobar el datasource", exc_info=True)
+        return {"ok": False, "error": "No se pudo contactar con Grafana -- revisa la URL."}
     if r.status_code == 404:
         return {
             "ok": False,
@@ -176,8 +177,9 @@ def sync(grafana_url: str, grafana_token: str, pv_arrays: list[dict]) -> dict:
             headers=_headers(grafana_token), timeout=REQUEST_TIMEOUT_SECONDS,
         )
         r.raise_for_status()
-    except requests.RequestException as e:
-        return {"ok": False, "error": f"No se pudo leer el dashboard de Grafana: {e}"}
+    except requests.RequestException:
+        log.warning("Grafana: fallo leyendo el dashboard", exc_info=True)
+        return {"ok": False, "error": "No se pudo leer el dashboard de Grafana -- revisa la URL y el token."}
 
     dashboard = r.json()["dashboard"]
     panels = dashboard.get("panels", [])
@@ -209,7 +211,8 @@ def sync(grafana_url: str, grafana_token: str, pv_arrays: list[dict]) -> dict:
             headers=_headers(grafana_token), json=payload, timeout=REQUEST_TIMEOUT_SECONDS,
         )
         r.raise_for_status()
-    except requests.RequestException as e:
-        return {"ok": False, "error": f"No se pudo subir el dashboard actualizado a Grafana: {e}"}
+    except requests.RequestException:
+        log.warning("Grafana: fallo subiendo el dashboard actualizado", exc_info=True)
+        return {"ok": False, "error": "No se pudo subir el dashboard actualizado a Grafana."}
 
     return {"ok": True, "message": "Dashboard de Grafana sincronizado."}
