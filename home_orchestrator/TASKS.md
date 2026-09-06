@@ -1,478 +1,95 @@
 # Tareas pendientes -- Home Orchestrator
 
-Última actualización: sesión del 2026-08-15. Este fichero es para retomar
+Última actualización: sesión del 2026-09-06. Este fichero es para retomar
 el trabajo si se pierde el contexto de la conversación -- no forma parte
 del producto, no hace falta desplegarlo ni versionarlo con cuidado.
 
+Todo lo que estaba en la versión anterior de este fichero (sesión del
+2026-08-15) y aparecía marcado "HECHO Y DESPLEGADO" o que se ha podido
+confirmar resuelto contra el repo/GitHub real en esta sesión se ha
+retirado -- ver `CHANGELOG.md` para el historial completo. Lo que queda
+abajo es SOLO lo verificado como todavía abierto ahora mismo.
+
 ## Contexto general
 
-Repo: `neoalarrode/Home-Orchestrator` (antes `Battery-Orchestrator`).
-Deploy real en `root@192.168.1.93` (SSH, ver memoria `ha_host_ssh_root_password`),
-addon `bfadc9b2_battery_orchestrator`. Verificación contra HA real en
+Repo: `neoalarrode/Home-Orchestrator`. Deploy real en `root@192.168.1.93`
+(SSH, ver memoria `ha_host_ssh_root_password`), addon
+`bfadc9b2_home_orchestrator`. Verificación contra HA real en
 `https://haos.ericlarrode.com` (token en memoria `ha_long_lived_token`).
 
-Patrón de despliegue (repetido en todo el proyecto, ver CHANGELOG.md para
-el detalle exacto de cada versión):
-1. Bump versión del/de los plugin(s) tocados (atributo `version` en su
-   `*_plugin.py`) + entrada en CHANGELOG.md.
-2. `python3 -m py_compile` de todo lo tocado.
-3. `git add -A && git commit && git tag vX.Y.Z && git push origin HEAD && git push origin vX.Y.Z`.
-4. Descargar el tarball real del tag, `shasum -a 256`, verificar contra
-   lo esperado.
-5. Actualizar el pin (`tag`+`sha256`+`version`) de cada plugin tocado en
-   `app/plugin_loader.py` -> commit/tag SEPARADO (aunque sea solo eso).
-6. Si el commit anterior toca un fichero núcleo (`core_app.py`,
-   `core_shell.py`, `plugin_loader.py`, `ha_websocket.py`,
-   `config_store.py`...) también hay que bumpear `version` en
-   `config.yaml` (versión del addon) en ESE MISMO commit/tag, y ese tag
-   SÍ lleva GitHub Release (`gh release create vX.Y.Z --title ... --notes ...`).
-   Un cambio que SOLO toca contenido de un plugin (sin tocar plugin_loader.py
-   en el mismo commit) NO lleva Release.
-7. SSH: `ha store reload && ha addons update bfadc9b2_battery_orchestrator`.
-   `ha addons update` a veces NO reconstruye la imagen de verdad -- por
-   seguridad, forzar siempre `ha addons rebuild bfadc9b2_battery_orchestrator`
-   después.
-8. Instalar el contenido nuevo de cada plugin tocado:
-   `docker exec app_bfadc9b2_battery_orchestrator curl -s -X POST
-   http://127.0.0.1:8099/api/core/plugins/<slug>/install`.
-9. **Verificar en disco, nunca fiarse solo de la API**: `docker exec ...
-   grep <algo del cambio> /data/plugins/<slug>/current/<fichero>.py` (o
-   `/app/<fichero>.py` si es núcleo).
-10. `ha addons restart bfadc9b2_battery_orchestrator`, esperar ~10s,
-    comprobar `docker ps` (Up Ns, sin reinicios) y
-    `docker logs ... | grep -i "Plugin cargado\|AssertionError"` -- las
-    5 líneas "Plugin cargado" con la versión nueva, CERO AssertionError.
-    Esperar otros 15-20s más y volver a comprobar `docker ps` antes de
-    dar el despliegue por bueno (el crash-loop de la v0.19.2 tardaba unos
-    segundos en manifestarse).
+Patrón de despliegue de un plugin YA EXISTENTE (repetido en todo el
+proyecto): bump `version` en su `*_plugin.py` + entrada en CHANGELOG.md
+-> commit/push -> `git tag vX.Y.Z` + push -> descargar el tarball del
+tag, `shasum -a 256` -> actualizar `tag`/`sha256`/`version` de ese plugin
+en `plugins.json` (raíz del repo) -> commit/push -> en el host: `docker
+exec app_bfadc9b2_home_orchestrator rm -f /data/plugins/manifest.json &&
+ha addons restart bfadc9b2_home_orchestrator` -> verificar en
+`docker logs | grep -iE "plugin cargado|error"`.
 
-## Hecho en esta sesión (todo desplegado y verificado en producción)
+Un plugin genuinamente NUEVO (slug que no ha existido nunca) necesita
+ADEMÁS una release del core primero (bump `config.yaml` + añadir el slug
+a `PLUGIN_CATALOG` Y `PLUGIN_REGISTRY` en `plugin_loader.py` -> `ha store
+reload && ha addons update bfadc9b2_home_orchestrator`, rebuild real de
+Docker) antes de que el paso anterior funcione -- ver CHANGELOG 0.77.34/
+0.77.36 para el detalle completo de por qué.
 
-- **Sistema de diseño compartido**: `app/core_static/design-system.css` +
-  `plugin-switch.js`, servidos en `/shared/*` (`core_shell.core_static_bp`).
-  Climate/Tuya/Lighting/TP-Link migradas al 100%. Battery (`app/templates/index.html`,
-  el más grande y antiguo) solo enlazado de forma ADITIVA -- su `<style>`
-  local completo sigue ahí, dedup pendiente (ver más abajo).
-- **Lighting: latencia de encendido al detectar presencia** (bug real
-  reportado por el usuario, "debería ser inmediato como con Node-RED").
-  Cinco causas reales encontradas y arregladas, en este orden (cada una
-  se creía la última hasta que el usuario probó en real y seguía lento):
-  1. `ReactiveTrigger` con margen fijo de 5s heredado de Battery -> 0.2s
-     para Lighting (`min_interval_seconds` configurable por instancia).
-  2. 7 lecturas completas de HA por WebSocket por evento (una por zona,
-     `ZoneRunner.decide_and_act` pedía su propio `get_states()`) -> UNA
-     lectura compartida por ciclo (`LightingPlugin._run_reactive_cycle`).
-  3. Luces de una misma zona encendiéndose en SERIE (llamadas bloqueantes
-     a bridges TP-Link/Tuya, una tras otra) -> en PARALELO
-     (`concurrent.futures.ThreadPoolExecutor`, tiempo total = el de la
-     luz más lenta, no la suma).
-  4. **La causa de fondo, la que explicaba que TODAS las zonas fueran
-     lentas por igual (incluso luces nativas de HA sin TP-Link/Tuya de
-     por medio)**: `HAWebSocketClient.get_states()` pedía el volcado
-     COMPLETO de HA (1770 entidades, ~870KB) por WebSocket en cada
-     llamada. Ahora hay una copia local (`_states_cache`) sembrada una
-     vez al conectar y mantenida en vivo con cada `state_changed` (ya
-     nos llegan todos, se filtraban en memoria) -- beneficia también a
-     Climate (mismo cliente compartido). `get_states()`/`get_state()`
-     pasan a ser lecturas locales instantáneas.
-  5. `zone_store.update_zone_state` releía/reescribía el fichero de
-     config COMPLETO del addon (compartido con Battery/Climate/Tuya/TP-Link)
-     una vez POR ZONA en cada ciclo (7 lecturas + 7 escrituras de disco
-     por evento) -> `update_zone_states` (plural), una sola vez para las
-     7 al final del ciclo.
-  - Además: reintento de TP-Link (colisión de sesión KLAP con la
-    integración nativa de HA) bajado de 1.0s a 0.15s por intento.
-  - Resultado medido tras el fix 5 (log `Ciclo reactivo de Lighting:
-    X.XXXs total`): bajó de 5-10s a ~1.2-3s. El usuario pidió <1s pero
-    dijo **"Déjalo de momento así y continúa con el resto"** -- posible
-    margen de mejora todavía ahí si se retoma (ver pendientes).
-- **Lighting: nuevo sufijo de luz `:solo_encendido`** (a petición expresa
-  del usuario, para las lámparas del Salón `light.salon_delante`/
-  `light.salon_derecha`) -- excluye la luz TANTO de brillo como de color
-  de la curva solar (a diferencia de `:solo_brillo`, que solo excluye
-  color); la zona solo la enciende/apaga. Ya aplicado a la zona real del
-  Salón (`rules_text` actualizado vía API).
-- Versión actual del addon en producción: **0.21.9**. Última tag de
-  contenido: **v0.21.8**. Plugins: battery v0.11.78, climate v0.3.4,
-  tuya v0.4.2, lighting v0.5.5, tplink v0.1.7.
+**Ojo con `raw.githubusercontent.com`**: tiene su propio cache CDN
+(unos minutos) independiente de la API de GitHub -- si el addon sigue
+viendo el tag/versión viejos tras un push real (confirmable con `curl
+https://api.github.com/repos/.../contents/plugins.json`, que SÍ es
+fresco), es esa caché, no un fallo del despliegue. Esperar y reintentar.
 
-## FIX GRAVE encontrado y corregido (v0.22.9): páginas rotas bajo Ingress
+## Abierto -- CodeQL (`gh api repos/neoalarrode/Home-Orchestrator/code-scanning/alerts`)
 
-Las 4 páginas migradas al sistema de diseño compartido (Climate, Lighting,
-Tuya, TP-Link) se veían SIN NINGÚN ESTILO accediendo por el Ingress real
-de HA (confirmado por el usuario con una captura de pantalla) -- causa:
-`/shared/design-system.css` y `/shared/plugin-switch.js` usaban rutas
-ABSOLUTAS, que solo funcionan accediendo directo por IP:puerto (como se
-verificaba en esta sesión, por SSH+curl) pero se rompen bajo Ingress
-(prefijo dinámico `/api/hassio_ingress/<token>/...`, una ruta que empieza
-por `/` se va al dominio raíz de HA). Corregido: rutas relativas fijas
-por plantilla (`shared/...` para Battery en raíz, `../../shared/...`
-para el resto, montadas en `/plugins/<slug>/`) + `plugin-switch.js` usa
-`ingressRoot()` (calcula el prefijo real en tiempo de ejecución mirando
-`location.pathname`, nunca hardcodeado). **Lección para el futuro: verificar
-SIEMPRE el aspecto final también por Ingress real, no solo por curl
-directo al puerto del add-on** -- todas las verificaciones de esta sesión
-se hicieron por IP:puerto, por eso no se detectó hasta que el usuario
-mandó una captura de su propio acceso real.
+Verificado en vivo esta sesión (18 stack-trace-exposure y 3 path-
+injection ya en `fixed`, 8 weak-cryptographic-algorithm en `dismissed`
+con justificación -- protocolo LAN real de Tuya, no elegible). Quedan
+abiertas:
 
-## Pendiente -- revisión de arquitectura de páginas (orden acordado: "base
-compartida primero", ya hecha; ahora dashboards reales)
+- **`py/stack-trace-exposure` x2**: `home_orchestrator/app/main.py:1981`
+  y `:3023` -- mismo patrón ya corregido en el resto del proyecto
+  (`jsonify({"error": str(exc)})` expone detalle interno; cambiar a
+  loggear con `exc_info=True` y devolver un mensaje genérico).
+- **`py/bind-socket-all-network-interfaces` x1**:
+  `home_orchestrator/app/govee/device_manager.py:234` -- sin investigar
+  todavía si es evitable (puede que el descubrimiento LAN de Govee
+  necesite escuchar en todas las interfaces a propósito, igual que el
+  `weak-cryptographic-algorithm` de Tuya) o si se puede acotar.
 
-Decisión del usuario (verbatim, resumida): Climate/Lighting/Tuya/Tapo
-"tienen hecho realmente son configuraciones no son Dashboard útil". Pidió:
-- Climate: página con gráfico por zona de lo que pretende hacer + una
-  tarjeta de termostato interactiva (como el thermostat card real).
-- Lighting: listado de zonas interactivo -- no solo presencia
-  detectada/no detectada, sino encender/apagar/modificar colores.
-- Tuya/TP-Link: van a la pestaña de configuración (ya excluidas del
-  `PLUGIN_SWITCH_VISIBLE` del nav superior, pero el enlace cruzado desde
-  DENTRO de Climate/Lighting real todavía NO está construido).
-- Energy no debería forzar el `main` del proyecto/obligar a instalarlo.
+## Abierto -- Covers Orchestrator (nuevo esta sesión, v0.6.0 en producción)
 
-### 1. Dashboard de Climate -- PRIMER PASO HECHO Y DESPLEGADO (v0.22.1)
+- **Aprendizaje de orientación/% de protección solar** (Salón y
+  Despacho, ambas con `auto_learn_window_orientation_enabled` +
+  `auto_learn_sun_protection_enabled` activos): necesita ~10 días de
+  histórico real con las persianas abiertas antes de que deje de
+  mostrar "aprendiendo…" -- nada que hacer salvo esperar y comprobar
+  más adelante.
+- **`cover.ventana_habitacion_invitados` (zona Despacho) en
+  `unavailable`** en HA -- probable fallo de batería/Zigbee del propio
+  dispositivo, no de software. Ninguna regla de Covers podrá moverla
+  mientras siga así. Pendiente de que el usuario lo revise físicamente.
+- Interfaz reescrita (v0.6.0) para alinearse con el resto (design-system
+  compartido, editar zonas en vez de solo crear) -- verificado servido
+  correctamente en producción, pero NO probado a mano en el navegador
+  (crear/editar/guardar una zona de verdad desde la UI).
 
-Tarjeta de termostato interactiva añadida a cada zona de
-`climate_templates/index.html` (stepper de temperatura, selector de
-modo/preset), sobre el gráfico de previsión de 24h que YA EXISTÍA (no
-hacía falta construirlo). Backend: `POST /api/zones/<id>/set_temperature`
-`/set_hvac_mode` `/set_preset_mode` en `climate_plugin.py`, llaman directo
-a `ZoneRunner.set_temperature`/`set_hvac_mode`/`set_preset_mode` (métodos
-que YA EXISTÍAN, mismo mecanismo que la orden MQTT real). Verificado
-funcionalmente en producción contra la zona Dormitorio (cambio de target
-low/high, cambio de preset, vuelta al valor original). Desplegado como
-v0.22.1, `docker ps` estable, sin AssertionError.
+## Abierto -- auditoría de entidades muertas
 
-**Pendiente si se quiere pulir más**: la página sigue teniendo el mismo
-formulario de configuración larga debajo (sin pestañas Dashboard/Config
-separadas) -- decidir si merece la pena separar visualmente ahora o
-dejarlo así (la tarjeta interactiva ya está arriba del todo, visible sin
-scroll para pocas zonas).
-
-### 1bis. Dashboard de Climate -- notas técnicas ya no necesarias (referencia)
-
-Investigado (backend YA EXISTE, no hace falta tocar Python, solo
-construir la vista):
-- `GET /api/zones` (climate_plugin.py:140) ya devuelve por zona:
-  `config` + `live: {available, hvac_mode, hvac_action, current_temperature,
-  target_temperature, target_temperature_low, target_temperature_high, reason}`.
-- `GET /api/zones/<id>/forecast` (climate_plugin.py:184,
-  `climate/zone_forecast.py:build_forecast`) ya devuelve 48 puntos
-  (24h pasado real + 24h futuro proyectado EN VIVO con el mismo
-  `scheduler.decide_action` que decide de verdad) por zona:
-  `{dt, historical, indoor_temp, outdoor_temp, occupied, occupied_pct,
-  action (heat/cool/idle), target_temp, reason}`. Es EXACTAMENTE el
-  gráfico "qué pretende hacer la zona" que pidió el usuario -- ya
-  calculado, solo falta pintarlo (usar la skill `dataviz` para el
-  gráfico: line chart con `indoor_temp` real vs `target_temp`, sombra de
-  `occupied_pct`, color de fondo o marcador por `action`).
-- Para la tarjeta de termostato interactiva: NO hay todavía un endpoint
-  para fijar target manualmente sin pasar por MQTT/HA -- las órdenes
-  reales pasan por `ZoneRunner._call_climate_service` (climate/zone_runner.py:542),
-  que ya resuelve bridge refs (Tuya) O `ws.call_service("climate", ...)`
-  para lo nativo de HA. Camino más simple: exponer un endpoint nuevo
-  `POST /api/zones/<id>/set_temperature` / `/set_hvac_mode` en
-  `climate_plugin.py` que llame directo a `runner._call_climate_service`
-  (mismo patrón que Lighting's `manual_command`, ver `lighting_plugin.py`
-  y `lighting/zone_runner.py:manual_command` como referencia de diseño
-  ya usada y probada en este proyecto) -- así la tarjeta del dashboard no
-  depende de que HA esté exponiendo el `climate.*` bien, ni de ir a
-  buscar el entity_id correcto desde el frontend.
-- Nota: hay una línea muerta en `climate/zone_runner.py:1282`
-  (`self.decide_and_act()` después de un `return`, dentro de
-  `build_forecast_chart`) -- inofensiva pero se puede limpiar de paso.
-
-Pasos que faltan:
-1. (Opcional pero recomendado) Backend: `POST /api/zones/<id>/set_temperature`
-   y `/set_hvac_mode` en climate_plugin.py, llamando a
-   `runner._call_climate_service` (revisar si hace falta exponerlo
-   público o añadir un método wrapper en ZoneRunner, ahora mismo es
-   "privado" con `_`).
-2. Frontend: nueva pestaña "Dashboard" en `climate_templates/index.html`
-   (usar `.page-tabs` ya preparado en `core_static/design-system.css`,
-   ver comentario en ese fichero) o una plantilla nueva
-   `climate_templates/dashboard.html` sencilla enlazada desde ahí --
-   decidir cuál según cuánto se quiera tocar la plantilla existente.
-   Por cada zona: tarjeta con temp actual/target grande + selector
-   hvac_mode + stepper de target, y el gráfico de 48h (cargar la skill
-   `dataviz` antes de construirlo, seguir su procedimiento de 7 pasos).
-3. Compilar, desplegar (bump climate_plugin.py, CHANGELOG, tag, pin,
-   config.yaml si toca núcleo, SSH, verificar).
-4. Enlace cruzado a Tuya desde esta página (para las zonas con
-   actuadores Tuya) -- pendiente también del punto 3 de más abajo.
-
-### 2. Dashboard de Lighting -- HECHO Y DESPLEGADO (v0.22.5)
-
-Tarjeta interactiva por zona en `lighting_templates/index.html`: botón
-encender/apagar, color nativo (`<input type=color>` -> HS en el
-navegador), slider de brillo, slider de temperatura de color de blancos.
-Backend: `POST /api/zones/<id>/manual_command` en `lighting_plugin.py`,
-llama directo a `ZoneRunner.manual_command` (mismo mecanismo que la luz
-dummy MQTT). `GET /api/zones` expone `group` (estado agregado) por zona.
-
-**Bug real encontrado y arreglado durante la propia verificación**:
-`group_state()` no reflejaba el brillo manual recien mandado (solo el de
-la curva automática) hasta el siguiente reajuste periódico -- nuevo
-`_manual_brightness_pct`, mismo patrón que el `_manual_hs` ya existente.
-Verificado en producción contra la zona Cocina (encender a 30% de
-brillo, ver el valor reflejado correctamente, apagar, confirmar que
-vuelve a "sin dato" -- con el retraso esperado de ~5s del sondeo TP-Link).
-
-### 3. Tuya/TP-Link a solo-configuración -- HECHO Y DESPLEGADO (v0.22.7)
-
-Enlaces cruzados reales desde Climate y Lighting hacia `/plugins/tuya/`
-y `/plugins/tplink/`, junto a los selectores de actuadores/referencias
-de luces. De paso, corregido un fallo de documentación real: el texto de
-ayuda y el docstring de `/api/light-actuators` en Lighting solo
-mencionaban Tuya, ignorando que TP-Link funciona igual desde hace
-tiempo.
-
-### 4. Root neutral, Energy no obligatorio -- YA ESTABA HECHO (sesión anterior)
-
-Verificado el código: `core_app.py`/`core_shell.py`/`plugin_base.py` YA
-implementan esto correctamente -- `Plugin.serves_root` (`battery_plugin.py`
-lo declara `True`), y si NINGÚN plugin instalado lo declara,
-`core_shell.build_shell_app()` sirve un catálogo mínimo (instalar
-plugins, restaurar copia de seguridad) en la raíz, con su propio HTML
-autocontenido. No hacía falta ningún trabajo nuevo aquí -- ya se
-construyó en una sesión anterior a esta. No se ha probado desinstalando
-Energy de verdad en producción (seria destructivo/dificil de revertir
-sobre la instalación real del usuario) pero el código es coherente y
-está bien documentado.
-
-Toca `core_app.py`/`core_shell.py` -- LOS MISMOS ficheros del crash-loop
-grave de esta sesión (bug: `start_background_threads()` antes de
-`register_blueprint()`, ver CHANGELOG 0.19.2). Cualquier cambio aquí
-necesita: compilar, probar mentalmente el orden de arranque con cuidado,
-y tras desplegar, verificar estabilidad sostenida (`docker ps` con
-"Up Ns" creciente, cero AssertionError) durante al menos 20-30s antes de
-dar por bueno. No apresurar este punto.
-
-### 5. Rules editor visual (Lighting) -- HECHO Y DESPLEGADO (v0.23.1)
-
-Tarjetas por regla (nombre, condiciones, luces con modo color+brillo/
-solo brillo/solo on-off), reordenables, con "Modo texto avanzado"
-colapsable para quien prefiera el textarea crudo (sincronizado en ambas
-direcciones). Ningún cambio en el backend (`lighting/rules.py`) -- el
-editor visual genera el MISMO texto que ya se enviaba, via un espejo en
-JS de `parse_rules_text`/`rules_to_text`. Verificado round-trip a mano
-antes de desplegar; verificado en producción que las 7 zonas existentes
-siguen leyendo/funcionando igual tras el despliegue (backend intacto).
-
-### 6. Dropdown de room-presets en la UI de Lighting -- HECHO Y DESPLEGADO (v0.23.3)
-
-Desplegable "Punto de partida por tipo de estancia" sobre la curva de
-color/brillo -- copia los 4 valores recomendados del tipo elegido a los
-campos min/max, editables despues como si se hubieran tecleado a mano.
-
-### 7. Logos para los complementos -- YA ESTABA HECHO (sesión anterior)
-
-Comprobado: `icon.png`/`logo.png` en la raíz del repo (formato que
-Supervisor de HA espera para el listado de add-ons) ya existen con la
-marca correcta (rayo violeta-cian). Home Orchestrator es UN SOLO addon
-de HA con 5 plugins internos -- no hay forma de que Supervisor muestre un
-icono por plugin interno, solo uno para el addon entero. Cada plugin SÍ
-tiene su propio favicon SVG distinto dentro de su propia página (ya
-verificado al leer las plantillas: termómetro/bombilla/nube/ondas WiFi/
-rayo) -- eso ya cubre "logo por plugin" dentro de lo que la arquitectura
-de HA permite.
-
-### 8. Plugin de Starlink -- HECHO Y DESPLEGADO (v0.24.1)
-
-A petición expresa del usuario ("no quiero que construyas un plugin nuevo
-quiero que integres el proyecto que te he mandado que lo adaptes
-mínimamente"): NO es una reimplementación como el resto de plugins --
-sirve tal cual el build web oficial de Dishylink (MIT), compilado en esta
-sesión desde el repo real (`npm install && npx tsc -b && npx vite build
---base=./` -- Node.js instalado con Homebrew, no estaba disponible antes).
-
-Backend nuevo mínimo: `app/starlink_plugin.py` sirve el build vendorizado
-(`app/starlink_dist/`, ~3MB, sin tocar su código React/TS) y expone un
-proxy `/dishy/<resto>` -> `http://192.168.100.1:9201/<resto>`, espejo
-exacto del proxy de desarrollo real del proyecto (Vite, ver su
-`vite.config.ts`) -- necesario porque el dish solo responde CORS/Referer
-a su propio origen, así que un origen ajeno no puede llamarlo directo
-desde el navegador salvo con este proxy same-origin. La app original,
-sin configurar otro host, YA usa por defecto esa misma ruta relativa
-`/dishy/...` -- cero cambios en su código.
-
-**Verificado con evidencia real contra el dish del usuario** (no solo
-"despliega y ya"): tanto el host HAOS como el contenedor del addon
-alcanzan `192.168.100.1:9201` directamente (confirmado por el propio
-usuario antes de empezar), y una petición de prueba a través del proxy
-devolvió el MISMO error de protocolo grpc-web que devuelve el dish real
-directamente -- confirma ida y vuelta real a través de nuestro backend,
-no solo que el proxy no revienta.
-
-**Limitación conocida, documentada, no arreglada**: sin proxy de router
-(lista de dispositivos/uso por wifi) -- la IP por defecto del router
-Starlink (`192.168.1.1`) coincide muy probablemente con la del propio
-router de esta instalación (misma LAN `192.168.1.0/24`). El dashboard
-del dish en sí (rendimiento, latencia, obstrucción, alineación, consumo)
-funciona igual sin esto.
-
-**Confirmado funcionando por el usuario** (v0.24.3) tras un segundo bug
-real encontrado y arreglado: el bundle vendorizado de Dishylink usaba
-rutas ABSOLUTAS de raíz de dominio (`/dishy/...`, `/dish.protoset`) que
-resolvían contra la raíz de HA, no contra `/plugins/starlink/` -- cero
-peticiones llegaban al proxy. Arreglado con UN parche de código fuente
-(`setDishHost` con rutas relativas, ver `app/starlink_dist/PATCH.md`),
-recompilado y desplegado como v0.24.3.
-
-**Nota suelta encontrada de paso**: `.dockerignore` ya excluía Climate/
-Energy/Tuya (y ahora Starlink) de la imagen base, pero NO excluye
-Lighting ni TP-Link pese a ser descargables igual que los demás -- se
-están horneando en la imagen del núcleo sin necesidad. No corregido
-(fuera del alcance de esta tarea, riesgo de tocar el build de otros
-plugins sin que se haya pedido).
-
-### 9. Actualizar todo el repositorio -- HECHO (README/DOCS; identidad)
-
-`README.md`/`README.en.md`: hero reescrito para reflejar la plataforma
-real (antes solo hablaba de "Battery Orchestrator"), tabla con los 6
-plugins, nota de licencia MIT de Dishylink. **Bug real encontrado y
-corregido de paso**: la URL de instalación apuntaba al repo antiguo
-`neoalarrode/Battery-Orchestrator` (ya no existe con ese nombre) --
-habría roto cualquier instalación nueva que siguiera el README al pie de
-la letra. `DOCS.md`/`DOCS.en.md`: título corregido, nota de que cubren
-solo Energy, referencias a la navegación de HA actualizadas.
-
-**No hecho, fuera de esta pasada**: documentación DEDICADA por plugin
-(Climate/Lighting/Tuya/TP-Link/Starlink solo tienen la tabla resumen del
-README, no una guía paso a paso como Energy en DOCS.md) -- razonable
-para una sesión futura si el usuario la pide.
-
-## Nueva tanda de tareas (sesión del 2026-08-16, tras confirmar Starlink funcionando)
-
-### 10-12. Starlink: router manual, historian real, cuenta real, botón de salida -- HECHO Y DESPLEGADO (v0.25.2)
-
-A petición expresa del usuario ("no acepto recortar funciones, implementa
-la librería de verdad"), NO se ocultó nada -- se implementó todo de
-verdad:
-
-- **Historian real**: `collector/historian.mts` de Dishylink vendorizado
-  tal cual en `app/starlink_node/` (nuevo directorio, ~330KB de fuente,
-  sin `node_modules`), corre como proceso Node de fondo
-  (`starlink_plugin.py:start_background_threads` -> `_start_node_services`),
-  persistiendo en `/data/starlink/historian`. Alimenta día/semana/mes.
-- **Servidor de cuenta real**: `cloud/starlinkCloudHandler.ts` de
-  Dishylink, también sin tocar, unido a un `node:http` normal por
-  `app/starlink_node/cloud-server.mts` (ÚNICO fichero nuevo de esta
-  integración, sin equivalente upstream). Sesión persistida en
-  `/data/starlink/.starlink-cookie`.
-- **IP de router manual**: `RouterSettingsTab.tsx` (parche real,
-  documentado en `app/starlink_dist/PATCH.md`) tiene un campo nuevo que
-  guarda via `/api/router-config` (`starlink_store.py`) -- reinicia
-  ambos procesos Node al guardar (las env vars solo se leen al
-  arrancar).
-- **Botón de vuelta**: parche real en `TopBar.tsx` (enlace `../../`).
-- **Dockerfile**: instala `nodejs npm` (apk) -- necesario en la imagen
-  base aunque Starlink no esté instalado (mismo compromiso que las
-  dependencias Python por plugin, ya documentado).
-- **Solo 2 dependencias npm en tiempo de ejecución** (`tsx`,
-  `@bufbuild/protobuf` -- nada de React/Vite/Electron, eso es build-time
-  del frontend) instaladas la PRIMERA vez que se activa el plugin
-  (`_ensure_node_deps`, ~1-2s, cacheado después).
-
-Verificado en producción con los tres servicios reales respondiendo:
-`GET /api/health` (historian, `lastWrittenMinute` real), `GET
-/cloud/account` (cloud-server, estado `not_connected` correcto), `GET
-/api/router-config`. Contenedor estable, sin `AssertionError`, tras el
-rebuild completo de la imagen (Dockerfile cambiado).
-
-**Pendiente de verificación real por el usuario**: probar el flujo de
-"pegar cookie de sesión" (Conectar cuenta) y el campo de IP de router
-manual desde su propio navegador -- solo se verificó a nivel de API
-desde esta sesión, no visualmente.
-
-### 13. Tuya/TP-Link seguían apareciendo en el menú desde Energy -- HECHO Y DESPLEGADO (v0.25.2)
-
-Causa real: `app/templates/index.html` (Energy) tiene su PROPIA copia
-del selector de plugins (nunca migrada al sistema compartido, ver nota
-en "Otras notas sueltas") con su propio `renderPluginSwitch()`, que
-filtraba solo por `p.installed` sin el mismo criterio
-`PLUGIN_SWITCH_VISIBLE` que ya tenían el resto de páginas. Añadido el
-mismo `Set(['battery','climate','lighting','starlink'])` ahí también.
-De paso, corregido `CONFIG_PLUGIN_HREF` (la pestaña "Configuración" de
-Energy, ver tarea 14): le faltaban `lighting`/`tplink`/`starlink`, solo
-tenía `battery`/`climate`/`tuya`.
-
-### 14. Sacar "Configuración" del menú de Energy al menú principal -- NO EMPEZADO
-
-Pendiente de entender exactamente qué pide el usuario -- revisar la
-estructura de pestañas actual de Energy (`app/templates/index.html`,
-`switchTab`/`.tab-panel`) antes de tocar nada.
-
-### 15. Iconos de la tienda de plugins -- HECHO (pendiente de desplegar)
-
-`core_shell.py:_CATALOG_PAGE` usaba un emoji generico (`⚡` solo para
-battery, `◐` para TODO lo demas) -- reemplazado por los mismos iconos
-SVG por plugin que ya usa `core_static/plugin-switch.js`. **Nota**: este
-fix vive en `core_shell.py` (fichero nucleo, va en la imagen base) --
-ya viaja en el commit/tag v0.25.0 desplegado, pero SOLO se ve de verdad
-si `build_shell_app()` sirve la raiz (instalacion sin Energy instalado,
-o recien nacida) -- no visible con Energy instalado (caso normal de esta
-instalacion), no se ha podido verificar visualmente esta sesion.
-
-### 16. Verificar estética consistente en todas las pestañas -- NO EMPEZADO
-
-Repasar Climate/Lighting/Tuya/TP-Link/Energy visualmente (Starlink
-queda fuera a propósito, es la app de terceros). Dado que ya se migraron
-al sistema de diseño compartido esta sesión, probablemente ya esté bien
--- pero no se ha hecho una revisión visual final, solo funcional.
-
-### 17. Identidad del repositorio: estructura de carpetas -- NO EMPEZADO
-
-El directorio principal todavía se llama `battery_orchestrator/` (ver
-ruta local de este mismo repo) pese a que el proyecto es "Home
-Orchestrator" -- revisar si merece la pena renombrar carpetas
-(`battery_orchestrator/` -> algo como `home_orchestrator/` o similar) y
-qué tocaría actualizar (Dockerfile, referencias internas, build.yaml...)
-antes de decidir si es buena idea (riesgo de romper el build si se hace
-mal).
-
-### 18. Releases faltantes / plugins.json incompleto -- NO EMPEZADO
-
-El usuario reporta que faltan plugins en "el archivo json del repo" --
-localizar ese fichero (posiblemente `plugins.json` en la raíz,
-mencionado en un comentario de `plugin_loader.py` como algo a mantener
-"en sincronía a mano" pero nunca visto/tocado esta sesión) y comparar
-contra `PLUGIN_CATALOG` real. Revisar también qué tags SÍ tienen GitHub
-Release vs cuáles no (política: solo los que tocan fichero núcleo) --
-confirmar que esa política se cumplió de verdad en todos los tags de
-esta sesión.
-
-### 19. Alertas de seguridad de GitHub (CodeQL) -- A MEDIAS
-
-Sin alertas de Dependabot. **31 alertas de CodeQL** (`gh api repos/
-neoalarrode/Home-Orchestrator/code-scanning/alerts`), por categoria:
-
-- **`py/path-injection`** (3, error, `core_backup.py`) -- **CORREGIDO Y
-  DESPLEGADO** (v0.25.0): el filtro de nombre solo comprobaba ausencia
-  de "/"/"\\", ahora se resuelve la ruta final y se comprueba que sigue
-  siendo hija real de `DATA_DIR` (`os.path.realpath`).
-- **`py/stack-trace-exposure`** (~15, error, muchos `*_plugin.py` +
-  `core_shell.py`) -- patron repetido `jsonify({"error": str(exc)}))`
-  en manejadores de error, expone detalle interno al cliente. Corregido
-  SOLO en `starlink_plugin.py` (parte del trabajo de esta sesion, ver
-  tarea 10-12) -- el resto (climate/lighting/tplink/tuya/core_shell)
-  sigue abierto, mismo patron de fix (loggear con `exc_info=True`,
-  devolver mensaje generico).
-- **`js/incomplete-sanitization`** (5, warning, varias plantillas) --
-  sin investigar todavia.
-- **`py/weak-cryptographic-algorithm`** (3, warning, `tuya/discovery.py`,
-  `tuya/tuya_lan.py`) -- probablemente INEVITABLE (el protocolo LAN real
-  de Tuya exige MD5/AES-ECB, no es eleccion nuestra) -- verificar y, si
-  es asi, marcar como "won't fix" en GitHub con la justificacion en vez
-  de dejarlas abiertas sin mas.
-- 6 alertas ya en estado `fixed` (de sesiones anteriores, no accion
-  necesaria).
+175 entidades confirmadas como muertas en toda la instancia (verificado
+con histórico real de 5 días, agrupadas por origen: Tado, Xiaomi Miot,
+Matter/Aqara, Meross, móviles, varios) -- **pendiente de que el usuario
+decida** si se eliminan todas de una vez o se revisan los grupos grandes
+uno a uno antes.
 
 ## Otras notas sueltas
 
-- `app/templates/index.html` (Battery/Energy): dedup completo del CSS
-  compartido pendiente, fuera del alcance de la fase 1 por tamaño/riesgo.
-  Sigue teniendo su propio `<style>` completo ademas del link a
-  `/shared/design-system.css`.
 - Credenciales/tokens usados esta sesión están en memoria persistente
-  (`ha_host_ssh_root_password`, `ha_long_lived_token`) -- no hace falta
-  volver a pedirlos.
+  (`ha_host_ssh_root_password`, `ha_long_lived_token`, credenciales de
+  EcoFlow/Govee/Tuya/Grafana) -- no hace falta volver a pedirlos.
+- Plan pendiente en `/Users/ericlarrode/.claude/plans/radiant-snuggling-neumann.md`:
+  cuatro controles adicionales de EcoFlow (reserva de emergencia,
+  vertido a red, salidas AC manuales, límite de importación de red
+  automático) + hacer el motor de Energy más reactivo (enganchar el feed
+  MQTT de EcoFlow al mismo disparador reactivo que ya usan los sensores
+  de HA, debounce de comando) -- diseño completo, cero código escrito
+  todavía.
