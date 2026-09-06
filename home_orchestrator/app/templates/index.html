@@ -3637,13 +3637,30 @@ function liveReconstructedLoadW() {
   return lastLive.load_now_w + solar + batteryLiveSplit().dischargeW;
 }
 
-// Reparte la lectura en vivo de cada bateria en carga/descarga. Si tiene
-// declarado un sensor CON SIGNO (modo "combined") o el par carga+descarga
-// (modo "separate"), se ve tanto la carga como la descarga en vivo — con
-// el sensor clasico de solo descarga ("power_sensor" a secas, siempre
-// positivo) solo se puede saber la descarga, la carga se queda a 0 (no
-// hay forma de leerla, se ve aparte con la ultima orden mandada).
+// Reparte la lectura en vivo del CONJUNTO de baterias en carga/descarga.
+//
+// BUG REAL corregido a peticion expresa del usuario: esto sumaba
+// `net_power_w` de CADA bateria de `lastLive.batteries` una por una. Para
+// baterias EcoFlow enlazadas en un mismo pack fisico, `net_power_w` es
+// una lectura PROPIA de cada unidad (`grid_power`, ver main.py -- cada
+// modulo mide su punto de conexion en la cadena), no una cantidad aditiva
+// entre unidades del mismo grupo -- sumar las 4 inflaba tanto el
+// indicador "Cargando/Descargando" como la reconstruccion del consumo
+// total de la casa (`liveReconstructedLoadW`, que depende de
+// `dischargeW`). El backend YA calcula el agregado real deduplicado por
+// grupo (`energy_flow.battery_net_w`/`batt_to_casa_w`, ver
+// `_live_battery_totals` en main.py) -- se reutiliza ese en vez de
+// recalcularlo aqui a partir del detalle por unidad.
 function batteryLiveSplit() {
+  const flow = lastLive && lastLive.energy_flow;
+  if (flow && flow.battery_net_w !== null && flow.battery_net_w !== undefined
+      && flow.batt_to_casa_w !== null && flow.batt_to_casa_w !== undefined) {
+    const dischargeW = flow.batt_to_casa_w;
+    const chargeW = flow.battery_net_w + dischargeW;
+    return { chargeW, dischargeW, hasNet: true };
+  }
+  // Sin `energy_flow` (p.ej. sin sensor de consumo declarado todavia) --
+  // se cae al detalle por bateria como aproximacion, mejor que nada.
   let chargeW = 0, dischargeW = 0, hasNet = false;
   for (const b of (lastLive && lastLive.batteries) || []) {
     if (b.net_power_w !== null && b.net_power_w !== undefined) {

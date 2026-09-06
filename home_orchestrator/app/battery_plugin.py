@@ -20,7 +20,7 @@ from plugin_base import Plugin
 class BatteryPlugin(Plugin):
     slug = "battery"
     name = "Energy Orchestrator"
-    version = "0.14.6"
+    version = "0.14.7"
     serves_root = True
 
     def flask_app(self):
