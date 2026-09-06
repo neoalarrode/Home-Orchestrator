@@ -1376,7 +1376,7 @@ def run_cycle():
                     lifetime_store.accumulate(key, b.name, charged_wh=wh, discharged_wh=0, legacy_id=b.id)
                 else:
                     lifetime_store.accumulate(key, b.name, charged_wh=0, discharged_wh=wh, legacy_id=b.id)
-                capacity_store.update(key, b.name, socs.get(b.id), action, wh, legacy_id=b.id)
+                capacity_store.update(key, b.name, socs.get(b.id), action, wh, declared_capacity_wh=b.capacity_wh, legacy_id=b.id)
             # BUG REAL, confirmado contra la instalacion del usuario: si NINGUNA
             # bateria aporta potencia, este bucle no acumula nada y se va sin
             # decir ni pio. Los sensores de energia cargada/descargada se

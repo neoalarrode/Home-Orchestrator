@@ -15,14 +15,38 @@ robusta que la media frente a una lectura rara), no un dato del BMS.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import statistics
 import threading
+
+log = logging.getLogger("capacity_store")
 
 CAPACITY_PATH = os.environ.get("CAPACITY_PATH", "/data/capacity.json")
 
 MIN_DELTA_PCT = 8.0    # ignorar segmentos demasiado cortos (ruido de medida)
 MAX_OBSERVATIONS = 12  # ventana de observaciones recientes que se conservan
+
+# BUG REAL, confirmado en produccion (baterias EcoFlow por BLE): un hueco
+# en el feed en vivo (`net_power_w` llega `None` durante una caida de
+# conexion BLE, ver `main.py` -- ese tick sencillamente no acumula nada)
+# mientras el SOC SI sigue reflejando el cambio real de la bateria produce
+# un segmento con un delta de SOC grande pero `segment_energy_wh` casi a
+# cero -- una "observacion" de unos pocos Wh de capacidad, que se cuela en
+# la mediana y hunde `health_pct` a un 1-5% fisicamente imposible para una
+# bateria que sigue ciclando con normalidad. Igual que
+# `thermal_model.py` descarta una pendiente fuera de rango (`0.05 <= abs
+# (slope) <= 5.0`) en vez de aceptarla ciegamente, aqui se descarta un
+# segmento cuya capacidad implicada cae fuera de un rango fisicamente
+# plausible respecto a la declarada -- ni tan bajo que solo pueda ser un
+# hueco de medida (ninguna bateria de litio pierde el 95% de su capacidad
+# de golpe y sigue ciclando normal), ni tan alto que sea un error claro de
+# unidades. El limite superior es generoso a proposito: una bateria SI
+# puede superar su declarada de verdad (packs de expansion añadidos sin
+# actualizar la config) y eso no es un bug, es la señal que esta funcion
+# existe para detectar.
+MIN_PLAUSIBLE_CAPACITY_RATIO = 0.15
+MAX_PLAUSIBLE_CAPACITY_RATIO = 4.0
 
 _lock = threading.RLock()
 
@@ -85,13 +109,22 @@ def _migrate_legacy_observations(entry: dict) -> None:
     entry.setdefault("observations_discharge", [])
 
 
-def _close_segment(entry: dict, current_soc_pct: float) -> None:
+def _close_segment(entry: dict, current_soc_pct: float, declared_capacity_wh: float, battery_name: str) -> None:
     action = entry["segment_action"]
     if action not in ("charge", "discharge") or entry["segment_start_soc"] is None:
         return
     delta = abs(current_soc_pct - entry["segment_start_soc"])
     if delta >= MIN_DELTA_PCT and entry["segment_energy_wh"] > 0:
         capacity_wh = entry["segment_energy_wh"] / (delta / 100)
+        if declared_capacity_wh > 0:
+            ratio = capacity_wh / declared_capacity_wh
+            if not (MIN_PLAUSIBLE_CAPACITY_RATIO <= ratio <= MAX_PLAUSIBLE_CAPACITY_RATIO):
+                log.warning(
+                    "%s: segmento descartado -- capacidad implicada %.1f Wh (%.0f%% de la declarada), "
+                    "fuera de rango plausible (probable hueco de datos en vivo durante el segmento, "
+                    "no una medicion real)", battery_name, capacity_wh, ratio * 100,
+                )
+                return
         key = "observations_charge" if action == "charge" else "observations_discharge"
         entry[key].append(round(capacity_wh, 1))
         entry[key] = entry[key][-MAX_OBSERVATIONS:]
@@ -99,13 +132,15 @@ def _close_segment(entry: dict, current_soc_pct: float) -> None:
 
 def update(battery_id: str, battery_name: str, soc_pct: float | None,
            action: str | None, energy_wh_this_cycle: float,
-           legacy_id: str | None = None) -> None:
+           declared_capacity_wh: float = 0.0, legacy_id: str | None = None) -> None:
     """
     Llamar una vez por ciclo con el SOC actual (%), la accion real de ESTA
     bateria ahora mismo ("charge" | "discharge" | None) y la energia (Wh,
     siempre positiva) movida en este ciclo. Cuando la accion cambia (o se
     para), se cierra el segmento anterior y, si el delta de SOC acumulado
-    es suficiente, se registra como observacion.
+    es suficiente Y la capacidad implicada es fisicamente plausible frente
+    a `declared_capacity_wh` (ver MIN/MAX_PLAUSIBLE_CAPACITY_RATIO), se
+    registra como observacion.
 
     `battery_id` deberia ser una clave ESTABLE (ver `_stable_battery_key`
     en main.py) — si no hay entrada bajo esa clave pero SI la hay bajo
@@ -143,7 +178,7 @@ def update(battery_id: str, battery_name: str, soc_pct: float | None,
         entry["name"] = battery_name
 
         if action != entry["segment_action"]:
-            _close_segment(entry, soc_pct)
+            _close_segment(entry, soc_pct, declared_capacity_wh, battery_name)
             entry["segment_action"] = action
             entry["segment_start_soc"] = soc_pct
             entry["segment_energy_wh"] = 0.0
