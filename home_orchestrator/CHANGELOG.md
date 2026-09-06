@@ -1,14 +1,24 @@
 # Changelog
 
+## battery 0.14.5
+
+Salud de bateria mostraba 1-5% para varias EcoFlow por BLE mientras seguian cargando/descargando normal -- un hueco del feed en vivo (`net_power_w` a `None` durante una caida BLE) dejaba un tick sin acumular energia aunque el SOC si hubiera cambiado, y ese segmento se colaba como una observacion de capacidad ridicula. `capacity_store.py` ahora descarta cualquier segmento cuya capacidad implicada quede fuera de un rango plausible frente a la declarada (15%-400%) antes de aceptarlo.
+
+## battery 0.14.4
+
+Botones para los controles manuales de EcoFlow (reserva de emergencia, vertido a red, salidas AC) en la interfaz -- el backend y el checkbox de autorizacion ya existian, faltaba con que llamarlos.
+
+## battery 0.14.3
+
+`/api/grafana/sync` devolvia el texto crudo de la excepcion de red al cliente (CodeQL `py/stack-trace-exposure`). Ahora se loggea entero y se devuelve un mensaje generico.
+
 ## 0.77.56 (core) + battery 0.14.2
 
-**Covers Orchestrator no abria desde la pestaña "Configuración" -- faltaba en un mapa dentro de `templates/index.html`.**
+Covers Orchestrator no abria desde la pestaña "Configuración": faltaba su entrada en `CONFIG_PLUGIN_HREF` (`templates/index.html`), el mapa que decide a donde navega cada icono de esa rejilla. Añadidas las entradas de Covers ahi, en `PLUGIN_SWITCH_LABEL` y con icono propio en `PLUGIN_SWITCH_ICONS`/`CONFIG_PLUGIN_ICONS`. No se añade a `PLUGIN_SWITCH_VISIBLE` (selector de nivel superior) -- mismo criterio que Tuya/TP-Link/Govee/Shelly.
 
-BUG REAL, reportado por el usuario ("dentro de configuracion clico el plugin y no abre nada"): `templates/index.html` (la pagina principal, servida por `main.py`) tiene un mapa `CONFIG_PLUGIN_HREF` a mano por slug que decide a donde navega cada icono de la rejilla de "Configuración". Al plugin Covers, recien añadido, nunca se le añadio su entrada -- el clic caia en el `onclick="openPluginConfig(slug)"` generico, que solo maneja el caso especial de `battery` y no hace nada con cualquier otro slug sin `href`. Añadidas las entradas de Covers en `CONFIG_PLUGIN_HREF` (`plugins/covers/`), `PLUGIN_SWITCH_LABEL` e icono propio en `PLUGIN_SWITCH_ICONS`/`CONFIG_PLUGIN_ICONS`. Deliberadamente NO se añade a `PLUGIN_SWITCH_VISIBLE` (selector de nivel superior) -- mismo criterio que Tuya/TP-Link/Govee/Shelly, se entra desde la pestaña Configuración.
+Nota para el futuro: `templates/index.html` parece del core (vive junto a `main.py`) pero en realidad viaja dentro de `files` del plugin **battery** en `plugins.json` -- se actualiza como cualquier plugin (tag+sha256+version), no con una release de core.
 
-CONFUSION REAL durante el propio despliegue de este arreglo, para que no se repita: `templates/index.html` parece a simple vista un fichero del CORE (vive junto a `main.py`, fuera de cualquier carpeta de plugin) pero en realidad viaja DENTRO de la lista `files` del plugin **battery** en `plugins.json` (junto a `main.py`, `static`...) -- Energy/battery es quien empaqueta la app-shell entera, no solo su propia logica. El primer intento de desplegar esto goteo por el camino equivocado (bump de `config.yaml` + `ha addons update`, el mecanismo de "plugin nuevo" de la 0.77.34/0.77.36) y NO surtio efecto: ese rebuild solo toca la semilla horneada en la imagen (`COPY app/ /app/`), pero `battery` sigue pinelado a su propio tag en `plugins.json` y se descarga en caliente por encima, pisando la semilla. El arreglo real fue el de siempre para actualizar CUALQUIER plugin ya existente: bump de version en `battery_plugin.py`, tag+sha256, actualizar `plugins.json`, `rm manifest.json` + reiniciar. La release del core (0.77.56) se queda igualmente (no estorba, y ya contenia el fix en el propio commit) pero no era el paso que lo activaba.
-
-## 0.77.36
+## 0.77.36b (tag -- el numero `v0.77.36` ya estaba en uso por un cambio de contenido de EcoFlow sin relacion)
 
 **Covers Orchestrator, parte 2: faltaba registrar el slug en `PLUGIN_REGISTRY`.**
 
