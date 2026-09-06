@@ -385,7 +385,13 @@ def _live_battery_charge_discharge_w(batteries_cfg: list[dict], cfg: dict) -> tu
     cae a la previsión del planificador o no.
 
     Baterias EcoFlow en modo "bluetooth" (ver ecoflow_ble.py): `battery_power`
-    es POR UNIDAD de verdad, se lee directo sin ningun truco.
+    es del GRUPO/pack entero, NO por unidad -- docstring desactualizado,
+    ver el "BUG REAL" mas abajo en el propio codigo para el porque. Esta
+    funcion calcula el AGREGADO de todo el sistema de baterias (para el
+    flujo de energia total de la instalacion), asi que usar el agregado
+    del grupo aqui es lo correcto -- no confundir con `_live_battery_totals`
+    (usado por capacidad/salud), que SI necesita el dato por unidad
+    (`grid_power`, ver su propio comentario).
 
     Baterias EcoFlow en modo "cloud" (ver ecoflow_cloud.py): `powGetBpCms`
     es la potencia AGREGADA de todo el grupo (system real-time aggregated
@@ -2160,21 +2166,21 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
     live_charge_w = 0.0
     live_discharge_w = 0.0
     live_battery_data_ok = False
-    ecoflow_main_sns_counted: set[str] = set()
-    group_owners = _ecoflow_group_owners(cfg["batteries"])
     for b in cfg["batteries"]:
         source = b.get("source") or "ha"
 
         if source == "ecoflow":
-            # Ver comentario homologo en _live_battery_charge_discharge_w: el
-            # SOC es siempre por unidad (`battery_level_main` por BLE,
-            # `bmsBattSoc` por Cloud), pero la POTENCIA es del grupo entero por
-            # los DOS canales — `powGetBpCms` en Cloud y tambien
-            # `battery_power` en BLE (esto ultimo lo reporto el usuario y se
-            # confirmo contra su sistema de 4 unidades; el comentario anterior
-            # afirmaba que BLE era por unidad y no lo es). Asi que se cuenta una
-            # sola vez por grupo en los dos casos. El estado BLE SI se sigue
-            # leyendo siempre, porque de ahi sale el SOC de esta unidad.
+            # El SOC es siempre por unidad (`battery_level_main` por BLE,
+            # `bmsBattSoc` por Cloud). La potencia para ESTA funcion (usada
+            # por capacidad/salud, ver capacity_store.update en run_cycle)
+            # tambien es por unidad: `grid_power`/`gridConnectionPower`, NO
+            # `battery_power`/`powGetBpCms` (esos SI son del grupo/pack
+            # entero -- se siguen usando para el agregado del sistema en
+            # `_live_battery_charge_discharge_w`, con su propio comentario).
+            # Confirmado con lecturas reales de las 4 unidades: `grid_power`
+            # sale distinto y variable por unidad, no el mismo numero
+            # compartido re-muestreado -- cada modulo mide su propio punto
+            # de conexion en la cadena, tenga o no inversor propio.
             soc, power, net_power = None, None, None
             ecoflow_mode = b.get("ecoflow_mode")
             # De donde ha venido el dato de ESTE ciclo -- para el iconito
@@ -2198,21 +2204,27 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                                 ecoflow_source = "bluetooth"
                             except (TypeError, ValueError):
                                 pass
-                        # La potencia es del GRUPO: solo la aporta la primera
-                        # bateria del grupo en esta vuelta. Las demas se quedan
-                        # con net_power None, que es lo honesto (no sabemos su
-                        # potencia individual) y evita multiplicar el total.
-                        if state.get("battery_power") is not None:
-                            group_key = _ecoflow_group_key(b, address)
-                            # Solo la unidad DUEÑA del grupo se queda con la
-                            # potencia -- ver _ecoflow_group_owners: antes se
-                            # la quedaba la primera de la lista, o sea que el
-                            # orden de alta decidia a quien se le atribuia la
-                            # energia de todo el grupo.
-                            if (group_key not in ecoflow_main_sns_counted
-                                    and group_owners.get(group_key) == b.get("id")):
-                                net_power = float(state["battery_power"])
-                                ecoflow_main_sns_counted.add(group_key)
+                        # BUG REAL, corregido a peticion expresa del usuario tras
+                        # verificar con lecturas reales de las 4 unidades: `battery_
+                        # power` (`pow_get_bp_cms`) SI es del grupo/pack entero (por
+                        # eso antes se repartia "solo la dueña se lo queda"), pero
+                        # `grid_power` (`grid_connection_power`) es una lectura PROPIA
+                        # de cada unidad -- confirmado en real, valores distintos y
+                        # variables por unidad leidos casi al mismo instante (no el
+                        # mismo numero compartido re-muestreado). Cada modulo mide su
+                        # propio punto de conexion en la cadena, tenga o no inversor
+                        # propio (`max_ac_in_power`) -- asi que YA NO hace falta
+                        # restringir esto a la unidad "dueña" del grupo, cada bateria
+                        # se queda con su propio dato.
+                        #
+                        # Convenio de signo: `grid_power` salio NEGATIVO en las 4
+                        # unidades mientras `charging_task_enabled=true` (importando
+                        # de red para cargar) -- de ahi el signo invertido para
+                        # encajar con el convenio de `net_power` de este modulo
+                        # (positivo = cargando). Pendiente de confirmar contra la
+                        # tendencia real de SOC en los proximos dias.
+                        if state.get("grid_power") is not None:
+                            net_power = -float(state["grid_power"])
                             ecoflow_source = ecoflow_source or "bluetooth"
 
             if ecoflow_mode in ("cloud", "hybrid") and (soc is None or net_power is None):
@@ -2244,13 +2256,14 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                                 soc = candidate
                                 ecoflow_source = "cloud"
                                 break
-                    if (net_power is None and main_sn
-                            and main_sn not in ecoflow_main_sns_counted
-                            and group_owners.get(main_sn, b.get("id")) == b.get("id")):
-                        main_state = client.get_live_state(main_sn, required_fields=("powGetBpCms",)) if client else None
-                        if main_state and main_state.get("powGetBpCms") is not None:
-                            net_power = float(main_state["powGetBpCms"])
-                            ecoflow_main_sns_counted.add(main_sn)
+                    if net_power is None and sn:
+                        # Mismo criterio que por BLE (ver comentario extenso arriba):
+                        # `gridConnectionPower` es propio de CADA unidad (se pide con
+                        # su propio `sn`, no el `main_sn` del grupo) -- ya no se
+                        # restringe a la unidad dueña del grupo.
+                        own_state = client.get_live_state(sn, required_fields=("gridConnectionPower",)) if client else None
+                        if own_state and own_state.get("gridConnectionPower") is not None:
+                            net_power = -float(own_state["gridConnectionPower"])
                             ecoflow_source = ecoflow_source or "cloud"
 
             net_power = _plausible_power_w(net_power, f"batería {b.get('name', b.get('id'))} (EcoFlow)")
