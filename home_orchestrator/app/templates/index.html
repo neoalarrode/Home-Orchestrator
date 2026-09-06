@@ -2044,12 +2044,51 @@ function renderBatteries() {
         ${b.charge_power_limit_entity ? `<div class="kv"><span>${t('kv_charge_limit')}</span><code>${b.charge_power_limit_entity}</code></div>` : ''}
         ${b.discharge_power_limit_entity ? `<div class="kv"><span>${t('kv_discharge_limit')}</span><code>${b.discharge_power_limit_entity}</code></div>` : ''}
         ${b.source !== 'ecoflow' ? (batteryPowerSensorSummary(b) ? `<div class="kv"><span>${t('kv_power_sensor')}</span><code>${batteryPowerSensorSummary(b)}</code></div>` : `<p class="help">${t('no_discharge_sensor_note')}</p>`) : ''}
+        ${b.source === 'ecoflow' && b.ecoflow_allow_manual_controls ? `
+        <div class="actions" style="margin-top:10px;flex-wrap:wrap">
+          <input type="number" id="ecoflow-reserve-${b.id}" min="0" max="100" placeholder="%" style="width:64px" title="Reserva de emergencia (%)">
+          <button class="secondary" type="button" onclick="ecoflowSetBackupReserve('${b.id}')">Fijar reserva</button>
+          <button class="secondary" type="button" onclick="ecoflowSetFeedGrid('${b.id}', true)">Vertido ON</button>
+          <button class="secondary" type="button" onclick="ecoflowSetFeedGrid('${b.id}', false)">Vertido OFF</button>
+          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 1, true)">Salida 1 ON</button>
+          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 1, false)">Salida 1 OFF</button>
+          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 2, true)">Salida 2 ON</button>
+          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 2, false)">Salida 2 OFF</button>
+        </div>` : ''}
         <div class="actions">
           <button class="secondary" onclick="editBattery('${b.id}')" type="button">${t('btn_edit')}</button>
           <button class="danger" onclick="deleteBattery('${b.id}')" type="button">${t('btn_delete_battery')}</button>
         </div>
       </div>
     </details>`).join('');
+}
+
+// --- Controles MANUALES de EcoFlow (reserva de emergencia, vertido a red,
+// salidas AC) -- solo visibles si la propia bateria tiene
+// `ecoflow_allow_manual_controls` activado (ver checkbox en el formulario
+// de edicion). Backend ya resuelve cloud/BLE segun cual tenga esa bateria
+// (ver `_ecoflow_battery_for_manual_control` en main.py) -- esta pagina
+// no necesita saber cual de las dos vias se usa.
+async function ecoflowSetBackupReserve(id) {
+  const input = document.getElementById(`ecoflow-reserve-${id}`);
+  const pct = parseFloat(input.value);
+  if (Number.isNaN(pct) || pct < 0 || pct > 100) { toast('Introduce un % de reserva entre 0 y 100'); return; }
+  const r = await fetch(`api/batteries/${id}/ecoflow/backup_reserve`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pct}),
+  });
+  toast(r.ok ? 'Reserva de emergencia actualizada' : 'Fallo al fijar la reserva de emergencia');
+}
+async function ecoflowSetFeedGrid(id, enable) {
+  const r = await fetch(`api/batteries/${id}/ecoflow/feed_grid`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enable}),
+  });
+  toast(r.ok ? `Vertido a red ${enable ? 'activado' : 'desactivado'}` : 'Fallo al cambiar el vertido a red');
+}
+async function ecoflowSetOutlet(id, outlet, enable) {
+  const r = await fetch(`api/batteries/${id}/ecoflow/outlet`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({outlet, enable}),
+  });
+  toast(r.ok ? `Salida ${outlet} ${enable ? 'encendida' : 'apagada'}` : `Fallo al cambiar la salida ${outlet}`);
 }
 
 function renderPvArrays() {
