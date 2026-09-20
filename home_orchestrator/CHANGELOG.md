@@ -7,6 +7,7 @@ Segunda pasada sobre los contadores de red de la 0.14.8, tras una revision con r
 - `/api/run_now` pasa por el mismo candado que el ciclo periodico (dos lecturas cruzadas contaban el incremento de mas).
 - Un hueco largo (mas de ~15 kWh de incremento) ya no se descarta al publicar cuando el acumulado sale de un contador.
 - Un contador que da NaN, o que cae a 0 y vuelve, no infla el acumulado: se ignora cualquier salto mayor que lo que la casa puede consumir en el tiempo transcurrido desde la ultima lectura.
+- Cambio de hora de otono o reloj que retrocede: ya no se descarta un incremento legitimo del contador. Si quitas el contador y lo vuelves a declarar, su primera lectura solo ancla (antes se sumaba el salto entero).
 - El boton de reconstruir historico ya no pisa el acumulado de red cuando hay contador declarado.
 - Tras un reinicio, el hueco solo se reconstruye por historico si el contador aun no estaba anclado.
 - El acumulado publicado sigue al del medidor en cuanto cambia (antes hasta 2 min de retraso).

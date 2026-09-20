@@ -158,6 +158,10 @@ def from_counters(imported_kwh: float | None, exported_kwh: float | None, now: d
     aparato, se sustituyo) no se resta ni se cuenta el valor entero como
     consumo -- se toma como punto de partida nuevo y se sigue desde ahi.
     """
+    # Marca de tiempo en EPOCH (no en hora local naive): un cambio de hora
+    # de otono o un reloj que retrocede no puede dar un intervalo negativo que
+    # baje el limite y descarte un incremento legitimo.
+    now_epoch = now.timestamp()
     now = _naive_local(now)
     with _lock:
         data = _load()
@@ -174,10 +178,13 @@ def from_counters(imported_kwh: float | None, exported_kwh: float | None, now: d
                 delta = valor - float(anterior)
                 limite = MAX_COUNTER_STEP_KWH
                 try:
-                    dt_h = max(0.0, (now - datetime.fromisoformat(marcas[clave])).total_seconds() / 3600.0)
-                    limite = min(limite, MAX_HOUSE_KW * (dt_h + COUNTER_LAG_SLACK_HOURS) + COUNTER_STEP_MARGIN_KWH)
+                    dt_h = (now_epoch - float(marcas[clave])) / 3600.0
+                    # dt < 0 = el reloj retrocedio: no se puede acotar por tiempo,
+                    # queda solo el techo absoluto.
+                    if dt_h >= 0:
+                        limite = min(limite, MAX_HOUSE_KW * (dt_h + COUNTER_LAG_SLACK_HOURS) + COUNTER_STEP_MARGIN_KWH)
                 except (KeyError, TypeError, ValueError):
-                    pass  # sin marca previa (datos de una version anterior): solo el techo absoluto
+                    pass  # sin marca previa (o en formato antiguo): solo el techo absoluto
                 if 0 < delta <= limite:
                     data[clave] += delta
                 elif delta > limite:
@@ -186,12 +193,30 @@ def from_counters(imported_kwh: float | None, exported_kwh: float | None, now: d
                 # delta < 0: el contador externo se reinicio. Ni se resta ni se
                 # cuenta entero -- solo se reancla mas abajo.
             previos[clave] = valor
-            marcas[clave] = now.isoformat()
+            marcas[clave] = now_epoch
             data["counters_ts"] = marcas
         data["counters"] = previos
         data["last_update"] = now.isoformat()
         _save(data)
         return data
+
+
+def forget_counters(claves) -> None:
+    """Borra el ancla de un contador externo que ya NO esta declarado. Si se
+    vuelve a declarar dias despues, su primera lectura solo ancla (sin esto se
+    sumaria el salto entero, contando dos veces lo ya integrado por potencia)."""
+    with _lock:
+        data = _load()
+        previos = data.get("counters") or {}
+        marcas = data.get("counters_ts") or {}
+        cambiado = False
+        for c in claves:
+            if c in previos or c in marcas:
+                previos.pop(c, None); marcas.pop(c, None); cambiado = True
+        if cambiado:
+            data["counters"] = previos
+            data["counters_ts"] = marcas
+            _save(data)
 
 
 def add_energy(imported_wh: float, exported_wh: float, now: datetime) -> dict:

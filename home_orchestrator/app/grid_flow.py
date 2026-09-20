@@ -69,6 +69,9 @@ def accumulate_grid(store, now, *, imp_declared: bool, exp_declared: bool,
       tambien lo contaria dos veces.
     - Direccion sin contador: se integra potencia (None = no tocar).
     """
+    no_declaradas = [c for c, d in (("imported_kwh", imp_declared), ("exported_kwh", exp_declared)) if not d]
+    if no_declaradas:
+        store.forget_counters(no_declaradas)
     totals = store.accumulate(
         now,
         None if imp_declared else imp_power_w,
