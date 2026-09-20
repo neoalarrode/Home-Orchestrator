@@ -230,8 +230,11 @@ def run_at_startup(ws, cfg: dict, now: datetime | None = None) -> dict | None:
             # recupera su hueco SOLO: `from_counters` suma el incremento del
             # contador desde la ultima lectura guardada. Sumarlo tambien aqui
             # lo contaria dos veces.
-            imp_wh = 0.0 if cfg.get("grid_import_energy_sensor") else datos["imported_wh"]
-            exp_wh = 0.0 if cfg.get("grid_export_energy_sensor") else datos["exported_wh"]
+            # Solo si el contador ya esta anclado: sin ancla (primera activacion)
+            # su hueco no se recuperaria y se perderia.
+            anclas = (grid_energy_store.totals().get("counters") or {})
+            imp_wh = 0.0 if (cfg.get("grid_import_energy_sensor") and anclas.get("imported_kwh") is not None) else datos["imported_wh"]
+            exp_wh = 0.0 if (cfg.get("grid_export_energy_sensor") and anclas.get("exported_kwh") is not None) else datos["exported_wh"]
             grid_energy_store.add_energy(imp_wh, exp_wh, now)
             return datos
         grid_energy_store.reset_baseline(now)

@@ -55,3 +55,25 @@ def import_for_accumulation(*, net_grid_w: float | None, flow_grid_total_w: floa
     if load_measured and pv_measured and battery_measured:
         return flow_grid_total_w
     return None
+
+
+def accumulate_grid(store, now, *, imp_declared: bool, exp_declared: bool,
+                    imp_counter_kwh: float | None, exp_counter_kwh: float | None,
+                    imp_power_w: float | None, exp_power_w: float | None) -> dict:
+    """Un paso del acumulado de red: la MISMA funcion la usan `run_cycle` y
+    las pruebas, para que lo que se prueba sea lo que corre.
+
+    - Direccion con contador de energia DECLARADO: solo sale de sus
+      incrementos. Si esta ciclo no responde (`*_counter_kwh` None) no se
+      integra potencia: el contador recupera el hueco al volver, e integrarlo
+      tambien lo contaria dos veces.
+    - Direccion sin contador: se integra potencia (None = no tocar).
+    """
+    totals = store.accumulate(
+        now,
+        None if imp_declared else imp_power_w,
+        None if exp_declared else exp_power_w,
+    )
+    if imp_counter_kwh is not None or exp_counter_kwh is not None:
+        totals = store.from_counters(imp_counter_kwh, exp_counter_kwh, now)
+    return totals

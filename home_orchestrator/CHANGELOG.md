@@ -1,5 +1,15 @@
 # Changelog
 
+## battery 0.14.9
+
+Segunda pasada sobre los contadores de red de la 0.14.8, tras una revision con reproducciones:
+- Con el contador declarado pero sin respuesta en un ciclo, ya no se integra potencia ese rato (el contador recupera el hueco al volver; antes se contaba dos veces).
+- `/api/run_now` pasa por el mismo candado que el ciclo periodico (dos lecturas cruzadas contaban el incremento de mas).
+- Un hueco largo (mas de ~15 kWh de incremento) ya no se descarta al publicar cuando el acumulado sale de un contador.
+- Un contador que da NaN o que cae a 0 y vuelve no infla el acumulado.
+- Tras un reinicio, el hueco solo se reconstruye por historico si el contador aun no estaba anclado.
+- El acumulado publicado sigue al del medidor en cuanto cambia (antes hasta 2 min de retraso).
+
 ## battery 0.14.8
 
 El acumulado de importacion de red salia inflado frente al Shelly Pro 3EM (9 dias medidos directamente en el Shelly: 175,8 kWh reales, 225,6 contados, +28 %; hasta +54 % en un dia). Causa: `sensor.consumo_instantaneo` resta `sensor.battery_all`, que esta a 0 desde el 14/08, asi que el "consumo" declarado era el Shelly en bruto, con la carga de las baterias dentro, y la formula la volvia a sumar. Ademas, con datos que faltaban el ciclo integraba la prevision del planificador como si fuera una medida.

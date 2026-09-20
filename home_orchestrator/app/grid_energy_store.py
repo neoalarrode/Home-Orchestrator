@@ -22,6 +22,7 @@ electrica: consumo/vertido).
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from datetime import datetime
@@ -34,6 +35,11 @@ STORE_PATH = os.environ.get("GRID_ENERGY_PATH", "/data/grid_energy.json")
 # una estimacion inventada sobre un intervalo que no se pudo medir de
 # verdad. Mismo criterio de "nunca inventar dato" que el resto del repo.
 MAX_INTEGRATION_GAP_HOURS = 2.0
+# Un contador externo que "salta" mas que esto entre dos lecturas no es
+# consumo: es un contador que cayo a 0 y volvio, o se sustituyo. 3 dias a
+# 10 kW son 720 kWh; se toma un margen sobre lo fisicamente posible en una
+# vivienda, y por encima se reancla sin sumar.
+MAX_COUNTER_STEP_KWH = 800.0
 
 _lock = threading.RLock()
 
@@ -150,10 +156,12 @@ def from_counters(imported_kwh: float | None, exported_kwh: float | None, now: d
             if valor is None:
                 continue
             valor = float(valor)
+            if not math.isfinite(valor):
+                continue
             anterior = previos.get(clave)
             if anterior is not None:
                 delta = valor - float(anterior)
-                if delta > 0:
+                if 0 < delta <= MAX_COUNTER_STEP_KWH:
                     data[clave] += delta
                 # delta < 0: el contador externo se reinicio. Ni se resta ni se
                 # cuenta entero -- solo se reancla mas abajo.

@@ -61,6 +61,10 @@ STORE_PATH = os.environ.get("MONOTONIC_SENSOR_PATH", "/data/monotonic_sensors.js
 # mismo "+206 kWh fantasma" que este modulo ya existe para evitar, solo
 # que en sentido positivo en vez de por una bajada.
 MAX_PLAUSIBLE_DELTA_KWH = 15.0
+# Cuando el acumulado sale de los incrementos de un contador de energia
+# externo (que solo sube), un salto grande tras un hueco largo es real: 3 dias
+# parado a 5 kW son 360 kWh. El tope de 15 kWh lo descartaba para siempre.
+COUNTER_MAX_DELTA_KWH = 600.0
 
 _lock = threading.RLock()
 
@@ -83,7 +87,8 @@ def _save(data: dict) -> None:
     os.replace(tmp, STORE_PATH)
 
 
-def publishable(entity_id: str, total: float, get_known_ha_state=None) -> float:
+def publishable(entity_id: str, total: float, get_known_ha_state=None,
+                max_delta_kwh: float | None = None) -> float:
     """Valor que se puede publicar como `total_increasing` sin mentirle a HA.
 
     `total` es el acumulado interno, que puede corregirse a la baja. Lo que
@@ -97,6 +102,7 @@ def publishable(entity_id: str, total: float, get_known_ha_state=None) -> float:
     """
     if total is None:
         return total
+    max_delta = MAX_PLAUSIBLE_DELTA_KWH if max_delta_kwh is None else float(max_delta_kwh)
     with _lock:
         data = _load()
         estado = data.get(entity_id) or {}
@@ -153,7 +159,7 @@ def publishable(entity_id: str, total: float, get_known_ha_state=None) -> float:
             except Exception:
                 log.warning("%s: no se pudo leer el estado ya conocido en HA -- se arranca sin ese suelo de sensatez", entity_id, exc_info=True)
                 known = None
-            if known is not None and float(total) < float(known) - MAX_PLAUSIBLE_DELTA_KWH:
+            if known is not None and float(total) < float(known) - max_delta:
                 log.warning(
                     "%s: primera vez que se publica, pero el acumulado interno (%.3f) esta muy "
                     "por debajo de lo que HA ya tiene registrado (%.3f) -- se descarta como dato "
@@ -167,7 +173,7 @@ def publishable(entity_id: str, total: float, get_known_ha_state=None) -> float:
                 publicado = float(total)
         else:
             delta = float(total) - float(anterior_total)
-            if delta > MAX_PLAUSIBLE_DELTA_KWH:
+            if delta > max_delta:
                 log.warning(
                     "%s: el acumulado interno ha subido de %.3f a %.3f (+%.3f) entre dos "
                     "ciclos -- fisicamente imposible para el hueco real, se descarta como "
@@ -188,14 +194,14 @@ def publishable(entity_id: str, total: float, get_known_ha_state=None) -> float:
                 # MAX_PLAUSIBLE_DELTA_KWH es la misma señal de alarma que
                 # una subida excesiva, solo que en sentido contrario, y
                 # merece la misma visibilidad.
-                log_fn = log.warning if abs(delta) > MAX_PLAUSIBLE_DELTA_KWH else log.info
+                log_fn = log.warning if abs(delta) > max_delta else log.info
                 log_fn(
                     "%s: el acumulado interno ha bajado de %.3f a %.3f (%s). "
                     "El contador publicado se queda en %.3f y sigue subiendo desde ahi "
                     "-- publicar la bajada haria que HA la contase como un reinicio, "
                     "sumando el valor entero de golpe al Panel de Energia.",
                     entity_id, float(anterior_total), float(total),
-                    "correccion" if abs(delta) <= MAX_PLAUSIBLE_DELTA_KWH else "bajada MUY grande, revisa si el dato interno esta corrupto",
+                    "correccion" if abs(delta) <= max_delta else "bajada MUY grande, revisa si el dato interno esta corrupto",
                     publicado,
                 )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import logging
 import os
 import threading
@@ -247,6 +248,10 @@ def _watched_entities_from_cfg(cfg: dict) -> set[str]:
     watched.add(cfg.get("load_sensor") or "")
     watched.add(cfg.get("export_sensor") or "")
     watched.add(cfg.get("net_grid_sensor") or "")
+    # Contadores de energia del medidor: su cambio dispara el ciclo, que es
+    # lo que los suma al acumulado y lo publica (ver run_cycle).
+    watched.add(cfg.get("grid_import_energy_sensor") or "")
+    watched.add(cfg.get("grid_export_energy_sensor") or "")
     if (cfg.get("tariff") or {}).get("mode") == "pvpc_sensor":
         watched.add((cfg.get("tariff") or {}).get("pvpc_sensor") or "")
     for array in cfg.get("pv_arrays") or []:
@@ -487,6 +492,8 @@ def _energy_counter_kwh(entity_id: str | None) -> float | None:
         if raw in ("unavailable", "unknown", "none", ""):
             return None
         value = float(raw)
+        if not math.isfinite(value):
+            return None
         unit = (st.get("attributes") or {}).get("unit_of_measurement", "kWh")
         return value / 1000.0 if unit == "Wh" else value * 1000.0 if unit == "MWh" else value
     except Exception:
@@ -1264,22 +1271,32 @@ def run_cycle():
         float(a.get("self_consumption_share_pct") if a.get("self_consumption_share_pct") is not None else 100.0) < 100.0
         for a in (cfg.get("pv_arrays") or [])
     )
-    imp_counter_kwh = None if _shared_solar else _energy_counter_kwh(cfg.get("grid_import_energy_sensor"))
-    exp_counter_kwh = _energy_counter_kwh(cfg.get("grid_export_energy_sensor"))
+    # "Declarado" no es "leido": con el contador declarado pero sin respuesta
+    # este ciclo NO se integra potencia (el contador recupera el hueco solo
+    # al volver; integrar tambien lo contaria dos veces).
+    imp_declared = bool(cfg.get("grid_import_energy_sensor")) and not _shared_solar
+    exp_declared = bool(cfg.get("grid_export_energy_sensor"))
+    imp_counter_kwh = _energy_counter_kwh(cfg.get("grid_import_energy_sensor")) if imp_declared else None
+    exp_counter_kwh = _energy_counter_kwh(cfg.get("grid_export_energy_sensor")) if exp_declared else None
     # Lo que tiene contador de energia sale de sus incrementos (exacto); lo
     # que no, se sigue integrando por potencia (primero esto: `accumulate`
     # integra el tiempo desde la ultima marca, `from_counters` la reposiciona).
-    grid_totals = grid_energy_store.accumulate(
-        now,
-        None if imp_counter_kwh is not None else grid_total_w_for_counter,
-        None if exp_counter_kwh is not None else vertido_now_w,
+    grid_totals = grid_flow.accumulate_grid(
+        grid_energy_store, now,
+        imp_declared=imp_declared, exp_declared=exp_declared,
+        imp_counter_kwh=imp_counter_kwh, exp_counter_kwh=exp_counter_kwh,
+        imp_power_w=grid_total_w_for_counter, exp_power_w=vertido_now_w,
     )
-    if imp_counter_kwh is not None or exp_counter_kwh is not None:
-        grid_totals = grid_energy_store.from_counters(imp_counter_kwh, exp_counter_kwh, now)
     # Mismo mecanismo YA PROBADO que sensor.battery_orchestrator_solar_energy
     # (ver _live_sensor_loop mas abajo) -- REST directo a HA
     # (ha_client.publish_sensor), no MQTT: mas simple, sin conexion nueva
     # que mantener, mismo patron de nombres "battery_orchestrator_*".
+    # Con contador de energia el acumulado solo cambia cuando cambia el del
+    # medidor: se publica al momento (antes hasta 120 s de retraso respecto
+    # al medidor). Por potencia integrada cambia en cada ciclo, y ahi se
+    # mantiene el ritmo de siempre para no llenar el recorder.
+    _imp_pub_s = 5 if imp_declared else PUBLISH_MIN_INTERVAL_SECONDS
+    _exp_pub_s = 5 if exp_declared else PUBLISH_MIN_INTERVAL_SECONDS
     try:
         _publish_sensor_throttled(
             "sensor.battery_orchestrator_grid_imported_energy",
@@ -1287,11 +1304,13 @@ def run_cycle():
                 "sensor.battery_orchestrator_grid_imported_energy", grid_totals["imported_kwh"],
                 get_known_ha_state=lambda: ha_client.get_numeric_state(
                     "sensor.battery_orchestrator_grid_imported_energy", default=None),
+                max_delta_kwh=monotonic_sensor.COUNTER_MAX_DELTA_KWH if imp_declared else None,
             ), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "friendly_name": "Battery Orchestrator Energía importada de red",
             },
+            min_interval=_imp_pub_s,
         )
         _publish_sensor_throttled(
             "sensor.battery_orchestrator_grid_exported_energy",
@@ -1299,11 +1318,13 @@ def run_cycle():
                 "sensor.battery_orchestrator_grid_exported_energy", grid_totals["exported_kwh"],
                 get_known_ha_state=lambda: ha_client.get_numeric_state(
                     "sensor.battery_orchestrator_grid_exported_energy", default=None),
+                max_delta_kwh=monotonic_sensor.COUNTER_MAX_DELTA_KWH if exp_declared else None,
             ), 3),
             {
                 "device_class": "energy", "state_class": "total_increasing",
                 "unit_of_measurement": "kWh", "friendly_name": "Battery Orchestrator Energía vertida a red",
             },
+            min_interval=_exp_pub_s,
         )
         # Contrapartida INSTANTANEA (W) de los dos sensores de arriba --
         # a peticion expresa del usuario, mismo patron que ya existe para
@@ -2777,7 +2798,7 @@ def api_anomaly():
 @app.post("/api/run_now")
 def api_run_now():
     try:
-        run_cycle()
+        _run_cycle_locked()
     except Exception:
         # El detalle completo (tipo de excepcion, traceback) va solo al log
         # del servidor: no se devuelve al cliente para no exponer rutas de

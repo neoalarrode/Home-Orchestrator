@@ -686,7 +686,7 @@
   <input id="grid-import-energy-sensor" placeholder="sensor.shellypro3em_total_active_energy">
   <label data-i18n="label_grid_export_energy_sensor">Contador de energía vertida (opcional)</label>
   <input id="grid-export-energy-sensor" placeholder="sensor.shellypro3em_total_active_returned_energy">
-  <p class="help" data-i18n="help_grid_energy_counters">Si tu medidor de red da contadores de kWh acumulados, indícalos aquí y los acumulados de importación/vertido de la app suman sus incrementos en vez de integrar la potencia muestreada, que puede desviarse mucho (medido contra un Shelly Pro 3EM: de −22 % a +58 % por día). Si hay huecos (reinicio de la app, lectura caída), el contador los recupera; la integración de potencia no.</p>
+  <p class="help" data-i18n="help_grid_energy_counters">Si tu medidor de red da contadores de kWh acumulados, indícalos aquí y los acumulados de importación/vertido de la app suman sus incrementos en vez de integrar la potencia muestreada, que puede desviarse mucho (medido contra un Shelly Pro 3EM: de −22 % a +58 % por día). Si hay huecos (reinicio de la app, lectura caída), el contador los recupera; la integración de potencia no. Con autoconsumo compartido (cuota de un array < 100 %) el contador de importación se ignora y se sigue restando tu cuota de generación.</p>
 
   <div class="actions"><button onclick="saveConfig()" data-i18n="btn_save">Guardar</button></div>
   <p class="help" data-i18n="help_forecast_note">La previsión se calcula como la media real de esa hora del día en los últimos N días — sin aprendizaje automático opaco, puedes verificarla tú mismo.</p>
@@ -1029,7 +1029,7 @@ es: {
   label_net_grid_sensor: "Sensor neto de red",
   label_grid_import_energy_sensor: "Contador de energía importada (opcional)",
   label_grid_export_energy_sensor: "Contador de energía vertida (opcional)",
-  help_grid_energy_counters: 'Si tu medidor de red da contadores de kWh acumulados, indícalos aquí y los acumulados de importación/vertido de la app suman sus incrementos en vez de integrar la potencia muestreada, que puede desviarse mucho (medido contra un Shelly Pro 3EM: de −22 % a +58 % por día). Si hay huecos (reinicio de la app, lectura caída), el contador los recupera; la integración de potencia no.',
+  help_grid_energy_counters: 'Si tu medidor de red da contadores de kWh acumulados, indícalos aquí y los acumulados de importación/vertido de la app suman sus incrementos en vez de integrar la potencia muestreada, que puede desviarse mucho (medido contra un Shelly Pro 3EM: de −22 % a +58 % por día). Si hay huecos (reinicio de la app, lectura caída), el contador los recupera; la integración de potencia no. Con autoconsumo compartido (cuota de un array < 100 %) el contador de importación se ignora y se sigue restando tu cuota de generación.',
   help_net_grid_sensor: 'Un único sensor con signo del punto de conexión a red — el medidor de red EN BRUTO (como <code>em3</code>), no uno que ya reste la batería — positivo mientras importas, negativo mientras viertes excedente. La app lo usa tanto para el flujo en vivo como para la previsión histórica del planificador (reconstruyendo consumo = sol + red neta + descarga − carga de baterías): con este basta, no hace falta declarar ningún otro sensor de consumo.',
   help_export_general: 'El vertido siempre se muestra aparte en el flujo de energía — nunca cuenta como "consumo de la casa" ni afecta al margen de potencia contratada, porque no pasa por la línea contratada.',
   btn_save: "Guardar",
@@ -1368,7 +1368,7 @@ en: {
   label_net_grid_sensor: "Net grid sensor",
   label_grid_import_energy_sensor: "Imported energy counter (optional)",
   label_grid_export_energy_sensor: "Exported energy counter (optional)",
-  help_grid_energy_counters: 'If your grid meter provides cumulative kWh counters, enter them here and the app\'s import/export totals add up their increments instead of integrating sampled power, which can drift a lot (measured against a Shelly Pro 3EM: −22 % to +58 % per day). Gaps (app restart, dropped reading) are recovered by the counter; power integration cannot.',
+  help_grid_energy_counters: 'If your grid meter provides cumulative kWh counters, enter them here and the app\'s import/export totals add up their increments instead of integrating sampled power, which can drift a lot (measured against a Shelly Pro 3EM: −22 % to +58 % per day). Gaps (app restart, dropped reading) are recovered by the counter; power integration cannot. With shared self-consumption (an array share below 100 %) the import counter is ignored and your generation share keeps being subtracted.',
   help_net_grid_sensor: 'A single signed sensor at the grid connection point — the RAW grid meter (like <code>em3</code>), not one that already subtracts the battery — positive while importing, negative while exporting surplus. The app uses it for both the live flow and the planner\'s historical forecast (reconstructing consumption = solar + net grid + discharge − battery charging): this one is enough, no other consumption sensor needs to be declared.',
   help_export_general: 'Export is always shown separately in the energy flow — it never counts as "home consumption" nor affects the contracted power margin, since it never touches the contracted line.',
   btn_save: "Save",
