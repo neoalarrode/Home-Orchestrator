@@ -64,7 +64,7 @@ MAX_PLAUSIBLE_DELTA_KWH = 15.0
 # Cuando el acumulado sale de los incrementos de un contador de energia
 # externo (que solo sube), un salto grande tras un hueco largo es real: 3 dias
 # parado a 5 kW son 360 kWh. El tope de 15 kWh lo descartaba para siempre.
-COUNTER_MAX_DELTA_KWH = 600.0
+COUNTER_MAX_DELTA_KWH = 1000.0  # siempre >= grid_energy_store.MAX_COUNTER_STEP_KWH (800): lo que el almacen acepta, se publica
 
 _lock = threading.RLock()
 

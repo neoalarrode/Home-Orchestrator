@@ -1267,10 +1267,7 @@ def run_cycle():
     # AUTOCONSUMO COMPARTIDO (cuota < 100 %), donde el medidor ve tu consumo
     # bruto como si viniera de red aunque en parte lo cubra tu cuota de la
     # planta, y esta app la resta. Ahi el contador no sirve para importar.
-    _shared_solar = any(
-        float(a.get("self_consumption_share_pct") if a.get("self_consumption_share_pct") is not None else 100.0) < 100.0
-        for a in (cfg.get("pv_arrays") or [])
-    )
+    _shared_solar = grid_flow.shared_solar(cfg)
     # "Declarado" no es "leido": con el contador declarado pero sin respuesta
     # este ciclo NO se integra potencia (el contador recupera el hueco solo
     # al volver; integrar tambien lo contaria dos veces).
@@ -2724,7 +2721,18 @@ def api_energy_backfill_history():
         "grid_exported_energy": _hourly_from_history(entries, lambda e: _grid_flows_for_hour(e)[1]),
     }
     grid_finals = {}
+    # Direccion con contador de energia declarado: su acumulado YA es el del
+    # medidor. Reconstruirlo desde el historico del planificador lo sustituiria
+    # por la misma fuente que origino el desfase -- no se toca.
+    _declared = {
+        "grid_imported_energy": bool(cfg.get("grid_import_energy_sensor")) and not grid_flow.shared_solar(cfg),
+        "grid_exported_energy": bool(cfg.get("grid_export_energy_sensor")),
+    }
     for name, hourly in grid_hourly.items():
+        if _declared[name]:
+            grid_finals[name] = None
+            results[name] = {"ok": True, "skipped": "contador de energia declarado"}
+            continue
         points, final_wh = _statistics_points(hourly)
         ok = ha_statistics.import_statistics(f"sensor.battery_orchestrator_{name}", "kWh", points)
         grid_finals[name] = final_wh
@@ -2749,9 +2757,10 @@ def api_energy_backfill_history():
     if all_ok:
         now_iso = datetime.now().isoformat()
         try:
+            _cur = grid_energy_store.totals()
             grid_energy_store.set_totals(
-                grid_finals["grid_imported_energy"] / 1000,
-                grid_finals["grid_exported_energy"] / 1000,
+                _cur["imported_kwh"] if grid_finals["grid_imported_energy"] is None else grid_finals["grid_imported_energy"] / 1000,
+                _cur["exported_kwh"] if grid_finals["grid_exported_energy"] is None else grid_finals["grid_exported_energy"] / 1000,
                 since=now_iso,
             )
             solar_energy_store.set_total_wh(solar_final_wh, since=now_iso)

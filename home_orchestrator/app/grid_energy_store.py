@@ -22,6 +22,7 @@ electrica: consumo/vertido).
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import threading
@@ -34,12 +35,21 @@ STORE_PATH = os.environ.get("GRID_ENERGY_PATH", "/data/grid_energy.json")
 # descarta ENTERO en vez de integrarlo, para no inflar el acumulado con
 # una estimacion inventada sobre un intervalo que no se pudo medir de
 # verdad. Mismo criterio de "nunca inventar dato" que el resto del repo.
+log = logging.getLogger(__name__)
+
 MAX_INTEGRATION_GAP_HOURS = 2.0
 # Un contador externo que "salta" mas que esto entre dos lecturas no es
 # consumo: es un contador que cayo a 0 y volvio, o se sustituyo. 3 dias a
 # 10 kW son 720 kWh; se toma un margen sobre lo fisicamente posible en una
 # vivienda, y por encima se reancla sin sumar.
 MAX_COUNTER_STEP_KWH = 800.0
+# Techo fisico de potencia de una vivienda y holgura por el retraso con que
+# HA refresca el contador (la lectura puede llevar ~2 min de atraso). Un
+# incremento mayor que MAX_HOUSE_KW x (tiempo desde la ultima lectura +
+# holgura) no es consumo: es un contador que cayo a 0 y volvio.
+MAX_HOUSE_KW = 50.0
+COUNTER_LAG_SLACK_HOURS = 120.0 / 3600.0
+COUNTER_STEP_MARGIN_KWH = 0.1
 
 _lock = threading.RLock()
 
@@ -159,13 +169,25 @@ def from_counters(imported_kwh: float | None, exported_kwh: float | None, now: d
             if not math.isfinite(valor):
                 continue
             anterior = previos.get(clave)
+            marcas = data.get("counters_ts") or {}
             if anterior is not None:
                 delta = valor - float(anterior)
-                if 0 < delta <= MAX_COUNTER_STEP_KWH:
+                limite = MAX_COUNTER_STEP_KWH
+                try:
+                    dt_h = max(0.0, (now - datetime.fromisoformat(marcas[clave])).total_seconds() / 3600.0)
+                    limite = min(limite, MAX_HOUSE_KW * (dt_h + COUNTER_LAG_SLACK_HOURS) + COUNTER_STEP_MARGIN_KWH)
+                except (KeyError, TypeError, ValueError):
+                    pass  # sin marca previa (datos de una version anterior): solo el techo absoluto
+                if 0 < delta <= limite:
                     data[clave] += delta
+                elif delta > limite:
+                    log.warning("Contador %s: salto de %.3f kWh en menos de lo fisicamente posible "
+                                "(limite %.3f) -- se reancla sin sumarlo.", clave, delta, limite)
                 # delta < 0: el contador externo se reinicio. Ni se resta ni se
                 # cuenta entero -- solo se reancla mas abajo.
             previos[clave] = valor
+            marcas[clave] = now.isoformat()
+            data["counters_ts"] = marcas
         data["counters"] = previos
         data["last_update"] = now.isoformat()
         _save(data)

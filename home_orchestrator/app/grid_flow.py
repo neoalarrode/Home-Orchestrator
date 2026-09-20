@@ -77,3 +77,16 @@ def accumulate_grid(store, now, *, imp_declared: bool, exp_declared: bool,
     if imp_counter_kwh is not None or exp_counter_kwh is not None:
         totals = store.from_counters(imp_counter_kwh, exp_counter_kwh, now)
     return totals
+
+
+def shared_solar(cfg: dict) -> bool:
+    """True si algun array es de AUTOCONSUMO COMPARTIDO (cuota < 100 %): la
+    unica situacion en que el importado NO es lo que mide el medidor."""
+    for a in (cfg.get("pv_arrays") or []):
+        v = a.get("self_consumption_share_pct")
+        try:
+            if (100.0 if v is None else float(v)) < 100.0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False

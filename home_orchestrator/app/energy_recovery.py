@@ -233,7 +233,8 @@ def run_at_startup(ws, cfg: dict, now: datetime | None = None) -> dict | None:
             # Solo si el contador ya esta anclado: sin ancla (primera activacion)
             # su hueco no se recuperaria y se perderia.
             anclas = (grid_energy_store.totals().get("counters") or {})
-            imp_wh = 0.0 if (cfg.get("grid_import_energy_sensor") and anclas.get("imported_kwh") is not None) else datos["imported_wh"]
+            import grid_flow
+            imp_wh = 0.0 if (cfg.get("grid_import_energy_sensor") and not grid_flow.shared_solar(cfg) and anclas.get("imported_kwh") is not None) else datos["imported_wh"]
             exp_wh = 0.0 if (cfg.get("grid_export_energy_sensor") and anclas.get("exported_kwh") is not None) else datos["exported_wh"]
             grid_energy_store.add_energy(imp_wh, exp_wh, now)
             return datos
