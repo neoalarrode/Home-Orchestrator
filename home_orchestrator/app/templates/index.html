@@ -682,6 +682,12 @@
   </div>
   <p class="help" data-i18n="help_export_general">El vertido siempre se muestra aparte en el flujo de energía — nunca cuenta como "consumo de la casa" ni afecta al margen de potencia contratada, porque no pasa por la línea contratada.</p>
 
+  <label data-i18n="label_grid_import_energy_sensor">Contador de energía importada (opcional)</label>
+  <input id="grid-import-energy-sensor" placeholder="sensor.shellypro3em_total_active_energy">
+  <label data-i18n="label_grid_export_energy_sensor">Contador de energía vertida (opcional)</label>
+  <input id="grid-export-energy-sensor" placeholder="sensor.shellypro3em_total_active_returned_energy">
+  <p class="help" data-i18n="help_grid_energy_counters">Si tu medidor de red da contadores de kWh acumulados, indícalos aquí y los acumulados de importación/vertido de la app suman sus incrementos en vez de integrar la potencia muestreada, que puede desviarse mucho (medido contra un Shelly Pro 3EM: de −22 % a +58 % por día). Si hay huecos (reinicio de la app, lectura caída), el contador los recupera; la integración de potencia no.</p>
+
   <div class="actions"><button onclick="saveConfig()" data-i18n="btn_save">Guardar</button></div>
   <p class="help" data-i18n="help_forecast_note">La previsión se calcula como la media real de esa hora del día en los últimos N días — sin aprendizaje automático opaco, puedes verificarla tú mismo.</p>
 </div>
@@ -1021,6 +1027,9 @@ es: {
   label_export_sensor: "Sensor de vertido (opcional)",
   help_export_sensor: "Potencia que se está exportando a la red ahora mismo (siempre positiva o cero). Déjalo vacío si no tienes este sensor o no quieres usarlo — el vertido en vivo simplemente no se mostrará.",
   label_net_grid_sensor: "Sensor neto de red",
+  label_grid_import_energy_sensor: "Contador de energía importada (opcional)",
+  label_grid_export_energy_sensor: "Contador de energía vertida (opcional)",
+  help_grid_energy_counters: 'Si tu medidor de red da contadores de kWh acumulados, indícalos aquí y los acumulados de importación/vertido de la app suman sus incrementos en vez de integrar la potencia muestreada, que puede desviarse mucho (medido contra un Shelly Pro 3EM: de −22 % a +58 % por día). Si hay huecos (reinicio de la app, lectura caída), el contador los recupera; la integración de potencia no.',
   help_net_grid_sensor: 'Un único sensor con signo del punto de conexión a red — el medidor de red EN BRUTO (como <code>em3</code>), no uno que ya reste la batería — positivo mientras importas, negativo mientras viertes excedente. La app lo usa tanto para el flujo en vivo como para la previsión histórica del planificador (reconstruyendo consumo = sol + red neta + descarga − carga de baterías): con este basta, no hace falta declarar ningún otro sensor de consumo.',
   help_export_general: 'El vertido siempre se muestra aparte en el flujo de energía — nunca cuenta como "consumo de la casa" ni afecta al margen de potencia contratada, porque no pasa por la línea contratada.',
   btn_save: "Guardar",
@@ -1357,6 +1366,9 @@ en: {
   label_export_sensor: "Export sensor (optional)",
   help_export_sensor: "Power currently being exported to the grid (always positive or zero). Leave it empty if you don't have this sensor or don't want to use it — live export just won't be shown.",
   label_net_grid_sensor: "Net grid sensor",
+  label_grid_import_energy_sensor: "Imported energy counter (optional)",
+  label_grid_export_energy_sensor: "Exported energy counter (optional)",
+  help_grid_energy_counters: 'If your grid meter provides cumulative kWh counters, enter them here and the app\'s import/export totals add up their increments instead of integrating sampled power, which can drift a lot (measured against a Shelly Pro 3EM: −22 % to +58 % per day). Gaps (app restart, dropped reading) are recovered by the counter; power integration cannot.',
   help_net_grid_sensor: 'A single signed sensor at the grid connection point — the RAW grid meter (like <code>em3</code>), not one that already subtracts the battery — positive while importing, negative while exporting surplus. The app uses it for both the live flow and the planner\'s historical forecast (reconstructing consumption = solar + net grid + discharge − battery charging): this one is enough, no other consumption sensor needs to be declared.',
   help_export_general: 'Export is always shown separately in the energy flow — it never counts as "home consumption" nor affects the contracted power margin, since it never touches the contracted line.',
   btn_save: "Save",
@@ -1863,6 +1875,8 @@ async function loadConfig() {
   document.getElementById('load-sensor').value = cfg.load_sensor || '';
   document.getElementById('export-sensor').value = cfg.export_sensor || '';
   document.getElementById('net-grid-sensor').value = cfg.net_grid_sensor || '';
+  document.getElementById('grid-import-energy-sensor').value = cfg.grid_import_energy_sensor || '';
+  document.getElementById('grid-export-energy-sensor').value = cfg.grid_export_energy_sensor || '';
   // El modo puede venir explicito (load_sensor_mode) o, en instalaciones
   // previas a esta funcion (incluida la v0.11.25, que usaba el nombre
   // "export_sensor_mode" solo para el vertido), inferirse — mismo criterio
@@ -2782,6 +2796,8 @@ async function saveConfig() {
   cfg.load_sensor = document.getElementById('load-sensor').value;
   cfg.export_sensor = loadMode === 'separate' ? (document.getElementById('export-sensor').value.trim() || null) : null;
   cfg.net_grid_sensor = loadMode === 'combined' ? (document.getElementById('net-grid-sensor').value.trim() || null) : null;
+  cfg.grid_import_energy_sensor = document.getElementById('grid-import-energy-sensor').value.trim();
+  cfg.grid_export_energy_sensor = document.getElementById('grid-export-energy-sensor').value.trim();
   cfg.general.contracted_power_w = parseFloat(document.getElementById('g-contracted').value) || 0;
   cfg.general.horizon_hours = parseInt(document.getElementById('g-horizon').value, 10);
   cfg.general.cycle_seconds = parseInt(document.getElementById('g-cycle').value, 10);

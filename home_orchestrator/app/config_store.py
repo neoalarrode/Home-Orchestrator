@@ -81,6 +81,12 @@ DEFAULT_CONFIG = {
     "load_sensor_mode": "separate",  # "separate" (load_sensor + export_sensor opcional) | "combined" (un unico net_grid_sensor con signo, alimenta tanto el flujo en vivo como la previsión historica)
     "export_sensor": "",  # modo "separate": potencia de vertido dedicada (siempre >= 0), opcional
     "net_grid_sensor": "",  # modo "combined": sensor unico con signo del punto de conexion a red EN BRUTO (+ importando, - vertiendo) — sustituye a load_sensor tanto en vivo como en la previsión
+    # OPCIONAL, modo cualquiera: contadores de ENERGIA acumulada del medidor de red (kWh, o Wh --
+    # se lee su unidad) para importacion y vertido. Si estan declarados, los acumulados
+    # `sensor.battery_orchestrator_grid_imported/exported_energy` salen de sus INCREMENTOS en vez de
+    # integrar potencia por muestreo (que medido contra un Shelly Pro 3EM daba entre -22% y +58% al dia).
+    "grid_import_energy_sensor": "",
+    "grid_export_energy_sensor": "",
     # Credenciales de la cuenta EcoFlow, UNA sola para toda la instalacion
     # — las baterias EcoFlow (ver "source"/"ecoflow_mode" de cada bateria)
     # las reutilizan todas, no se repiten por bateria. Vacias = sin

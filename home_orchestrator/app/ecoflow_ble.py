@@ -55,7 +55,23 @@ FRESH_RETRY_COOLDOWN_SECONDS = 60
 # conexiones concurrentes a un mismo dispositivo BLE pueden colisionar en
 # el puente y dejar el ciclo de planificacion esperando indefinidamente).
 _state_cache: dict[str, dict] = {}
+_state_cache_ts: dict[str, float] = {}
 _state_cache_lock = threading.Lock()
+
+# Una lectura guardada mas vieja que esto ya NO se sirve como si fuera actual.
+# BUG REAL: la cache no caducaba nunca, asi que si Bluetooth dejaba de
+# responder se seguia leyendo la ultima potencia (p.ej. 3 kW cargando)
+# durante horas, y ese valor se integraba en los contadores de energia. Con
+# `None` el llamante cae a Cloud (modo hybrid) o no acumula nada.
+STATE_CACHE_MAX_AGE_SECONDS = 180
+
+
+def _cached(address: str) -> dict | None:
+    with _state_cache_lock:
+        ts = _state_cache_ts.get(address)
+        if ts is None or (time.time() - ts) > STATE_CACHE_MAX_AGE_SECONDS:
+            return None
+        return _state_cache.get(address)
 _address_locks: dict[str, threading.Lock] = {}
 _address_locks_guard = threading.Lock()
 _last_fresh_attempt: dict[str, float] = {}
@@ -104,8 +120,7 @@ def get_state(address: str, user_id: str, *, fresh: bool = False) -> dict | None
     vuelva a responder, esta misma via lo detecta sola y retoma BLE).
     """
     if not fresh:
-        with _state_cache_lock:
-            return _state_cache.get(address)
+        return _cached(address)
 
     with _lock_for(address):
         last_attempt = _last_fresh_attempt.get(address)
@@ -114,8 +129,7 @@ def get_state(address: str, user_id: str, *, fresh: bool = False) -> dict | None
             and _last_fresh_failed.get(address)
             and (time.time() - last_attempt) < FRESH_RETRY_COOLDOWN_SECONDS
         ):
-            with _state_cache_lock:
-                return _state_cache.get(address)  # puede ser None, es correcto asi
+            return _cached(address)  # puede ser None, es correcto asi
         _last_fresh_attempt[address] = time.time()
         state = ha_client.call_service_with_response(
             DOMAIN, "get_state",
@@ -126,6 +140,7 @@ def get_state(address: str, user_id: str, *, fresh: bool = False) -> dict | None
         if state:
             with _state_cache_lock:
                 _state_cache[address] = state
+                _state_cache_ts[address] = time.time()
         return state
 
 

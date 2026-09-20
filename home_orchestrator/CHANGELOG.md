@@ -1,5 +1,16 @@
 # Changelog
 
+## battery 0.14.8
+
+El acumulado de importacion de red salia inflado frente al Shelly Pro 3EM (9 dias medidos directamente en el Shelly: 175,8 kWh reales, 225,6 contados, +28 %; hasta +54 % en un dia). Causa: `sensor.consumo_instantaneo` resta `sensor.battery_all`, que esta a 0 desde el 14/08, asi que el "consumo" declarado era el Shelly en bruto, con la carga de las baterias dentro, y la formula la volvia a sumar. Ademas, con datos que faltaban el ciclo integraba la prevision del planificador como si fuera una medida.
+
+- La formula de flujos vive ahora en `grid_flow.py`, compartida por el ciclo y `/api/live` (estaba copiada y habia divergido).
+- Un contador acumulado solo crece con medidas: sin consumo, solar y bateria medidos en ese instante no se integra nada.
+- Nuevos ajustes `grid_import_energy_sensor` / `grid_export_energy_sensor`: si el medidor da kWh acumulados, se suman sus incrementos (tolera reinicios del contador y huecos). Sin ellos, todo como antes.
+- BLE: el estado cacheado caduca a los 3 minutos; antes una lectura vieja (p. ej. "cargando a 3 kW") podia seguir sirviendose durante horas.
+
+Los contadores ya inflados no se corrigen solos. Para dejar de inflar hay que pasar a `load_sensor_mode: combined` con el sensor de potencia del Shelly, o declarar sus contadores de energia.
+
 ## battery 0.14.5
 
 Salud de bateria mostraba 1-5% para varias EcoFlow por BLE mientras seguian cargando/descargando normal -- un hueco del feed en vivo (`net_power_w` a `None` durante una caida BLE) dejaba un tick sin acumular energia aunque el SOC si hubiera cambiado, y ese segmento se colaba como una observacion de capacidad ridicula. `capacity_store.py` ahora descarta cualquier segmento cuya capacidad implicada quede fuera de un rango plausible frente a la declarada (15%-400%) antes de aceptarlo.

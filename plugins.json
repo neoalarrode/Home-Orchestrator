@@ -29,6 +29,7 @@
         "forecast_store.py",
         "grafana_sync.py",
         "grid_energy_store.py",
+        "grid_flow.py",
         "ha_client.py",
         "ha_statistics.py",
         "history_store.py",

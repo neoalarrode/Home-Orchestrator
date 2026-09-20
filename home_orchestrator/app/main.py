@@ -25,6 +25,7 @@ import ecoflow_login
 import forecast_store
 import grafana_sync
 import grid_energy_store
+import grid_flow
 import ha_client
 import ha_statistics
 import ha_websocket
@@ -472,6 +473,24 @@ def _live_battery_charge_discharge_w(batteries_cfg: list[dict], cfg: dict) -> tu
         else:
             total_discharge_w += abs(net_power)
     return total_charge_w, total_discharge_w, any_data
+
+
+def _energy_counter_kwh(entity_id: str | None) -> float | None:
+    """Lectura de un contador de energia acumulada en kWh (convierte Wh/MWh
+    segun su `unit_of_measurement`). `None` si no esta declarado o no responde
+    -- nunca un 0: un contador que no se lee no aporta incremento."""
+    if not entity_id:
+        return None
+    try:
+        st = ha_client.get_state(entity_id)
+        raw = str(st.get("state", "")).strip().lower()
+        if raw in ("unavailable", "unknown", "none", ""):
+            return None
+        value = float(raw)
+        unit = (st.get("attributes") or {}).get("unit_of_measurement", "kWh")
+        return value / 1000.0 if unit == "Wh" else value * 1000.0 if unit == "MWh" else value
+    except Exception:
+        return None
 
 
 def _live_export_w(cfg: dict, known_net_grid_w: float | None = None) -> float | None:
@@ -1197,21 +1216,22 @@ def run_cycle():
     # cubre va a solar, el resto a red) y su propio comentario lo dice: "mas
     # preciso y sin ninguna dependencia del ciclo". Se arreglo alli y el
     # acumulado se quedo con el metodo viejo. Aqui se usa la misma formula.
-    solar_to_casa_w = min(flow_pv_w, flow_load_w)
-    solar_surplus_w = max(0.0, flow_pv_w - flow_load_w)
-    solar_to_batt_w = min(solar_surplus_w, flow_charge_w)
-    grid_to_batt_w = max(0.0, flow_charge_w - solar_to_batt_w)
-    batt_to_casa_w = flow_discharge_w
-    grid_to_casa_w = max(0.0, flow_load_w - solar_to_casa_w - batt_to_casa_w)
-    grid_total_w = grid_to_casa_w + grid_to_batt_w
-    # Si hay un medidor de red REAL (modo "combined"), su lectura es la
-    # importacion exacta -- no hace falta reconstruirla a partir de
-    # consumo/solar/bateria, que acumula el error de las tres. Era asimetrico:
-    # el VERTIDO ya salia del sensor real (ver `_live_export_w`) mientras la
-    # IMPORTACION se reconstruia, y era justo por donde entraba el error de la
-    # potencia de bateria.
-    if net_grid_now_w is not None:
-        grid_total_w = max(0.0, net_grid_now_w)
+    # Formula compartida con `/api/live` y con las simulaciones (grid_flow.py).
+    # Con un medidor de red REAL (modo "combined") la importacion es esa
+    # lectura tal cual -- no se reconstruye a partir de consumo/solar/bateria.
+    _fl = grid_flow.flows(flow_load_w, flow_pv_w, flow_charge_w, flow_discharge_w, net_grid_now_w)
+    solar_to_casa_w, solar_to_batt_w = _fl["solar_to_casa_w"], _fl["solar_to_batt_w"]
+    batt_to_casa_w, grid_to_batt_w = _fl["batt_to_casa_w"], _fl["grid_to_batt_w"]
+    grid_to_casa_w, grid_total_w = _fl["grid_to_casa_w"], _fl["grid_total_w"]
+    # Lo que puede ENTRAR en el contador acumulado: solo con datos medidos.
+    # Los valores de arriba pueden ser la PREVISION del planificador (sirven
+    # para pintar el diagrama, no para acumular energia).
+    grid_total_w_for_counter = grid_flow.import_for_accumulation(
+        net_grid_w=net_grid_now_w, flow_grid_total_w=grid_total_w,
+        load_measured=live_base_load_w is not None,
+        pv_measured=(pv_now_actual is not None) or not cfg["pv_arrays"],
+        battery_measured=live_battery_data_ok,
+    )
     energy_needed_now_w = flow_load_w + flow_charge_w
     autoconsumo_pct = 100.0
     if energy_needed_now_w > 0:
@@ -1236,9 +1256,26 @@ def run_cycle():
     # direcciones) o "separados" (un sensor por direccion). Si no has
     # declarado vertido es que no lo quieres contabilizar -- no que quieras
     # que lo adivinemos. Sin sensor, el acumulado de vertido no avanza.
-    grid_totals = grid_energy_store.accumulate(
-        now, grid_total_w, vertido_now_w if vertido_now_w is not None else None,
+    # Unica excepcion legitima a "importado = lo que mide el medidor": el
+    # AUTOCONSUMO COMPARTIDO (cuota < 100 %), donde el medidor ve tu consumo
+    # bruto como si viniera de red aunque en parte lo cubra tu cuota de la
+    # planta, y esta app la resta. Ahi el contador no sirve para importar.
+    _shared_solar = any(
+        float(a.get("self_consumption_share_pct") if a.get("self_consumption_share_pct") is not None else 100.0) < 100.0
+        for a in (cfg.get("pv_arrays") or [])
     )
+    imp_counter_kwh = None if _shared_solar else _energy_counter_kwh(cfg.get("grid_import_energy_sensor"))
+    exp_counter_kwh = _energy_counter_kwh(cfg.get("grid_export_energy_sensor"))
+    # Lo que tiene contador de energia sale de sus incrementos (exacto); lo
+    # que no, se sigue integrando por potencia (primero esto: `accumulate`
+    # integra el tiempo desde la ultima marca, `from_counters` la reposiciona).
+    grid_totals = grid_energy_store.accumulate(
+        now,
+        None if imp_counter_kwh is not None else grid_total_w_for_counter,
+        None if exp_counter_kwh is not None else vertido_now_w,
+    )
+    if imp_counter_kwh is not None or exp_counter_kwh is not None:
+        grid_totals = grid_energy_store.from_counters(imp_counter_kwh, exp_counter_kwh, now)
     # Mismo mecanismo YA PROBADO que sensor.battery_orchestrator_solar_energy
     # (ver _live_sensor_loop mas abajo) -- REST directo a HA
     # (ha_client.publish_sensor), no MQTT: mas simple, sin conexion nueva
@@ -2433,11 +2470,13 @@ def api_live():
         solar_surplus_w = max(0.0, solar_w - load_now_w)
         charge_w = live_charge_w if live_battery_data_ok else 0.0
         discharge_w = live_discharge_w if live_battery_data_ok else 0.0
-        solar_to_batt_w = min(solar_surplus_w, charge_w)
-        grid_to_batt_w = max(0.0, charge_w - solar_to_batt_w)
-        batt_to_casa_w = discharge_w
-        grid_to_casa_w = max(0.0, load_now_w - solar_to_casa_w - batt_to_casa_w)
-        grid_total_w = grid_to_casa_w + grid_to_batt_w
+        # Misma funcion que `run_cycle` (grid_flow.py): antes esta formula
+        # estaba copiada aqui y NO aplicaba el medidor de red real del modo
+        # "combined", asi que el dashboard y el contador podian discrepar.
+        _fl = grid_flow.flows(load_now_w, solar_w, charge_w, discharge_w, net_grid_now_w)
+        solar_to_batt_w, grid_to_batt_w = _fl["solar_to_batt_w"], _fl["grid_to_batt_w"]
+        batt_to_casa_w, grid_to_casa_w = _fl["batt_to_casa_w"], _fl["grid_to_casa_w"]
+        grid_total_w = _fl["grid_total_w"]
         energy_needed_w = load_now_w + charge_w
         autoconsumo_pct = 100.0
         if energy_needed_w > 0:
