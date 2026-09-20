@@ -17,6 +17,7 @@ import battery_exec
 import capacity_store
 import climate_link
 import config_store
+import cycle_planner
 import deferrable_exec
 import deferrable_scheduler
 import deferrable_store
@@ -986,67 +987,18 @@ def run_cycle():
     if skipped:
         log.warning(f"Baterias omitidas este ciclo (sensor SOC no disponible): {', '.join(skipped)}")
 
-    total_capacity_wh = sum(b.capacity_wh for b in usable_batteries)
-    current_soc_wh = sum(socs[b.id] / 100 * b.capacity_wh for b in usable_batteries)
-    # SOC real AHORA MISMO, medido — distinto de hp.soc_wh del plan, que es
-    # una PROYECCION de como quedara el SOC al final de esta hora si se
-    # carga/descarga al ritmo decidido (el plan trabaja en pasos de una
-    # hora). Mezclarlos hacia mostrar un "SOC agregado" que salta muy por
-    # encima del real mientras se esta cargando.
-    current_soc_pct = round(100 * current_soc_wh / total_capacity_wh, 1) if total_capacity_wh else 0
-    min_soc_wh = sum(b.min_soc_pct / 100 * b.capacity_wh for b in usable_batteries)
-    max_charge_w = sum(b.max_charge_w for b in usable_batteries)
-    max_discharge_w = sum(b.max_discharge_w for b in usable_batteries)
-    # techo real de carga: si alguna bateria tiene un SOC maximo declarado
-    # por debajo del 100% (habitual para alargar vida util), el objetivo
-    # de reserva tiene que respetarlo, no apuntar al 100% nominal.
-    max_usable_wh = sum(b.max_soc_pct / 100 * b.capacity_wh for b in usable_batteries)
-
     if not usable_batteries:
         with _state_lock:
             _last_status.update(last_run=datetime.now().isoformat(),
                                  error="Ninguna bateria tiene el sensor de SOC disponible ahora mismo.")
         return
 
-    # Prioridad elegida por el usuario: "ahorro" es el comportamiento de
-    # siempre (carga tambien desde red si hace falta); "autoconsumo" solo
-    # carga con excedente solar, nunca desde red aunque este barata;
-    # "longevidad" es como "ahorro" pero sin apurar el SOC objetivo mas
-    # alla del 90%. La carga sostenida (reparto de potencia en el tiempo
-    # disponible en vez de siempre al maximo) es un interruptor aparte,
-    # disponible tanto en "ahorro" como en "longevidad" — en "autoconsumo"
-    # no aplica porque ahi nunca se carga desde red.
-    priority_mode = cfg["general"].get("priority_mode", "ahorro")
-    allow_grid_charging = priority_mode != "autoconsumo"
-    paced_charging = bool(cfg["general"].get("paced_charging", False)) and allow_grid_charging
-    effective_max_usable_wh = max_usable_wh
-    if priority_mode == "longevidad" and total_capacity_wh:
-        effective_max_usable_wh = min(max_usable_wh, total_capacity_wh * 0.90)
-
-    # Colchon de seguridad sobre la reserva: % de la capacidad util
-    # (max_usable - min_soc), no del total, para que sea proporcional a lo
-    # que la bateria puede de verdad ceder/recibir. Ver comentario extenso
-    # en scheduler.build_plan.
-    reserve_safety_margin_pct = float(cfg["general"].get("reserve_safety_margin_pct") or 0)
-    usable_capacity_wh = max(0.0, effective_max_usable_wh - min_soc_wh)
-    reserve_safety_margin_wh = usable_capacity_wh * reserve_safety_margin_pct / 100
-
-    plan, reserve_wh = scheduler.build_plan(
-        now=now,
-        pv_forecast_w=pv_forecast,
-        load_forecast_w=load_forecast,
-        current_soc_wh=current_soc_wh,
-        total_capacity_wh=total_capacity_wh,
-        max_charge_w=max_charge_w,
-        max_discharge_w=max_discharge_w,
-        min_soc_wh=min_soc_wh,
-        prices_tiers=prices_tiers,
-        contracted_power_w=float(cfg["general"].get("contracted_power_w") or 0),
-        max_usable_wh=effective_max_usable_wh,
-        allow_grid_charging=allow_grid_charging,
-        paced_charging=paced_charging,
-        reserve_safety_margin_wh=reserve_safety_margin_wh,
-    )
+    # La decision en si (agregados de capacidad/SOC, modo de prioridad,
+    # colchon de reserva y `scheduler.build_plan`) vive en cycle_planner.py
+    # como funcion pura, para ejecutar el MISMO codigo en las simulaciones.
+    _dec = cycle_planner.decide(now, cfg["general"], usable_batteries, socs, pv_forecast, load_forecast, prices_tiers)
+    plan, reserve_wh = _dec.plan, _dec.reserve_wh
+    total_capacity_wh, current_soc_wh, current_soc_pct = _dec.total_capacity_wh, _dec.current_soc_wh, _dec.current_soc_pct
 
     # Cargas diferibles: se planifican con el mismo plan hora a hora que
     # acaba de calcular el motor de baterias (asi saben en que horas la
@@ -1116,9 +1068,7 @@ def run_cycle():
     # Lo que ya se esta autoconsumiendo directo (paneles "hybrid" conectados
     # a una bateria con inversor integrado) no hace falta volver a mandarlo
     # por AC — se descuenta de la carga que SI hay que ordenar por AC.
-    ac_charge_w = now_hp.charge_w
-    if now_hp.charge_source == "solar":
-        ac_charge_w = max(0.0, now_hp.charge_w - hybrid_pv_now_w)
+    ac_charge_w = cycle_planner.ac_charge_for_now(now_hp, hybrid_pv_now_w)
     distribution = battery_exec.plan_distribution(
         batteries, ac_charge_w, now_hp.discharge_w, pv_surplus_w=pv_surplus_now, socs=socs
     )
