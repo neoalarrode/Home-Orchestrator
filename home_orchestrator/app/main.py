@@ -36,7 +36,6 @@ import lifetime_store
 import monotonic_sensor
 import pv_source
 import savings_store
-import scheduler
 import solar_energy_store
 import tariff_source
 
