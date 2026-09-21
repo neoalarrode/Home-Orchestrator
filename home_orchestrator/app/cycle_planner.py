@@ -16,12 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+import logging
 import math
 
 import scheduler
 import scheduler_dp
 
 
+log = logging.getLogger(__name__)
 DEFAULT_PLANNER = "classic"
 
 
@@ -90,15 +92,19 @@ def decide(
         reserve_safety_margin_wh=reserve_safety_margin_wh,
     )
     if general_cfg.get("planner", DEFAULT_PLANNER) == "dp":
-        rt = float(general_cfg.get("battery_roundtrip_efficiency_pct") or 88) / 100
-        eta = math.sqrt(min(1.0, max(0.5, rt)))
-        plan, reserve_wh = scheduler_dp.build_plan_dp(
-            **common, eta_charge=eta, eta_discharge=eta,
-            export_price=float(general_cfg.get("export_price_eur_kwh", 0.04) or 0),
-            wear_eur_per_kwh=float(general_cfg.get("battery_wear_eur_kwh", 0.01) or 0),
-            load_margin_frac=float(general_cfg.get("dp_load_margin_frac", 0.0)),
-            pv_margin_frac=float(general_cfg.get("dp_pv_margin_frac", 0.0)),
-        )
+        try:
+            rt = float(general_cfg.get("battery_roundtrip_efficiency_pct") or 88) / 100
+            eta = math.sqrt(min(1.0, max(0.5, rt)))
+            plan, reserve_wh = scheduler_dp.build_plan_dp(
+                **common, eta_charge=eta, eta_discharge=eta,
+                export_price=float(general_cfg.get("export_price_eur_kwh", 0.04) or 0),
+                wear_eur_per_kwh=float(general_cfg.get("battery_wear_eur_kwh", 0.01) or 0),
+                load_margin_frac=float(general_cfg.get("dp_load_margin_frac", 0.0)),
+                pv_margin_frac=float(general_cfg.get("dp_pv_margin_frac", 0.0)),
+            )
+        except Exception:
+            log.warning("El motor 'dp' fallo; se usa el planificador 'classic' en este ciclo", exc_info=True)
+            plan, reserve_wh = scheduler.build_plan(**common)
     else:
         plan, reserve_wh = scheduler.build_plan(**common)
     return CycleDecision(

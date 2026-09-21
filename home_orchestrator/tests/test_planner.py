@@ -50,12 +50,19 @@ class CommandChatter(unittest.TestCase):
             return len(calls) - n0
         try:
             self.assertGreater(cycle(336), 0)      # primera vez: se envia
-            self.assertEqual(cycle(335), 0)        # 1 W de diferencia: no
-            self.assertEqual(cycle(330), 0)
+            self.assertEqual(cycle(335), 0)        # 1 W de diferencia a los 60 s: no
+            self.assertGreater(cycle(334), 0)      # re-asercion a los 120 s (COMMAND_REFRESH_SECONDS)
             self.assertGreater(cycle(500), 0)      # cambio real: si
-            for _ in range(4):
-                cycle(500)
-            self.assertGreater(cycle(500), 0)      # re-asercion pasados 5 min
+            self.assertEqual(cycle(500), 0)        # misma orden a los 60 s: no
+            self.assertGreater(cycle(500), 0)      # re-asercion pasados 120 s
+            # una REDUCCION de 50 W (p.ej. recorte por potencia contratada) siempre se reenvia
+            self.assertGreater(cycle(450), 0)
+            # tras un fallo de envio la orden se olvida y se reintenta al ciclo siguiente
+            orig = ha.set_number
+            ha.set_number = lambda e, v: (_ for _ in ()).throw(RuntimeError("boom"))
+            cycle(700)
+            ha.set_number = orig
+            self.assertGreater(cycle(700), 0)
         finally:
             battery_exec.datetime = datetime
 

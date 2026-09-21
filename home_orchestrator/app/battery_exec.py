@@ -36,7 +36,7 @@ _last_command: dict[str, dict] = {}
 # ciclo y cada variacion se reenviaba. Se reenvia si cambia la accion, si la
 # potencia se mueve mas que la tolerancia, o como re-asercion pasado
 # COMMAND_REFRESH_SECONDS (por si el equipo perdio la orden).
-COMMAND_REFRESH_SECONDS = 300.0
+COMMAND_REFRESH_SECONDS = 120.0
 COMMAND_POWER_TOLERANCE_W = 25.0
 COMMAND_POWER_TOLERANCE_FRAC = 0.05
 
@@ -46,8 +46,14 @@ def _same_command(old: tuple, new: tuple) -> bool:
         return True
     if len(old) == 2 and len(new) == 2 and old[0] == new[0]:
         try:
-            tol = max(COMMAND_POWER_TOLERANCE_W, COMMAND_POWER_TOLERANCE_FRAC * abs(old[1]))
-            return abs(float(new[1]) - float(old[1])) < tol
+            diff = float(new[1]) - float(old[1])
+            if diff >= 0:
+                tol = max(COMMAND_POWER_TOLERANCE_W, COMMAND_POWER_TOLERANCE_FRAC * abs(old[1]))
+            else:
+                # Las REDUCCIONES de potencia (p.ej. recorte por potencia
+                # contratada) se reenvian con tolerancia mas estrecha.
+                tol = max(10.0, 0.02 * abs(old[1]))
+            return abs(diff) < tol
         except (TypeError, ValueError):
             return False
     return False
@@ -586,8 +592,9 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
             line = f"[{b.name}] CARGAR a {power:.0f} W ({entry['note']}, SOC {soc_txt})"
             if is_ecoflow:
                 def apply(b=b, power=power):
-                    b.ecoflow_set_discharging_task(enable=False)
-                    if not b.ecoflow_set_charging_task(enable=True, power_limit_w=power):
+                    ok_off = b.ecoflow_set_discharging_task(enable=False)
+                    ok_on = b.ecoflow_set_charging_task(enable=True, power_limit_w=power)
+                    if not (ok_off and ok_on):
                         raise RuntimeError("EcoFlow no confirmo el comando de carga")
             else:
                 def apply(b=b, power=power):
@@ -600,8 +607,9 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
             line = f"[{b.name}] DESCARGA activada, limite {power:.0f} W ({entry['note']}, SOC {soc_txt})"
             if is_ecoflow:
                 def apply(b=b, power=power):
-                    b.ecoflow_set_charging_task(enable=False)
-                    if not b.ecoflow_set_discharging_task(enable=True, power_limit_w=power):
+                    ok_off = b.ecoflow_set_charging_task(enable=False)
+                    ok_on = b.ecoflow_set_discharging_task(enable=True, power_limit_w=power)
+                    if not (ok_off and ok_on):
                         raise RuntimeError("EcoFlow no confirmo el comando de descarga")
             else:
                 def apply(b=b, power=power):
@@ -619,8 +627,9 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
             # de carga seguia encendida sin que nada la desactivara).
             if is_ecoflow:
                 def apply(b=b):
-                    b.ecoflow_set_charging_task(enable=False)
-                    if not b.ecoflow_set_discharging_task(enable=True, power_limit_w=0):
+                    ok_off = b.ecoflow_set_charging_task(enable=False)
+                    ok_on = b.ecoflow_set_discharging_task(enable=True, power_limit_w=0)
+                    if not (ok_off and ok_on):
                         raise RuntimeError("EcoFlow no confirmo el bloqueo de descarga")
             else:
                 def apply(b=b):
@@ -635,8 +644,10 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
             line = f"[{b.name}] sin accion (SOC {soc_txt})"
             if is_ecoflow:
                 def apply(b=b):
-                    b.ecoflow_set_charging_task(enable=False)
-                    b.ecoflow_set_discharging_task(enable=True, power_limit_w=0)
+                    ok_off = b.ecoflow_set_charging_task(enable=False)
+                    ok_on = b.ecoflow_set_discharging_task(enable=True, power_limit_w=0)
+                    if not (ok_off and ok_on):
+                        raise RuntimeError("EcoFlow no confirmo el limite de descarga a 0")
             else:
                 def apply(b=b):
                     ha_client.turn_off(b.charge_switch)
@@ -652,6 +663,10 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
                     apply()
                     _note_command(b.id, signature, now)
                 except Exception as e:
+                    # Un envio a medias deja el equipo en un estado que ya no
+                    # es el de la ultima orden anotada: se olvida para que el
+                    # proximo ciclo la reenvie en vez de omitirla.
+                    _last_command.pop(b.id, None)
                     line += f" — AVISO: no se pudo aplicar en Home Assistant ({e})"
             else:
                 line += " [misma orden ya enviada hace poco, omitida]"

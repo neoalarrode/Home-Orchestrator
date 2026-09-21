@@ -19,6 +19,7 @@
         "anomaly_store.py",
         "capacity_store.py",
         "climate_link.py",
+        "cycle_planner.py",
         "deferrable_exec.py",
         "deferrable_scheduler.py",
         "deferrable_store.py",
@@ -38,6 +39,7 @@
         "pv_source.py",
         "savings_store.py",
         "scheduler.py",
+        "scheduler_dp.py",
         "solar_energy_store.py",
         "tariff_source.py",
         "templates"
