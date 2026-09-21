@@ -103,7 +103,23 @@ def pvpc_sensor_prices(entity_id: str, now: datetime, horizon_hours: int) -> lis
         prices = [current] * horizon_hours
     else:
         fallback = sum(hourly.values()) / len(hourly)
-        prices = [hourly.get(h, fallback) for h in hours]
+
+        def _price_for(h: datetime) -> float:
+            p = hourly.get(h)
+            if p is not None:
+                return p
+            # Hora sin dato (tipicamente mañana, que ESIOS publica ~20:30): en vez
+            # de la media plana -que borra todo valle/punta de mañana y deja al
+            # planificador sin saber que la noche siguiente es barata- se usa el
+            # precio de la MISMA hora de un dia cercano ya conocido (persistencia:
+            # el perfil diario del PVPC se parece mucho de un dia al siguiente).
+            for days in (1, 2, 3, -1, -2):
+                q = hourly.get(h - timedelta(days=days))
+                if q is not None:
+                    return q
+            return fallback
+
+        prices = [_price_for(h) for h in hours]
 
     # BUG REAL: con una serie de precios PLANA (todos iguales) los tres cortes
     # coinciden, y como "valle" se comprueba primero (`p <= valle_cut`) TODAS
