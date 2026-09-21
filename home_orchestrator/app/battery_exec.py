@@ -30,11 +30,35 @@ COMMAND_DEBOUNCE_SECONDS = 8.0
 _last_command: dict[str, dict] = {}
 
 
-def _command_send_allowed(battery_id: str, signature: tuple, now: datetime) -> bool:
-    last = _last_command.get(battery_id)
-    if last is None or last["signature"] != signature:
+# Una orden IDENTICA (o de potencia casi igual) ya enviada no se repite cada
+# ciclo de 60 s -- eso eran 12 llamadas/min (4 baterias x 3 servicios), 17 280 al
+# dia, aunque nada cambiase: en modo "carga sostenida" la potencia varia 1 W por
+# ciclo y cada variacion se reenviaba. Se reenvia si cambia la accion, si la
+# potencia se mueve mas que la tolerancia, o como re-asercion pasado
+# COMMAND_REFRESH_SECONDS (por si el equipo perdio la orden).
+COMMAND_REFRESH_SECONDS = 300.0
+COMMAND_POWER_TOLERANCE_W = 25.0
+COMMAND_POWER_TOLERANCE_FRAC = 0.05
+
+
+def _same_command(old: tuple, new: tuple) -> bool:
+    if old == new:
         return True
-    return (now - last["sent_at"]).total_seconds() >= COMMAND_DEBOUNCE_SECONDS
+    if len(old) == 2 and len(new) == 2 and old[0] == new[0]:
+        try:
+            tol = max(COMMAND_POWER_TOLERANCE_W, COMMAND_POWER_TOLERANCE_FRAC * abs(old[1]))
+            return abs(float(new[1]) - float(old[1])) < tol
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def _command_send_allowed(battery_id: str, signature: tuple, now: datetime,
+                          refresh_seconds: float = COMMAND_DEBOUNCE_SECONDS) -> bool:
+    last = _last_command.get(battery_id)
+    if last is None or not _same_command(last["signature"], signature):
+        return True
+    return (now - last["sent_at"]).total_seconds() >= refresh_seconds
 
 
 def _note_command(battery_id: str, signature: tuple, now: datetime) -> None:
@@ -406,7 +430,13 @@ def _round_preserving_sum(assigned: dict[str, float], total_w: float) -> dict[st
     de redondear hacia arriba.
     """
     floors = {bid: int(v) for bid, v in assigned.items()}
-    budget = int(total_w) - sum(floors.values())
+    # BUG REAL (reproducible con 4 baterias de 1200 W pidiendo 6000 W): cuando
+    # las baterias NO pueden absorber todo lo pedido (`sum(assigned) < total_w`),
+    # el presupuesto se calculaba contra `total_w` y a TODAS les tocaba un +1 W
+    # -- cada una acababa en 1201 W por encima de su propio limite (suma 4804 W
+    # cuando el maximo real es 4800 W). El presupuesto correcto es lo que de
+    # verdad se asigno, nunca lo que se pidio.
+    budget = min(int(total_w), int(sum(assigned.values()) + 1e-6)) - sum(floors.values())
     if budget <= 0:
         return floors
     order = sorted(assigned.keys(), key=lambda bid: assigned[bid] - floors[bid], reverse=True)
@@ -617,14 +647,14 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
                         ha_client.turn_off(b.discharge_switch)
 
         if not dry_run:
-            if _command_send_allowed(b.id, signature, now):
+            if _command_send_allowed(b.id, signature, now, refresh_seconds=COMMAND_REFRESH_SECONDS):
                 try:
                     apply()
                     _note_command(b.id, signature, now)
                 except Exception as e:
                     line += f" — AVISO: no se pudo aplicar en Home Assistant ({e})"
             else:
-                line += " [debounce: misma orden reenviada hace poco, omitida]"
+                line += " [misma orden ya enviada hace poco, omitida]"
 
         log_lines.append(("[SIMULACION] " if dry_run else "") + line)
 
