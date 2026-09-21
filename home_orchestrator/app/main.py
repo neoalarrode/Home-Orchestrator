@@ -1068,6 +1068,13 @@ def run_cycle():
     # a una bateria con inversor integrado) no hace falta volver a mandarlo
     # por AC — se descuenta de la carga que SI hay que ordenar por AC.
     ac_charge_w = cycle_planner.ac_charge_for_now(now_hp, hybrid_pv_now_w)
+    # Con carga desde red, la importacion total no debe pasar de la potencia
+    # contratada aunque el consumo REAL (no el previsto) suba de golpe.
+    ac_charge_w = cycle_planner.cap_grid_charge_for_contract(
+        ac_charge_w, now_hp.charge_source, float(cfg["general"].get("contracted_power_w") or 0),
+        net_grid_now_w if net_grid_now_w is not None else live_base_load_w,
+        live_charge_w if live_battery_data_ok else None,
+    )
     distribution = battery_exec.plan_distribution(
         batteries, ac_charge_w, now_hp.discharge_w, pv_surplus_w=pv_surplus_now, socs=socs
     )

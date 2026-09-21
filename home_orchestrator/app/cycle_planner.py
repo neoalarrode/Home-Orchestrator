@@ -16,7 +16,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+import math
+
 import scheduler
+import scheduler_dp
+
+
+DEFAULT_PLANNER = "classic"
 
 
 @dataclass
@@ -67,7 +73,7 @@ def decide(
     usable_capacity_wh = max(0.0, effective_max_usable_wh - min_soc_wh)
     reserve_safety_margin_wh = usable_capacity_wh * reserve_safety_margin_pct / 100
 
-    plan, reserve_wh = scheduler.build_plan(
+    common = dict(
         now=now,
         pv_forecast_w=pv_forecast,
         load_forecast_w=load_forecast,
@@ -83,6 +89,18 @@ def decide(
         paced_charging=paced_charging,
         reserve_safety_margin_wh=reserve_safety_margin_wh,
     )
+    if general_cfg.get("planner", DEFAULT_PLANNER) == "dp":
+        rt = float(general_cfg.get("battery_roundtrip_efficiency_pct") or 88) / 100
+        eta = math.sqrt(min(1.0, max(0.5, rt)))
+        plan, reserve_wh = scheduler_dp.build_plan_dp(
+            **common, eta_charge=eta, eta_discharge=eta,
+            export_price=float(general_cfg.get("export_price_eur_kwh", 0.04) or 0),
+            wear_eur_per_kwh=float(general_cfg.get("battery_wear_eur_kwh", 0.01) or 0),
+            load_margin_frac=float(general_cfg.get("dp_load_margin_frac", 0.0)),
+            pv_margin_frac=float(general_cfg.get("dp_pv_margin_frac", 0.0)),
+        )
+    else:
+        plan, reserve_wh = scheduler.build_plan(**common)
     return CycleDecision(
         plan=plan, reserve_wh=reserve_wh, total_capacity_wh=total_capacity_wh,
         current_soc_wh=current_soc_wh, current_soc_pct=current_soc_pct, min_soc_wh=min_soc_wh,
@@ -97,3 +115,16 @@ def ac_charge_for_now(now_hp, hybrid_pv_now_w: float) -> float:
     if now_hp.charge_source == "solar":
         ac_charge_w = max(0.0, now_hp.charge_w - hybrid_pv_now_w)
     return ac_charge_w
+
+
+def cap_grid_charge_for_contract(ac_charge_w: float, charge_source: str | None, contracted_power_w: float,
+                                 grid_import_w: float | None, live_charge_w: float | None,
+                                 margin: float = 0.95) -> float:
+    """Limita la carga DESDE RED con la importacion medida AHORA: el plan solo
+    conoce la media horaria del consumo, y un pico real (horno + aire) sumado a
+    la carga de las baterias superaba la potencia contratada (simulacion: 1-3
+    min/dia). base = importacion medida sin la carga actual de las baterias."""
+    if charge_source != "grid" or not contracted_power_w or contracted_power_w <= 0 or grid_import_w is None:
+        return ac_charge_w
+    base = max(0.0, grid_import_w - max(0.0, live_charge_w or 0.0))
+    return min(ac_charge_w, max(0.0, contracted_power_w * margin - base))

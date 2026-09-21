@@ -114,6 +114,12 @@ DEFAULT_CONFIG = {
         "priority_mode": "ahorro",  # "ahorro" | "autoconsumo" | "longevidad"
         "paced_charging": False,  # repartir la carga desde red en el tiempo disponible en vez de ir siempre al maximo (solo aplica con "ahorro" o "longevidad")
         "reserve_safety_margin_pct": 15,  # colchon extra (% de la capacidad util) sobre CUALQUIER objetivo de reserva -- protege contra fallos de la previsión de sol/consumo, sobre todo en bloques de valle largos (fin de semana) donde la reserva calculada puede ser minima. 0 = comportamiento de siempre, al filo. Ver scheduler.build_plan/_reserve_target.
+        # Motor de planificacion: "classic" (reglas por tramo, el de siempre) | "dp" (programacion
+        # dinamica: mejor con precio PVPC dinamico y con solar; ver scheduler_dp.py). Ajustes solo de "dp":
+        "planner": "classic",
+        "battery_roundtrip_efficiency_pct": 88,  # eficiencia ida y vuelta de las baterias (solo "dp")
+        "battery_wear_eur_kwh": 0.01,            # coste de desgaste por kWh descargado (solo "dp")
+        "export_price_eur_kwh": 0.04,            # valor del kWh vertido (solo "dp")
         "language": "auto",  # "auto" (detecta el idioma del navegador) | "es" | "en" — se guarda como el idioma por defecto de esta instalacion
     },
 }
