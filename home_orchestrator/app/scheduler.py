@@ -255,11 +255,25 @@ def build_plan(
         deadline = next_need_idx[i + 1]
         if deadline is None:
             return max_charge_w
-        hours_remaining = deadline - i
-        if hours_remaining <= 0:
+        # BUG REAL, medido en simulacion: el plan trabaja en pasos de una hora
+        # entera, pero "ahora" casi nunca es en punto. Con `deadline - i` a
+        # secas, a las 07:50 aun quedaban "1 h" hasta la punta de las 08:00 y
+        # cada minuto se cargaba solo 1/1.2 de lo que faltaba: el SOC se acerca
+        # a la reserva de forma asintotica y llega a la punta sin ella (SOC 94.6 %
+        # a las 08:00 con reserva al 100 %). Se descuenta lo que ya ha pasado de
+        # la hora en curso.
+        elapsed_h = (now.minute * 60 + now.second) / 3600.0 if i == 0 else 0.0
+        hours_remaining = deadline - i - elapsed_h
+        if hours_remaining <= 0.05:
             return max_charge_w
         energy_needed_wh = max(0.0, target_wh - soc_now)
         return min(max_charge_w, (energy_needed_wh / hours_remaining) * PACED_CHARGE_SAFETY_MARGIN)
+
+    # Fraccion de la hora en curso que AUN queda: la orden de carga que se emite
+    # ahora es una POTENCIA, y para llenar `headroom` Wh en lo que resta de hora
+    # hace falta headroom/frac0 W, no headroom W (con eso, ciclo a ciclo, el SOC
+    # se acercaba de forma asintotica a la reserva sin llegar a ella).
+    frac0 = max(0.1, 1.0 - (now.minute * 60 + now.second) / 3600.0)
 
     # --- PASADA B: simulacion hacia adelante ---
     plan: list[HourPlan] = []
@@ -289,9 +303,10 @@ def build_plan(
             if contracted_power_w > 0:
                 grid_headroom = max(0.0, contracted_power_w - load_forecast_w[i])
                 charge_limit = min(charge_limit, grid_headroom)
-            charge = min(charge_limit, headroom)
+            ef = frac0 if i == 0 else 1.0
+            charge = min(charge_limit, headroom / ef)
             if charge > 0:
-                soc += charge
+                soc += charge * ef
                 hp.charge_w = charge
                 hp.charge_source = "grid"
                 if paced_charging and charge_limit < max_charge_w:
@@ -325,9 +340,10 @@ def build_plan(
             if contracted_power_w > 0:
                 grid_headroom = max(0.0, contracted_power_w - load_forecast_w[i])
                 charge_limit = min(charge_limit, grid_headroom)
-            charge = min(charge_limit, headroom)
+            ef = frac0 if i == 0 else 1.0
+            charge = min(charge_limit, headroom / ef)
             if charge > 0:
-                soc += charge
+                soc += charge * ef
                 hp.charge_w = charge
                 hp.charge_source = "grid"
                 if paced_charging and charge_limit < max_charge_w:
