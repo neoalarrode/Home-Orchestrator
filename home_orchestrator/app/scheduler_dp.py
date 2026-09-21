@@ -107,13 +107,13 @@ def build_plan_dp(
     pv_eff = [max(0.0, pv_forecast_w[i]) * (1.0 - (pv_margin_frac if i > 0 else 0.0)) for i in range(horizon)]
 
     # ---- coste por etapa: funcion CONVEXA de la variacion de energia almacenada (Wh)
-    prices = [max(0.0, prices_tiers[i][0]) for i in range(horizon)]
+    prices = [prices_tiers[i][0] for i in range(horizon)]      # un precio negativo es un PAGO por consumir: se aprovecha
     exp_p = max(0.0, export_price)
     stage = []   # (i0, p, e, d_min, d_solar, d_max, e_max_ac, dt)
     for i in range(horizon):
         dt = dts[i]
         p = prices[i]
-        e = min(exp_p, p)                                   # vender nunca rinde mas que ahorrar comprar
+        e = min(exp_p, p)                                   # vender nunca rinde mas que ahorrar comprar (ni con precio negativo)
         i0 = (load_eff[i] - pv_eff[i]) * dt                 # Wh de red sin bateria (<0 = excedente)
         d_min = -min(max_discharge_w * dt, max(0.0, i0)) / eta_d   # Wh almacenados que pueden salir (no vierte)
         e_max_ac = max_charge_w * dt
