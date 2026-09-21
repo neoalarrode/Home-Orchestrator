@@ -3,7 +3,7 @@
 ## battery 0.14.10
 
 - Reparto de carga: con las baterias saturadas cada una recibia +1 W sobre su limite (1201 W con limite 1200).
-- Ordenes a baterias: una orden identica o de potencia casi igual ya no se reenvia cada 60 s (17 280 llamadas/dia -> ~3 500).
+- Ordenes a baterias: una orden identica o de potencia casi igual ya no se reenvia cada 60 s (en simulacion, las llamadas a HA bajan a menos de la mitad).
 - Carga sostenida: llega a la reserva antes de la primera hora que hace falta la bateria (antes se acercaba de forma asintotica).
 - PVPC: las horas de mañana sin precio publicado usan el precio de la misma hora de un dia conocido (antes la media plana borraba valle/punta).
 - Prevision de consumo: la carga/descarga de bateria que se resta/suma es la potencia ESPERADA de esa hora, no la media condicional de los dias en que ocurrio.
