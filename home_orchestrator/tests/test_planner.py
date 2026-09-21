@@ -3,7 +3,7 @@ import os, sys, unittest
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
-import battery_exec, scheduler, tariff_source, scheduler_dp  # noqa: E402
+import battery_exec, scheduler, tariff_source, scheduler_dp, ha_client  # noqa: E402
 
 
 def _bats(n=4, cap=2400, mx=1200):
@@ -90,6 +90,21 @@ class PvpcFallback(unittest.TestCase):
         tomorrow_night = p[12 + 2]   # 02:00 de mañana
         self.assertAlmostEqual(tomorrow_night[0], 0.05)
         self.assertEqual(tomorrow_night[1], "valle")
+
+
+class SignFilteredAverage(unittest.TestCase):
+    def test_expectation_not_conditional_mean(self):
+        """Carga de 1000 W en 1 de 10 muestras de la misma hora -> esperanza 100 W (no 1000 W)."""
+        from datetime import timezone
+        pts = []
+        for k in range(10):
+            ts = datetime(2026, 9, 14 + (k % 3), 3, k, tzinfo=timezone.utc)   # mismo cubo (lunes-miercoles, 05:xx local)
+            pts.append({"state": "-1000" if k == 0 else "0", "last_changed": ts.isoformat()})
+        ha_client._safe_get_history = lambda e, d: pts
+        ha_client._hourly_avg_cache.clear()
+        avg, _ = ha_client._hourly_avg_by_hour_of_day("sensor.p", 10, 0.0, False, sign_filter="negative")
+        vals = [v for v in avg.values() if v]
+        self.assertTrue(any(abs(v - 100.0) < 1e-6 for v in vals), vals[:3])
 
 
 class DpPlanner(unittest.TestCase):

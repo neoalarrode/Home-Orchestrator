@@ -354,13 +354,17 @@ def _hourly_avg_by_hour_of_day(
         # bruto (ver `true_load_forecast_from_grid`), donde la carga tiene
         # que RESTARSE y la descarga SUMARSE, cosa que un abs_values() a
         # secas no puede distinguir. Tiene prioridad sobre abs_values.
+        # BUG REAL, medido en simulacion (modo "combined": coste +0.9 % y
+        # captura del optimo 98 % -> 95 %): las muestras del signo contrario se
+        # DESCARTABAN, asi que la media era la media CONDICIONAL "cuando carga,
+        # carga a X W" en vez de la ESPERANZA "potencia de carga esperada a esta
+        # hora". Si la bateria cargo a esa hora 1 dia de 10, se restaba la carga
+        # entera de ese dia como si ocurriese siempre. Lo correcto es promediar
+        # tambien las muestras del otro signo como 0 W.
         if sign_filter == "positive":
-            if val <= 0:
-                continue
+            val = val if val > 0 else 0.0
         elif sign_filter == "negative":
-            if val >= 0:
-                continue
-            val = abs(val)
+            val = -val if val < 0 else 0.0
         elif abs_values:
             val = abs(val)
         ts = datetime.fromisoformat(point["last_changed"].replace("Z", "+00:00"))
