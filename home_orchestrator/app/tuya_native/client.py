@@ -6,20 +6,8 @@ from . import signing, hmac_signer, encryption
 from .encryption import verify_response_sign
 
 API_HOST = "https://a1.tuyaeu.com"; API_PATH = "/api.json"
-APP_VERSION = "7.9.0"; TTID = "sdk_tuya"; ET_VERSION = "0.0.1"
-PKG_NAME = "com.tuya.smart"
-
-
-def signing_key(cert_der: bytes, bmp_secret_hex: str, app_secret: str,
-                bmp_form: str = "hex") -> bytes:
-    """K = pkgName + "_" + SHA256(cert) hex MAYUS con ':' + "_" + bmp_secret + "_" + appSecret.
-    bmp_form: 'hex' (bmp_secret como su hex) | 'raw' (bytes latin1) -- se ajusta verificando."""
-    cert_sha = ":".join("%02X" % b for b in hashlib.sha256(cert_der).digest())
-    if bmp_form == "raw":
-        bmp = bytes.fromhex(bmp_secret_hex).decode("latin1")
-    else:
-        bmp = bmp_secret_hex
-    return ("%s_%s_%s_%s" % (PKG_NAME, cert_sha, bmp, app_secret)).encode("latin1")
+APP_VERSION = "7.9.0"; TTID = "tuyaSmart"; ET_VERSION = "3"
+PKG_NAME = b"com.tuya.smart"
 
 
 @dataclass
@@ -30,9 +18,11 @@ class Credentials:
     bmp_secret_hex: str
     chkey: str
     device_id: str
-    bmp_form: str = "hex"
     def key(self) -> bytes:
-        return signing_key(self.cert_der, self.bmp_secret_hex, self.app_secret, self.bmp_form)
+        bmp = self.bmp_secret_hex
+        bmp_bytes = bytes.fromhex(bmp) if isinstance(bmp, str) else bmp
+        app = self.app_secret.encode() if isinstance(self.app_secret, str) else self.app_secret
+        return hmac_signer.build_signing_key(PKG_NAME, self.cert_der, bmp_bytes, app)
 
 
 class ApiError(Exception):
