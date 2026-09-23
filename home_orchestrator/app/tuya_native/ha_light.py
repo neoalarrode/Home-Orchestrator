@@ -6,7 +6,7 @@ from __future__ import annotations
 def build_light(device_id,name,codes,bt):
     def has(*c): return any(x in codes for x in c)
     st=bt+"/light"; cmd=bt+"/set"     # topic de estado PROPIO (traducido)
-    cfg={"schema":"json","name":name,"unique_id":"tuya_%s_light"%device_id,
+    cfg={"schema":"json","name":None,"unique_id":"tuya_%s_light"%device_id,
          "device":{"identifiers":["tuya_%s"%device_id],"name":name,"manufacturer":"Tuya"},
          "availability_topic":bt+"/avail","state_topic":st,"command_topic":cmd}
     modes=[]

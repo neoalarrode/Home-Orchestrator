@@ -5,7 +5,7 @@ def _div(sp): return 10**int(sp.get("scale",0) or 0)
 def build_climate(device_id,name,codes,bt):
     def has(*c): return any(x in codes for x in c)
     st=bt+"/state"; cmd=bt+"/cmd"
-    cfg={"name":name,"unique_id":"tuya_%s_climate"%device_id,"device":{"identifiers":["tuya_%s"%device_id],"name":name,"manufacturer":"Tuya"},
+    cfg={"name":None,"unique_id":"tuya_%s_climate"%device_id,"device":{"identifiers":["tuya_%s"%device_id],"name":name,"manufacturer":"Tuya"},
          "availability_topic":bt+"/avail","temperature_state_topic":st,"temperature_command_topic":cmd+"/temp_set",
          "temperature_state_template":"{{ value_json.temp_set }}","temp_step":0.5,
          "mode_state_topic":st,"mode_command_topic":cmd+"/mode","mode_state_template":"{{ value_json.hvac_mode }}"}

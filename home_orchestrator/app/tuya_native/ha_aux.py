@@ -3,7 +3,7 @@ UNIT_DC={"℃":"temperature","°C":"temperature","W":"power","kWh":"energy","V":
 def build_aux(e,device_id,name,bt):
     code=e["code"]; dom=e["domain"]; st=bt+"/state"; cmd=bt+"/cmd/"+code
     dev={"identifiers":["tuya_%s"%device_id],"name":name,"manufacturer":"Tuya"}
-    cfg={"name":"%s %s"%(name,code),"unique_id":"tuya_%s_%s"%(device_id,code),"device":dev,"availability_topic":bt+"/avail","state_topic":st,"value_template":"{{ value_json.%s }}"%code}
+    cfg={"name":code,"unique_id":"tuya_%s_%s"%(device_id,code),"device":dev,"availability_topic":bt+"/avail","state_topic":st,"value_template":"{{ value_json.%s }}"%code}
     if e.get("icon"): cfg["icon"]="mdi:"+str(e["icon"]).replace("icon-dp_","").replace("_","-")
     scale=int(e.get("scale") or 0); d=10**scale
     if dom=="switch": cfg.update({"command_topic":cmd,"payload_on":"true","payload_off":"false","state_on":True,"state_off":False})
