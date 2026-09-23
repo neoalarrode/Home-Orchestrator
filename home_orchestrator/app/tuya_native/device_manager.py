@@ -21,6 +21,42 @@ class TuyaDevice:
         self.plan=ent_gen.build_entities(self.category,self.codes,self.name,self.device_id,state=live,expose_advanced=self.expose_advanced)
         return self
     def state_payload(self): return self.ctl.get_state()
+
+    def _light_state(self, raw):
+        on=bool(raw.get("switch_led") or raw.get("switch_led_1"))
+        o={"state":"ON" if on else "OFF"}
+        bv=raw.get("bright_value_v2") or raw.get("bright_value")
+        if bv is not None:
+            try: o["brightness"]=lightkit.brightness_to_ha(int(bv))
+            except Exception: pass
+        cd=raw.get("colour_data_v2") or raw.get("colour_data")
+        if cd:
+            h,sv,_=lightkit.decode_colour(cd); o["color_mode"]="hs"; o["color"]={"h":h,"s":sv}
+        elif raw.get("temp_value_v2") is not None or raw.get("temp_value") is not None:
+            o["color_mode"]="color_temp"
+        return o
+
+    def _vacuum_state(self, raw):
+        from .ha_vacuum import build_vacuum  # noqa
+        from .kits import light  # noqa
+        STATUS={"standby":"idle","charging":"docked","chargecompleted":"docked","charge_done":"docked",
+                "sleep":"idle","paused":"paused","goto_charge":"returning","smart":"cleaning","select_room":"cleaning",
+                "zone_clean":"cleaning","cleaning":"cleaning","washing":"cleaning","airing":"docked","collecting_dust":"docked"}
+        st=raw.get("status"); o={"state":STATUS.get(st,"cleaning" if raw.get("switch_go") else "idle")}
+        bat=raw.get("battery_percentage") or raw.get("electricity_left")
+        if bat is not None: o["battery_level"]=int(bat)
+        if raw.get("suction") is not None: o["fan_speed"]=raw.get("suction")
+        return o
+
+    def state_messages(self):
+        """Topic -> payload para publicar el estado. Crudo para las entidades de
+        plantilla; luz/aspirador con su forma HA."""
+        raw=self.state_payload(); bt="tuya_native/%s"%self.device_id
+        msgs={bt+"/state": raw}
+        dom=self.plan.get("main_domain")
+        if dom=="light": msgs[bt+"/light"]=self._light_state(raw)
+        elif dom=="vacuum": msgs[bt+"/vacuum"]=self._vacuum_state(raw)
+        return msgs
     def handle_command(self,domain,command,payload):
         if domain=="vacuum": return self._vac(command,payload)
         if domain=="light": return self._light(payload)

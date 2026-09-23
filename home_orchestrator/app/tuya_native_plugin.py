@@ -99,7 +99,8 @@ class TuyaNativePlugin(Plugin):
     def _publish_all_state(self):
         for dev in self._devices.values():
             try:
-                self._mqtt.publish("tuya_native/%s/state" % dev.device_id, json.dumps(dev.state_payload()))
+                for topic, payload in dev.state_messages().items():
+                    self._mqtt.publish(topic, json.dumps(payload))
             except Exception:
                 log.debug("estado %s no disponible", dev.device_id)
 

@@ -17,12 +17,18 @@ def build_climate(device_id,name,codes,bt):
         cfg["temp_step"]=round((sp.get("step") or 1)/d,2)
     if has("temp_current","Temp_current"):
         cfg["current_temperature_topic"]=st; cfg["current_temperature_template"]="{{ value_json.%s }}"%("temp_current" if has("temp_current") else "Temp_current")
-    modes=["off"]; md=codes.get("mode") or codes.get("Mode")
+    on_code="Power" if "Power" in codes else ("switch" if "switch" in codes else ("Switch" if "Switch" in codes else "Power"))
+    mode_code="mode" if "mode" in codes else ("Mode" if "Mode" in codes else "mode")
+    modes=["off"]; md=codes.get("mode") or codes.get("Mode"); mapping={}
     if md:
         for v in ((md.get("spec") or {}).get("range") or []):
-            hv=TUYA_MODE_TO_HVAC.get(v)
-            if hv and hv not in modes: modes.append(hv)
+            hv=TUYA_MODE_TO_HVAC.get(v, v); mapping[v]=hv
+            if hv not in modes: modes.append(hv)
     cfg["modes"]=modes or ["off","auto"]
+    # hvac = off si apagado; si no, mapear el modo Tuya -> hvac. Plantilla sobre el dict crudo.
+    cfg["mode_state_template"]=("{%% if not value_json.%s %%}off{%% else %%}{{ {%s}.get(value_json.%s|string, value_json.%s) }}{%% endif %%}"
+        % (on_code, ", ".join("'%s':'%s'"%(k,v) for k,v in mapping.items()), mode_code, mode_code))
+    cfg["power_command_topic"]=cmd+"/power_hvac"
     w=codes.get("windspeed") or codes.get("fan_speed_enum")
     if w: cfg.update({"fan_modes":(w.get("spec") or {}).get("range") or [],"fan_mode_state_topic":st,"fan_mode_command_topic":cmd+"/windspeed","fan_mode_state_template":"{{ value_json.windspeed }}"})
     s=codes.get("up_down_sweep")
