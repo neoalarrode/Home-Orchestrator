@@ -115,6 +115,11 @@ class TuyaDevice:
                 self.ctl.publish_message(mqtt_transport.room_clean_message(p["params"]["ids"],clean_times=1),protocol=64)
                 self.ctl.set_dps({"mode":"select_room"},prefer="mqtt")
                 return self.ctl.set_dp("switch_go",True,prefer="mqtt")
+            return False
+        # Companeros curados (sweep_mop_mode, water_output, clean_times, ...): el
+        # sub-topic ES el code -> set directo del DP por MQTT (local_key).
+        code=self._real_code(command)
+        if code: return self.ctl.set_dp(code,payload,prefer="mqtt")
         return False
     def _light(self,payload):
         """Comando de luz de HA (schema json) via TuyaLightHandle -- usa _first()

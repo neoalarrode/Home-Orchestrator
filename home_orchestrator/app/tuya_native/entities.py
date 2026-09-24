@@ -5,6 +5,10 @@ from typing import Any, Dict, List
 from . import ha_climate, ha_vacuum, ha_light, ha_cover, ha_fan
 CATEGORY_MAIN={"kt":"climate","qn":"climate","wk":"climate","rs":"climate","dj":"light","dd":"light","dc":"light","xdd":"light","fwd":"light","tgq":"light","tyndj":"light","cz":"switch","pc":"switch","kg":"switch","tdq":"switch","wkf":"switch","sd":"vacuum","cl":"cover","clkg":"cover","mc":"cover","fs":"fan","kj":"fan","cs":"fan","ggq":"switch","sfkzq":"switch","msp":"switch","wsdcg":"sensor","mcs":"binary_sensor","pir":"binary_sensor"}
 COVER_ROLE={"control","percent_control","position"}; FAN_ROLE={"switch","fan_switch","fan_speed","speed","mode"}
+# Companeros CURADOS del aspirador: se exponen SIEMPRE (no dependen de expose_advanced)
+# como entidades bajo el mismo dispositivo, junto al vacuum -- lo relevante de fregado
+# (modo barrer/fregar y nivel de agua) y nº de pasadas. NO los 51 DPs.
+VACUUM_EXTRAS={"sweep_mop_mode","water_output","clean_times"}
 SWITCH_MAIN={"switch","switch_1","Switch","start"}
 NOISE_CODES={"markbit","boolCode","command_trans","total_error","fault2","request","response","net_notify","report","device_info","work_time","run_time","style"}
 def _ro(sp): am=str(sp.get("accessMode") or ""); return bool(am) and "w" not in am
@@ -23,6 +27,11 @@ def build_entities(category,codes,name,device_id,base_topic="tuya_native",state=
         ents.append({"domain":"climate","role":"main","config":ha_climate.build_climate(device_id,name,codes,bt)}); consumed|={c for c in codes if c in ha_climate.CLIMATE_MAINCODES}
     elif main=="vacuum":
         fs=(codes.get("suction",{}).get("spec",{}) or {}).get("range"); ents.append({"domain":"vacuum","role":"main","config":ha_vacuum.build_vacuum(device_id,name,codes,bt,fs)}); consumed|={c for c in codes if c in ha_vacuum.VACUUM_ROLES}
+        # Companeros curados de fregado/pasadas (siempre, no via expose_advanced)
+        for c in VACUUM_EXTRAS:
+            if c in codes and c not in consumed:
+                e=_dp_entity(c,codes[c])
+                if e: ents.append(e); consumed.add(c)
     elif main=="light":
         from .kits.light import LIGHT_ROLE; ents.append({"domain":"light","role":"main","config":ha_light.build_light(device_id,name,codes,bt)}); consumed|={c for c in codes if c in LIGHT_ROLE}
     elif main=="cover":
