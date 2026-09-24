@@ -19,6 +19,11 @@ class TuyaDevice:
         try: live=self.ctl.get_state()
         except Exception: live=None
         self.plan=ent_gen.build_entities(self.category,self.codes,self.name,self.device_id,state=live,expose_advanced=self.expose_advanced)
+        # Aspirador: habitaciones desde el mapa en la nube (id->nombre) para HA
+        # clean_area, salvo que ya se hayan fijado por config.
+        if self.plan.get("main_domain")=="vacuum" and not self.rooms:
+            from . import sweeper_map
+            self.rooms=sweeper_map.fetch_rooms(self.api,self.device_id)
         return self
     def state_payload(self): return self.ctl.get_state()
 
