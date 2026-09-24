@@ -23,6 +23,16 @@ def _section() -> dict:
     return config_store.read_plugin_section(PLUGIN_KEY, {"auth": {}, "devices": []})
 
 
+def _persist_auth(fields: dict) -> None:
+    """Fusiona claves en la subseccion auth (sesion tras login, sin tocar
+    device list ni secretos ya presentes que no vengan en `fields`)."""
+    sec = _section()
+    auth = dict(sec.get("auth") or {})
+    auth.update({k: v for k, v in fields.items() if v is not None})
+    sec["auth"] = auth
+    config_store.update_plugin_section(PLUGIN_KEY, sec)
+
+
 def _build_client(sec: dict):
     a = sec.get("auth") or {}
     if not (a.get("app_id") and a.get("app_secret") and a.get("bmp_secret_hex") and a.get("cert_der_b64")):
@@ -44,10 +54,12 @@ def _build_client(sec: dict):
 
 class TuyaNativePlugin(Plugin):
     slug = "tuya"; name = "Tuya"; version = "1.0.0"   # evolucion del plugin Tuya (reimplementa la app)
+    serves_root = True
 
     def __init__(self):
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_tuya_native")
         self._devices = {}       # device_id -> TuyaDevice
+        self._qr = None          # {token, country_code} del login QR en curso
         self._app = self._build_flask()
         self._stop = threading.Event()
         # Proveedor de dispositivos para consumo INTERNO (Climate/Lighting) sin
@@ -184,16 +196,99 @@ class TuyaNativePlugin(Plugin):
         while not self._stop.is_set():
             self._publish_all_state(); self._stop.wait(STATE_INTERVAL)
 
+    def _reload_async(self):
+        """Recarga dispositivos y republica discovery en segundo plano (tras un
+        login o cambio de config) sin bloquear la respuesta HTTP."""
+        def _job():
+            try:
+                self._load_devices(); self._publish_all_discovery(); self._publish_all_state()
+            except Exception:
+                log.exception("tuya_native: recarga tras login/config fallida")
+        threading.Thread(target=_job, daemon=True).start()
+
     def shutdown(self):
         self._stop.set()
 
+    def _login_client(self, sec):
+        """Cliente listo para login (creds presentes) SIN exigir sesion todavia.
+        None si faltan las credenciales de la app (app_secret/bmp/cert)."""
+        c, _ = _build_client(sec)
+        return c
+
     def _build_flask(self):
-        app = Flask(__name__)
+        import os
+        tpl = os.path.join(os.path.dirname(__file__), "tuya_native_templates")
+        app = Flask("tuya_native_plugin", template_folder=tpl)
+
+        @app.get("/")
+        def index():
+            from flask import render_template
+            return render_template("index.html")
+
         @app.get("/api/status")
         def status():
             sec = _section(); a = sec.get("auth") or {}
             return jsonify({"plugin": self.version, "auth_mode": a.get("mode"),
-                            "session_ready": bool(a.get("sid")), "n_devices": len(sec.get("devices") or [])})
+                            "session_ready": bool(a.get("sid")),
+                            "country_code": a.get("country_code"),
+                            "email": a.get("email"),
+                            "creds_ready": bool(a.get("app_id") and a.get("app_secret")
+                                                and a.get("bmp_secret_hex") and a.get("cert_der_b64")),
+                            "n_devices": len(sec.get("devices") or [])})
+
+        # ------------------------------------------------------------- LOGIN
+        @app.post("/api/login/password")
+        def login_password():
+            body = request.json or {}
+            email = body.get("email"); password = body.get("password")
+            cc = str(body.get("country_code") or "34")
+            if not (email and password):
+                return jsonify({"ok": False, "error": "email y password requeridos"}), 400
+            sec = _section(); c = self._login_client(sec)
+            if c is None:
+                return jsonify({"ok": False, "error": "faltan credenciales de la app (app_secret/bmp/cert)"}), 400
+            try:
+                user = tauth.login_email_password(c, email, password, country_code=cc)
+            except Exception as e:
+                log.exception("login password fallido")
+                return jsonify({"ok": False, "error": str(e)}), 400
+            # Guardar sesion + guardar email/password para re-auth automatica (como la app)
+            _persist_auth({"mode": "app_password", "email": email, "password": password,
+                           "country_code": cc, "sid": user.get("sid"), "ecode": user.get("ecode"),
+                           "uid": user.get("uid")})
+            self._reload_async()
+            return jsonify({"ok": True, "uid": user.get("uid")})
+
+        @app.post("/api/login/qr/start")
+        def login_qr_start():
+            sec = _section(); c = self._login_client(sec)
+            if c is None:
+                return jsonify({"ok": False, "error": "faltan credenciales de la app"}), 400
+            cc = (sec.get("auth") or {}).get("country_code")
+            try:
+                token = tauth.qr_create_token(c, country_code=cc)
+            except Exception as e:
+                return jsonify({"ok": False, "error": str(e)}), 400
+            self._qr = {"token": token, "country_code": cc}
+            return jsonify({"ok": True, "token": token, "url": tauth.qr_login_url(token)})
+
+        @app.get("/api/login/qr/poll")
+        def login_qr_poll():
+            if not self._qr:
+                return jsonify({"ok": False, "error": "no hay login QR en curso"}), 400
+            sec = _section(); c = self._login_client(sec)
+            try:
+                user = tauth.qr_poll(c, self._qr["token"], country_code=self._qr.get("country_code"))
+            except Exception as e:
+                self._qr = None
+                return jsonify({"ok": False, "status": "error", "error": str(e)}), 400
+            if not user:
+                return jsonify({"ok": True, "status": "pending"})
+            _persist_auth({"mode": "app_qr", "sid": user.get("sid"), "ecode": user.get("ecode"),
+                           "uid": user.get("uid")})
+            self._qr = None
+            self._reload_async()
+            return jsonify({"ok": True, "status": "ok", "uid": user.get("uid")})
         @app.get("/api/devices")
         def devices():
             return jsonify([{"device_id": d.device_id, "name": d.name, "category": d.category,
