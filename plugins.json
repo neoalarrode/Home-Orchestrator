@@ -64,18 +64,22 @@
     {
       "slug": "tuya",
       "name": "Tuya Orchestrator",
-      "description": "Puente de ingesta para dispositivos Tuya-por-LAN -- consumo interno por Climate y/o exposicion opcional a HA por MQTT",
+      "description": "Plugin Tuya nativo (reimplementa la app): control local+remoto, entidades HA nativas por MQTT y consumo interno (Climate/Iluminacion) via device_registry",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.4.9",
+      "version": "1.0.0",
       "downloadable": true,
       "tag": "v0.77.44",
       "sha256": "a8cdded9d61399d719a5e5d7f4279f43092cde90697b684006b0e03067f242af",
       "files": [
         "tuya_plugin.py",
+        "tuya_native_plugin.py",
+        "tuya_native",
+        "tuya_native_templates",
         "tuya",
         "tuya_templates"
-      ]
+      ],
+      "_release_pending": "tag/sha256 se fijan al publicar el release tras verificacion en vivo"
     },
     {
       "slug": "lighting",
