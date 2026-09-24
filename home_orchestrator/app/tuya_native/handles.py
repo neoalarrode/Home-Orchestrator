@@ -46,9 +46,17 @@ LIGHT_WHITE_MAX_KELVIN = 6500
 
 
 def _first(codes: dict, names) -> str | None:
+    """Primer codigo candidato presente en el thing-model. Insensible a
+    mayusculas/minusculas y devuelve el nombre REAL del codigo, porque el set
+    de instrucciones estandar de Tuya varia el casing por dispositivo: los
+    termostatos qn usan `Switch`/`Temp_set`/`Temp_current`/`Mode` capitalizados,
+    los AC kt y las bombillas dj usan minusculas (`switch`/`temp_set`/...).
+    Verificado contra el thing-model real de ambos en produccion."""
+    lower = {k.lower(): k for k in codes}
     for n in names:
-        if n in codes:
-            return n
+        real = lower.get(n.lower())
+        if real is not None:
+            return real
     return None
 
 
