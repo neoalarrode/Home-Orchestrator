@@ -8,6 +8,9 @@ from .encryption import verify_response_sign
 API_HOST = "https://a1.tuyaeu.com"; API_PATH = "/api.json"
 APP_VERSION = "7.9.0"; TTID = "tuyaSmart"; ET_VERSION = "3"
 PKG_NAME = b"com.tuya.smart"
+# Codigos que indican sesion caducada/invalida: disparan el re-login automatico
+# (on_session_error) una vez antes de reintentar la llamada.
+SESSION_ERRORS = {"USER_SESSION_INVALID", "USER_SESSION_LOSS", "SIGN_INVALID", "TOKEN_INVALID"}
 
 
 @dataclass
@@ -37,6 +40,10 @@ class TuyaMobileClient:
     session_id: Optional[str] = None
     ecode: Optional[str] = None
     opener: Any = field(default=None, repr=False)
+    # Callback de re-login (email/password). Se invoca UNA vez al recibir un
+    # error de sesion y luego se reintenta la llamada. None => sin auto-reauth
+    # (p.ej. sesion QR, que no se puede renovar sin re-escanear).
+    on_session_error: Any = field(default=None, repr=False)
 
     def _get(self, url): 
         if self.opener: return self.opener(url)
@@ -56,6 +63,16 @@ class TuyaMobileClient:
         return p
 
     def call(self, api, v, post_data=None, *, session_require=False, extra_params=None):
+        try:
+            return self._call(api, v, post_data, session_require=session_require, extra_params=extra_params)
+        except ApiError as e:
+            # Sesion caducada -> re-login automatico (si hay callback) y UN reintento.
+            if e.error_code in SESSION_ERRORS and self.on_session_error is not None:
+                self.on_session_error()
+                return self._call(api, v, post_data, session_require=session_require, extra_params=extra_params)
+            raise
+
+    def _call(self, api, v, post_data=None, *, session_require=False, extra_params=None):
         K=self.creds.key()
         params=self.build_params(api,v,extra_params)
         rid=params["requestId"].encode()

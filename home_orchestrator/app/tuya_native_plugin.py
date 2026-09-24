@@ -43,13 +43,21 @@ def _build_client(sec: dict):
         bmp_secret_hex=a["bmp_secret_hex"], chkey=a.get("chkey", ""),
         device_id=a.get("terminal_device_id", ""))
     c = tclient.TuyaMobileClient(creds=creds, session_id=a.get("sid"), ecode=a.get("ecode"))
-    # re-auth automatica si hay email/password guardados; si es QR, sin relogin
+    # Re-auth automatica: se instala como callback perezoso en el cliente. NO se
+    # hace login ansioso (reutiliza el sid/ecode persistidos); solo se re-loguea
+    # cuando una llamada devuelve un error de sesion (client.call -> on_session_error).
+    # QR no puede renovarse sin re-escanear -> sin callback.
     if a.get("mode") == "app_password" and a.get("email") and a.get("password"):
-        sm = tauth.SessionManager.for_password(c, a["email"], a["password"],
-                                               country_code=a.get("country_code", "34"))
-    else:
-        sm = tauth.SessionManager(c, None)
-    return c, sm
+        email = a["email"]; password = a["password"]; cc = str(a.get("country_code", "34"))
+        def _relogin():
+            user = tauth.login_email_password(c, email, password, country_code=cc)
+            _persist_auth({"sid": user.get("sid"), "ecode": user.get("ecode"), "uid": user.get("uid")})
+        c.on_session_error = _relogin
+        # Si no hay sesion persistida todavia, logear una vez ahora.
+        if not a.get("sid"):
+            try: _relogin()
+            except Exception: log.exception("tuya: login inicial (password) fallido")
+    return c
 
 
 class TuyaNativePlugin(Plugin):
@@ -77,11 +85,20 @@ class TuyaNativePlugin(Plugin):
         dev = self._devices.get(device_id)
         if dev is None:
             return None
-        if capability == "climate":
+        # Solo se devuelve handle si el dominio del dispositivo casa con la
+        # capacidad pedida -- si un ref viejo apunta a un dispositivo de otro
+        # tipo, se devuelve None (como el plugin viejo), no un handle mudo (M1).
+        if capability == "climate" and dev.plan.get("main_domain") == "climate":
             return thandles.TuyaClimateHandle(dev.ctl, dev.codes)
-        if capability == "light":
+        if capability == "light" and dev.plan.get("main_domain") == "light":
             return thandles.TuyaLightHandle(dev.ctl, dev.codes)
         return None   # "vacuum" solo se expone via MQTT hoy, sin handle interno
+
+    def get_actuator_history(self, device_id: str, climate_index: int, days: int) -> list[dict]:
+        """Capacidad OPCIONAL (thermal_model). El plugin nuevo no mantiene
+        historico local todavia -> lista vacia (Climate degrada con gracia:
+        aprende de los sensores en vivo, no del historico del actuador)."""
+        return []
 
     def list_actuators(self, capability: str) -> list[dict]:
         domain = self._DOMAIN_BY_CAPABILITY.get(capability)
@@ -114,14 +131,17 @@ class TuyaNativePlugin(Plugin):
         return new
 
     def _load_devices(self):
-        sec = self._maybe_migrate(_section()); c, sm = _build_client(sec)
+        sec = self._maybe_migrate(_section()); c = _build_client(sec)
         if not c:
             log.warning("tuya_native sin credenciales configuradas: no se cargan dispositivos")
             return
         a = sec.get("auth") or {}
         mqtt_sess = {"sid": a.get("sid"), "ecode": a.get("ecode"), "uid": a.get("uid"),
                      "device_id": a.get("terminal_device_id")}
-        self._devices.clear()
+        # Se puebla un dict LOCAL y se cambia de golpe al final (no self._devices.clear()
+        # a mitad de carga): el bucle de estado y get_handle nunca ven el registro
+        # vacio ni un dict mutando bajo sus pies (I2).
+        new_devices = {}
         for d in sec.get("devices") or []:
             did = d.get("device_id");
             if not did: continue
@@ -137,13 +157,14 @@ class TuyaNativePlugin(Plugin):
             # decide la publicacion. Default False (mismo que el plugin viejo).
             dev.expose_mqtt = bool(d.get("expose_mqtt"))
             try:
-                dev.refresh_profile(); self._devices[did] = dev
+                dev.refresh_profile(); new_devices[did] = dev
             except Exception:
                 log.exception("tuya_native: fallo cargando perfil de %s", did)
+        self._devices = new_devices   # cambio atomico (rebind del atributo)
 
     # --- MQTT discovery + estado + comandos ---
     def _publish_all_discovery(self):
-        for dev in self._devices.values():
+        for dev in list(self._devices.values()):
             if not getattr(dev, "expose_mqtt", False):
                 continue   # consumido solo internamente (Climate/Lighting), no va a HA
             for cfg in dev.discovery_configs():
@@ -151,7 +172,7 @@ class TuyaNativePlugin(Plugin):
             self._mqtt.publish("tuya_native/%s/avail" % dev.device_id, "online", retain=True)
 
     def _publish_all_state(self):
-        for dev in self._devices.values():
+        for dev in list(self._devices.values()):
             if not getattr(dev, "expose_mqtt", False):
                 continue
             try:
@@ -212,8 +233,7 @@ class TuyaNativePlugin(Plugin):
     def _login_client(self, sec):
         """Cliente listo para login (creds presentes) SIN exigir sesion todavia.
         None si faltan las credenciales de la app (app_secret/bmp/cert)."""
-        c, _ = _build_client(sec)
-        return c
+        return _build_client(sec)
 
     def _build_flask(self):
         import os

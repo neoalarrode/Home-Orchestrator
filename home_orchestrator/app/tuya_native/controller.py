@@ -11,26 +11,40 @@ class DeviceController:
         self.mqtt=mqtt_transport; self.mqtt_session=mqtt_session
         self.product_id=product_id; self.category=category
         self._c2d={}; self._d2c={}
+        self._state_cache=None; self._state_ts=0.0
+    _STATE_TTL=3.0  # s: una decision de zona lee varias propiedades -> 1 sola llamada
     def load_profile(self):
         tm=self.api.call("thing.m.product.thing.model","1.0",
             post_data={"productId":self.product_id,"productVersion":"1.0.0"},session_require=True)
-        for code,info in profiles.parse_thing_model(tm).items():
+        self.model=profiles.parse_thing_model(tm)
+        for code,info in self.model.items():
             self._c2d[code]=int(info["dp"]); self._d2c[str(info["dp"])]=code
-        return self
+        return self.model
     def dp_id(self,code): return self._c2d[code]
-    def get_state(self):
+    def _invalidate(self): self._state_cache=None
+    def get_state(self,*,force=False):
+        now=time.time()
+        if not force and self._state_cache is not None and now-self._state_ts < self._STATE_TTL:
+            return self._state_cache
         st=self.api.call("thing.m.device.dp.get","1.0",post_data={"devId":self.device_id},session_require=True)
-        return {self._d2c.get(k,k):v for k,v in st.items()} if isinstance(st,dict) else {}
+        self._state_cache={self._d2c.get(k,k):v for k,v in st.items()} if isinstance(st,dict) else {}
+        self._state_ts=now
+        return self._state_cache
     def set_dp(self,code,value,*,prefer="http"):
+        # La nube Tuya es eventualmente consistente: leer justo tras publicar aun
+        # devuelve el valor viejo. NO se hace readback-compare (daba falsos
+        # negativos y disparaba un _mqtt duplicado); se invalida la cache y el
+        # proximo get_state (tras el TTL) trae el valor real.
         dps={str(self.dp_id(code)):value}
+        self._invalidate()
         if prefer=="http":
-            self.api.publish_dps(self.device_id,dps)
-            if str(self.get_state().get(code))==str(value): return True
-        return self._mqtt(dps) and str(self.get_state().get(code))==str(value)
+            self.api.publish_dps(self.device_id,dps); return True
+        return bool(self._mqtt(dps))
     def set_dps(self,mapping,*,prefer="http"):
         dps={str(self.dp_id(c)):v for c,v in mapping.items()}
+        self._invalidate()
         if prefer=="http": self.api.publish_dps(self.device_id,dps); return True
-        return self._mqtt(dps)
+        return bool(self._mqtt(dps))
     def publish_message(self,message,*,protocol):
         if not (self.mqtt and self.local_key and self.mqtt_session): return False
         import paho.mqtt.client as mqtt, ssl

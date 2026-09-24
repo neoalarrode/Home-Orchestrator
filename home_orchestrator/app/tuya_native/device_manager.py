@@ -12,10 +12,7 @@ class TuyaDevice:
         self.ctl=ctrl.DeviceController(api,device_id,local_key=local_key,mqtt_transport=mqtt_transport,mqtt_session=mqtt_session,product_id=product_id,category=category)
         self.expose_advanced=expose_advanced; self.codes={}; self.plan={}
     def refresh_profile(self):
-        self.ctl.load_profile()
-        from . import profiles
-        tm=self.api.call("thing.m.product.thing.model","1.0",post_data={"productId":self.product_id,"productVersion":"1.0.0"},session_require=True)
-        self.codes=profiles.parse_thing_model(tm)
+        self.codes=self.ctl.load_profile()   # una sola descarga del thing-model
         try: live=self.ctl.get_state()
         except Exception: live=None
         self.plan=ent_gen.build_entities(self.category,self.codes,self.name,self.device_id,state=live,expose_advanced=self.expose_advanced)
@@ -60,7 +57,41 @@ class TuyaDevice:
     def handle_command(self,domain,command,payload):
         if domain=="vacuum": return self._vac(command,payload)
         if domain=="light": return self._light(payload)
+        if domain=="climate": return self._climate(command,payload)
         return self.ctl.set_dp(command,payload)
+    def _real_code(self,name):
+        """Nombre real del codigo (case-insensitive) o None -- el set estandar
+        varia el casing por dispositivo (Switch vs switch)."""
+        low={k.lower():k for k in self.codes}
+        return low.get(str(name).lower())
+    def _climate(self,command,payload):
+        """Comandos climate de HA (MQTT) traducidos via el MISMO handle que usa
+        el consumo interno (modo HA->enum Tuya, escala de temperatura, on/off por
+        el switch real) -- antes iban crudos a set_dp y no controlaban el aparato."""
+        from .handles import TuyaClimateHandle
+        h=TuyaClimateHandle(self.ctl,self.codes)
+        if command=="temp_set":
+            h.set_temperature(float(payload)); return True
+        if command=="mode":
+            h.set_hvac_mode(str(payload)); return True   # off->switch off, cool->cold, ...
+        if command=="windspeed":
+            h.set_fan_mode(str(payload)); return True
+        if command=="power_hvac":
+            on=str(payload).strip().upper() in ("ON","1","TRUE")
+            if h._sw: self.ctl.set_dp(h._sw,on)
+            return True
+        if command=="up_down_sweep":
+            code=self._real_code("up_down_sweep")
+            if code: self.ctl.set_dp(code,payload); return True
+            return False
+        if command=="preset":
+            code=self._real_code(str(payload))
+            if code and (self.codes.get(code) or {}).get("type")=="bool":
+                self.ctl.set_dp(code,True); return True
+            return False
+        # cualquier otro code: set directo si existe
+        code=self._real_code(command)
+        return self.ctl.set_dp(code,payload) if code else False
     def _vac(self,command,payload):
         if command=="start": return self.ctl.set_dp("switch_go",True,prefer="mqtt")
         if command=="pause": return self.ctl.set_dp("pause",True,prefer="mqtt")
@@ -75,12 +106,28 @@ class TuyaDevice:
                 return self.ctl.set_dp("switch_go",True,prefer="mqtt")
         return False
     def _light(self,payload):
-        ok=True
-        if "state" in payload: ok&=self.ctl.set_dp("switch_led",payload["state"]=="ON")
-        if "brightness" in payload: ok&=self.ctl.set_dp("bright_value",lightkit.brightness_from_ha(int(payload["brightness"])))
-        if "color" in payload and "h" in payload["color"]:
-            hs=payload["color"]; ok&=self.ctl.set_dp("colour_data",lightkit.encode_colour(int(hs["h"]),int(hs["s"]),100))
-        return ok
+        """Comando de luz de HA (schema json) via TuyaLightHandle -- usa _first()
+        para casar switch_led/bright_value/colour_data y sus variantes v2/_1 (antes
+        codigos fijos -> KeyError en bombillas v2) y ademas soporta color_temp."""
+        from .handles import TuyaLightHandle
+        if not isinstance(payload,dict): return False
+        h=TuyaLightHandle(self.ctl,self.codes)
+        if str(payload.get("state","")).upper()=="OFF":
+            h.turn_off(); return True
+        kw={}
+        if "brightness" in payload:
+            try: kw["brightness_pct"]=round(int(payload["brightness"])*100/255,1)
+            except Exception: pass
+        if "color_temp" in payload:
+            try:
+                mireds=float(payload["color_temp"])
+                if mireds>0: kw["color_temp_kelvin"]=round(1_000_000/mireds)
+            except Exception: pass
+        col=payload.get("color")
+        if isinstance(col,dict) and "h" in col and "s" in col:
+            try: kw["hs"]=(float(col["h"]),float(col["s"]))
+            except Exception: pass
+        h.turn_on(**kw); return True
     def discovery_configs(self):
         bt="tuya_native/%s"%self.device_id; out=[]
         for e in self.plan.get("entities",[]):
