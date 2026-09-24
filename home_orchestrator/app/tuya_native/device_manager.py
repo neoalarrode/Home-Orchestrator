@@ -94,10 +94,14 @@ class TuyaDevice:
         return self.ctl.set_dp(code,payload) if code else False
     def _vac(self,command,payload):
         if command=="start": return self.ctl.set_dp("switch_go",True,prefer="mqtt")
-        if command=="pause": return self.ctl.set_dp("pause",True,prefer="mqtt")
+        # HA MQTT vacuum manda payload "stop" y "pause" por el command_topic; ambos
+        # se tratan como pausa (parar el ciclo) -- no hay DP de "stop" separado.
+        if command in ("pause","stop"): return self.ctl.set_dp("pause",True,prefer="mqtt")
         if command=="return_to_base": return self.ctl.set_dp("switch_charge",True,prefer="mqtt")
         if command=="locate": return self.ctl.set_dp("seek",True,prefer="mqtt")
-        if command=="set_fan_speed": return self.ctl.set_dp("suction",payload,prefer="mqtt")
+        # El sub-topic real es "fan_speed" (set_fan_speed_topic=cmd+"/fan_speed");
+        # se acepta tambien "set_fan_speed" por compatibilidad.
+        if command in ("fan_speed","set_fan_speed"): return self.ctl.set_dp("suction",payload,prefer="mqtt")
         if command=="send_command":
             p=payload if isinstance(payload,dict) else json.loads(payload)
             if p.get("command")=="clean_rooms":
