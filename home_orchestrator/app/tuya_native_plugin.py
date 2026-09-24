@@ -156,6 +156,10 @@ class TuyaNativePlugin(Plugin):
             # (para poder resolverlos como handle interno); expose_mqtt solo
             # decide la publicacion. Default False (mismo que el plugin viejo).
             dev.expose_mqtt = bool(d.get("expose_mqtt"))
+            # Habitaciones del aspirador (segment_id -> nombre) para HA clean_area.
+            # Se pueden definir en config; si no, se autodescubren del mapa (pendiente).
+            if d.get("rooms"):
+                dev.rooms = {str(k): v for k, v in dict(d["rooms"]).items()}
             try:
                 dev.refresh_profile(); new_devices[did] = dev
             except Exception:

@@ -10,4 +10,9 @@ def build_vacuum(device_id,name,codes,bt,fan_speeds=None):
         # de estado, sin declararlo como feature.
         "supported_features":["start","pause","stop","return_home","status","locate","fan_speed","send_command"],
         "command_topic":cmd,"state_topic":bt+"/vacuum","send_command_topic":cmd+"/send_command","set_fan_speed_topic":cmd+"/fan_speed",
+        # Limpieza por habitacion NATIVA de HA: publica una lista JSON de ids de
+        # segmento; HA mapea segmentos<->areas desde los ajustes de la entidad y
+        # habilita vacuum.clean_area. El robot publica los segmentos disponibles en
+        # el atributo `segments` del state_topic ({id:nombre}).
+        "clean_segments_command_topic":cmd+"/clean_segments",
         "fan_speed_list":fan_speeds or [],"json_attributes_topic":bt+"/attrs"}
