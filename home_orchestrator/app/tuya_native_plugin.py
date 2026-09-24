@@ -8,10 +8,11 @@ del addon (/data), NUNCA en el repo.
 """
 from __future__ import annotations
 import base64, json, logging, threading, time
-import config_store, ha_mqtt
+import config_store, ha_mqtt, device_registry
 from plugin_base import Plugin
 from flask import Flask, jsonify, request
 from tuya_native import client as tclient, mqtt_transport, auth as tauth, device_manager as tdm, migration as tmig
+from tuya_native import handles as thandles
 
 log = logging.getLogger("tuya_native")
 PLUGIN_KEY = "tuya"   # EVOLUCION: sustituye al plugin Tuya antiguo (mismo slug/seccion)
@@ -49,6 +50,38 @@ class TuyaNativePlugin(Plugin):
         self._devices = {}       # device_id -> TuyaDevice
         self._app = self._build_flask()
         self._stop = threading.Event()
+        # Proveedor de dispositivos para consumo INTERNO (Climate/Lighting) sin
+        # MQTT -- mismo contrato/prefijo "tuya" que el plugin viejo, para no
+        # romper zonas/reglas ya guardadas con refs `tuya:<id>[:<idx>]`.
+        device_registry.register_provider("tuya", self)
+
+    # ---------------------------------------------- API para otros plugins
+    # Contrato generico de device_registry.py (get_handle/list_actuators),
+    # identico al del plugin viejo -- Climate consume "climate", Lighting
+    # consume "light". No excluyente con expose_mqtt.
+    _DOMAIN_BY_CAPABILITY = {"climate": "climate", "light": "light", "vacuum": "vacuum"}
+
+    def get_handle(self, capability: str, device_id: str, index: int = 0):
+        dev = self._devices.get(device_id)
+        if dev is None:
+            return None
+        if capability == "climate":
+            return thandles.TuyaClimateHandle(dev.ctl, dev.codes)
+        if capability == "light":
+            return thandles.TuyaLightHandle(dev.ctl, dev.codes)
+        return None   # "vacuum" solo se expone via MQTT hoy, sin handle interno
+
+    def list_actuators(self, capability: str) -> list[dict]:
+        domain = self._DOMAIN_BY_CAPABILITY.get(capability)
+        if domain is None:
+            return []
+        out = []
+        for dev in self._devices.values():
+            if dev.plan.get("main_domain") != domain:
+                continue
+            out.append({"ref": "tuya:%s" % dev.device_id,
+                        "name": dev.name, "brand": "Tuya"})
+        return out
 
     # --- carga de dispositivos ---
     def _maybe_migrate(self, sec):
@@ -84,6 +117,13 @@ class TuyaNativePlugin(Plugin):
             dev = tdm.TuyaDevice(c, did, d.get("category", ""), d.get("product_id", ""), d.get("name") or did,
                                  local_key=lk, mqtt_transport=mqtt_transport, mqtt_session=mqtt_sess,
                                  expose_advanced=bool(d.get("expose_advanced")))
+            # expose_mqtt: publicar o no en HA por MQTT Discovery. NO excluyente
+            # con el consumo interno (Climate/Lighting via device_registry): un
+            # dispositivo puede consumirse internamente y ademas exponerse en HA,
+            # o solo una de las dos cosas. Se cargan TODOS los dispositivos
+            # (para poder resolverlos como handle interno); expose_mqtt solo
+            # decide la publicacion. Default False (mismo que el plugin viejo).
+            dev.expose_mqtt = bool(d.get("expose_mqtt"))
             try:
                 dev.refresh_profile(); self._devices[did] = dev
             except Exception:
@@ -92,12 +132,16 @@ class TuyaNativePlugin(Plugin):
     # --- MQTT discovery + estado + comandos ---
     def _publish_all_discovery(self):
         for dev in self._devices.values():
+            if not getattr(dev, "expose_mqtt", False):
+                continue   # consumido solo internamente (Climate/Lighting), no va a HA
             for cfg in dev.discovery_configs():
                 self._mqtt.publish(cfg["topic"], json.dumps(cfg["payload"]), retain=True)
             self._mqtt.publish("tuya_native/%s/avail" % dev.device_id, "online", retain=True)
 
     def _publish_all_state(self):
         for dev in self._devices.values():
+            if not getattr(dev, "expose_mqtt", False):
+                continue
             try:
                 for topic, payload in dev.state_messages().items():
                     self._mqtt.publish(topic, json.dumps(payload))
@@ -153,15 +197,38 @@ class TuyaNativePlugin(Plugin):
         @app.get("/api/devices")
         def devices():
             return jsonify([{"device_id": d.device_id, "name": d.name, "category": d.category,
-                             "domain": d.plan.get("main_domain"), "advanced": d.expose_advanced,
+                             "domain": d.plan.get("main_domain"),
+                             "expose_mqtt": getattr(d, "expose_mqtt", False),
+                             "expose_advanced": d.expose_advanced,
                              "entities": d.plan.get("n_entities")} for d in self._devices.values()])
-        @app.post("/api/device/<did>/advanced")
-        def advanced(did):
-            on = bool((request.json or {}).get("expose_advanced"))
+        @app.post("/api/device/<did>/flags")
+        def flags(did):
+            """Actualiza expose_mqtt / expose_advanced de un dispositivo. Solo se
+            tocan las claves presentes en el cuerpo (toggles independientes)."""
+            body = request.json or {}
             sec = _section()
             for d in sec.get("devices") or []:
-                if d.get("device_id") == did: d["expose_advanced"] = on
+                if d.get("device_id") != did:
+                    continue
+                if "expose_mqtt" in body:
+                    d["expose_mqtt"] = bool(body["expose_mqtt"])
+                if "expose_advanced" in body:
+                    d["expose_advanced"] = bool(body["expose_advanced"])
             config_store.update_plugin_section(PLUGIN_KEY, sec)
-            self._load_devices(); self._publish_all_discovery()
-            return jsonify({"ok": True, "expose_advanced": on})
+            self._load_devices()
+            # Si se acaba de DESACTIVAR expose_mqtt hay que retirar el discovery
+            # ya publicado (retenido) para que la entidad desaparezca de HA.
+            self._republish_discovery(did)
+            return jsonify({"ok": True})
         return app
+
+    def _republish_discovery(self, changed_did: str | None = None):
+        """Republica discovery de los expuestos y RETIRA (payload vacio) el de un
+        dispositivo que ya no se expone en HA."""
+        if changed_did is not None:
+            dev = self._devices.get(changed_did)
+            if dev is not None and not getattr(dev, "expose_mqtt", False):
+                for cfg in dev.discovery_configs():
+                    self._mqtt.publish(cfg["topic"], "", retain=True)  # borra la entidad retenida
+                self._mqtt.publish("tuya_native/%s/avail" % changed_did, "offline", retain=True)
+        self._publish_all_discovery()
