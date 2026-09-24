@@ -67,8 +67,17 @@ class TuyaMobileClient:
             return self._call(api, v, post_data, session_require=session_require, extra_params=extra_params)
         except ApiError as e:
             # Sesion caducada -> re-login automatico (si hay callback) y UN reintento.
-            if e.error_code in SESSION_ERRORS and self.on_session_error is not None:
-                self.on_session_error()
+            # Guarda de reentrada: las llamadas que hace el propio relogin
+            # (login_email_password usa client.call) NO vuelven a disparar el
+            # relogin, aunque devuelvan un error de sesion (p.ej. SIGN_INVALID por
+            # credenciales mal) -> se propaga el fallo del login, sin recursion.
+            if (e.error_code in SESSION_ERRORS and self.on_session_error is not None
+                    and not getattr(self, "_in_reauth", False)):
+                self._in_reauth = True
+                try:
+                    self.on_session_error()
+                finally:
+                    self._in_reauth = False
                 return self._call(api, v, post_data, session_require=session_require, extra_params=extra_params)
             raise
 

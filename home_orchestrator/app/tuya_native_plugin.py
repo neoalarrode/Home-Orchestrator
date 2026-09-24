@@ -36,7 +36,7 @@ def _persist_auth(fields: dict) -> None:
 def _build_client(sec: dict):
     a = sec.get("auth") or {}
     if not (a.get("app_id") and a.get("app_secret") and a.get("bmp_secret_hex") and a.get("cert_der_b64")):
-        return None, None
+        return None
     creds = tclient.Credentials(
         app_id=a["app_id"], app_secret=a["app_secret"],
         cert_der=base64.b64decode(a["cert_der_b64"]),

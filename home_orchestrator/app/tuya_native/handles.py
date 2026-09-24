@@ -20,9 +20,14 @@ from .kits import light as lightkit
 # Traduccion del set de instrucciones estandar de Tuya (enum "mode" de kt/qn)
 # a modos nativos de HA -- misma correspondencia que ya usaba el plugin viejo
 # (cold->cool, hot->heat, wet->dry, wind->fan_only, auto->heat_cool).
+# FUENTE UNICA de verdad del mapa modo-Tuya -> modo-HA. La usan TANTO el consumo
+# interno (este handle, ida y vuelta) COMO el discovery MQTT (ha_climate.py lo
+# importa) -- si divergen, un modo anunciado en HA puede no tener inverso y el
+# aparato no cambia (bug real detectado: 'auto' mapeaba a 'heat_cool' aqui y a
+# 'auto' en el discovery). 'auto' se mapea a 'auto' (modo HA valido) en ambos.
 TUYA_HVAC_MODE = {
     "cold": "cool", "hot": "heat", "wet": "dry", "wind": "fan_only",
-    "auto": "heat_cool", "heat": "heat", "cool": "cool", "dry": "dry",
+    "auto": "auto", "heat": "heat", "cool": "cool", "dry": "dry",
     "fan": "fan_only", "ventilation": "fan_only",
 }
 # Codigos estandar candidatos por funcion (se usa el primero que exista en el
