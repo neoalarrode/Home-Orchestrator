@@ -23,6 +23,34 @@ def _section() -> dict:
     return config_store.read_plugin_section(PLUGIN_KEY, {"auth": {}, "devices": []})
 
 
+def _fetch_app_local_keys(client) -> dict:
+    """{devId: localKey} de la APP (no del proyecto IoT). El canal MQTT de la app
+    (roomCleanSet del aspirador, etc.) cifra GCM con ESTA localKey; la del config
+    viejo (IoT) es distinta y el robot descarta la trama. Se refresca en cada carga
+    porque puede rotar. thing.m.my.group.device.list con gid como parametro de query
+    (no postData). VERIFICADO en vivo."""
+    keys = {}
+    try:
+        homes = client.call("thing.m.location.list", "1.0", post_data=None, session_require=True)
+        homes = homes if isinstance(homes, list) else (homes.get("result") or [])
+        for h in homes:
+            gid = h.get("gid") or h.get("groupId") or h.get("id")
+            if gid is None:
+                continue
+            try:
+                devs = client.call("thing.m.my.group.device.list", "1.0", post_data=None,
+                                   session_require=True, extra_params={"gid": str(gid)})
+                devs = devs if isinstance(devs, list) else (devs.get("result") or [])
+                for d in devs:
+                    if d.get("devId") and d.get("localKey"):
+                        keys[d["devId"]] = d["localKey"]
+            except Exception:
+                log.exception("tuya_native: fallo listando dispositivos del hogar %s", gid)
+    except Exception:
+        log.exception("tuya_native: fallo obteniendo localKeys de la app")
+    return keys
+
+
 def _persist_auth(fields: dict) -> None:
     """Fusiona claves en la subseccion auth (sesion tras login, sin tocar
     device list ni secretos ya presentes que no vengan en `fields`)."""
@@ -138,6 +166,9 @@ class TuyaNativePlugin(Plugin):
         a = sec.get("auth") or {}
         mqtt_sess = {"sid": a.get("sid"), "ecode": a.get("ecode"), "uid": a.get("uid"),
                      "device_id": a.get("terminal_device_id")}
+        # localKeys de la APP (para el canal MQTT: roomCleanSet, etc.). La del config
+        # viejo (IoT) NO sirve para MQTT -> el robot descarta la trama.
+        app_keys = _fetch_app_local_keys(c)
         # Se puebla un dict LOCAL y se cambia de golpe al final (no self._devices.clear()
         # a mitad de carga): el bucle de estado y get_handle nunca ven el registro
         # vacio ni un dict mutando bajo sus pies (I2).
@@ -145,7 +176,9 @@ class TuyaNativePlugin(Plugin):
         for d in sec.get("devices") or []:
             did = d.get("device_id");
             if not did: continue
-            lk = (d.get("local_key") or "").encode() if d.get("local_key") else None
+            # Preferir la localKey de la app (MQTT); si no, la del config (IoT).
+            lk_str = app_keys.get(did) or d.get("local_key")
+            lk = lk_str.encode() if lk_str else None
             dev = tdm.TuyaDevice(c, did, d.get("category", ""), d.get("product_id", ""), d.get("name") or did,
                                  local_key=lk, mqtt_transport=mqtt_transport, mqtt_session=mqtt_sess,
                                  expose_advanced=bool(d.get("expose_advanced")))

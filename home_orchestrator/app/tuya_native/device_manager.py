@@ -145,9 +145,16 @@ class TuyaDevice:
         if code: return self.ctl.set_dp(code,payload,prefer="http")
         return False
     def _room_clean(self,ids):
-        """SweeperKit roomCleanSet (proto 64) + mode=select_room + switch_go.
-        VERIFICADO en vivo (el robot limpio la habitacion indicada)."""
-        self.ctl.publish_message(mqtt_transport.room_clean_message(ids,clean_times=1),protocol=64)
+        """SweeperKit roomCleanSet (proto 64, MQTT con localKey de la APP) +
+        mode=select_room + switch_go (HTTP). VERIFICADO en vivo (limpio el Salon).
+        OJO: los ids DEBEN ser ENTEROS -- un string se malinterpreta y limpia otra
+        habitacion (o la primera)."""
+        int_ids=[]
+        for i in ids:
+            try: int_ids.append(int(i))
+            except Exception: pass
+        if not int_ids: return False
+        self.ctl.publish_message(mqtt_transport.room_clean_message(int_ids,clean_times=1),protocol=64)
         self.ctl.set_dps({"mode":"select_room"},prefer="http")
         return self.ctl.set_dp("switch_go",True,prefer="http")
     def _light(self,payload):
