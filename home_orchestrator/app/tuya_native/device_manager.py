@@ -119,15 +119,15 @@ class TuyaDevice:
         code=self._real_code(command)
         return self.ctl.set_dp(code,payload) if code else False
     def _vac(self,command,payload):
-        if command=="start": return self.ctl.set_dp("switch_go",True,prefer="mqtt")
+        if command=="start": return self.ctl.set_dp("switch_go",True,prefer="http")
         # HA MQTT vacuum manda payload "stop" y "pause" por el command_topic; ambos
         # se tratan como pausa (parar el ciclo) -- no hay DP de "stop" separado.
-        if command in ("pause","stop"): return self.ctl.set_dp("pause",True,prefer="mqtt")
-        if command=="return_to_base": return self.ctl.set_dp("switch_charge",True,prefer="mqtt")
-        if command=="locate": return self.ctl.set_dp("seek",True,prefer="mqtt")
+        if command in ("pause","stop"): return self.ctl.set_dp("pause",True,prefer="http")
+        if command=="return_to_base": return self.ctl.set_dp("switch_charge",True,prefer="http")
+        if command=="locate": return self.ctl.set_dp("seek",True,prefer="http")
         # El sub-topic real es "fan_speed" (set_fan_speed_topic=cmd+"/fan_speed");
         # se acepta tambien "set_fan_speed" por compatibilidad.
-        if command in ("fan_speed","set_fan_speed"): return self.ctl.set_dp("suction",payload,prefer="mqtt")
+        if command in ("fan_speed","set_fan_speed"): return self.ctl.set_dp("suction",payload,prefer="http")
         if command=="clean_segments":
             # HA publica una lista JSON de ids de segmento (vacuum.clean_area).
             ids=payload if isinstance(payload,list) else json.loads(payload)
@@ -142,14 +142,14 @@ class TuyaDevice:
         # Companeros curados (sweep_mop_mode, water_output, clean_times, ...): el
         # sub-topic ES el code -> set directo del DP por MQTT (local_key).
         code=self._real_code(command)
-        if code: return self.ctl.set_dp(code,payload,prefer="mqtt")
+        if code: return self.ctl.set_dp(code,payload,prefer="http")
         return False
     def _room_clean(self,ids):
         """SweeperKit roomCleanSet (proto 64) + mode=select_room + switch_go.
         VERIFICADO en vivo (el robot limpio la habitacion indicada)."""
         self.ctl.publish_message(mqtt_transport.room_clean_message(ids,clean_times=1),protocol=64)
-        self.ctl.set_dps({"mode":"select_room"},prefer="mqtt")
-        return self.ctl.set_dp("switch_go",True,prefer="mqtt")
+        self.ctl.set_dps({"mode":"select_room"},prefer="http")
+        return self.ctl.set_dp("switch_go",True,prefer="http")
     def _light(self,payload):
         """Comando de luz de HA (schema json) via TuyaLightHandle -- usa _first()
         para casar switch_led/bright_value/colour_data y sus variantes v2/_1 (antes

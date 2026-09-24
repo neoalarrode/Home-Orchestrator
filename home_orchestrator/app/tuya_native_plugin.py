@@ -187,6 +187,7 @@ class TuyaNativePlugin(Plugin):
 
     def _on_command(self, topic, payload):
         # topic: tuya_native/<devId>/cmd[/<code>]  o  .../set (light json)
+        log.debug("tuya_native: RX comando topic=%s payload=%r", topic, payload)
         try:
             parts = topic.split("/"); did = parts[1]
             dev = self._devices.get(did)
@@ -216,8 +217,13 @@ class TuyaNativePlugin(Plugin):
         if not self._mqtt.connect():
             log.error("tuya_native: no se pudo conectar al broker MQTT de HA"); return
         self._publish_all_discovery()
-        self._mqtt.subscribe("tuya_native/+/cmd/#", lambda t, p: self._on_command(t, p))
-        self._mqtt.subscribe("tuya_native/+/set", lambda t, p: self._on_command(t, p))
+        # OJO: HAMqttClient.subscribe registra el callback via paho message_callback_add,
+        # que lo invoca con la firma (client, userdata, message) -- NO (topic, payload).
+        # (Asi lo usan govee/mqtt_govee.py y el tuya viejo.) Pasar un lambda de 2
+        # args hacia que paho petara al despachar y el comando NUNCA llegaba a
+        # _on_command (todas las funciones "muertas" desde HA).
+        self._mqtt.subscribe("tuya_native/+/cmd/#", lambda c, u, m: self._on_command(m.topic, m.payload))
+        self._mqtt.subscribe("tuya_native/+/set", lambda c, u, m: self._on_command(m.topic, m.payload))
         while not self._stop.is_set():
             self._publish_all_state(); self._stop.wait(STATE_INTERVAL)
 
