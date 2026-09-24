@@ -27,10 +27,17 @@ class TuyaDevice:
             try: o["brightness"]=lightkit.brightness_to_ha(int(bv))
             except Exception: pass
         cd=raw.get("colour_data_v2") or raw.get("colour_data")
+        tv=raw.get("temp_value_v2") if raw.get("temp_value_v2") is not None else raw.get("temp_value")
         if cd:
             h,sv,_=lightkit.decode_colour(cd); o["color_mode"]="hs"; o["color"]={"h":h,"s":sv}
-        elif raw.get("temp_value_v2") is not None or raw.get("temp_value") is not None:
+        elif tv is not None:
             o["color_mode"]="color_temp"
+            # DP interno 0..1000 -> Kelvin (rango fijo 2700..6500) -> mireds, para
+            # que el slider de temperatura de color refleje la posicion en HA.
+            try:
+                frac=max(0,min(1000,int(tv)))/1000; k=2700+frac*3800
+                o["color_temp"]=round(1_000_000/k)
+            except Exception: pass
         return o
 
     def _vacuum_state(self, raw):

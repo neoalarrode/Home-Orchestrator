@@ -6,7 +6,9 @@ def build_aux(e,device_id,name,bt):
     cfg={"name":code,"unique_id":"tuya_%s_%s"%(device_id,code),"device":dev,"availability_topic":bt+"/avail","state_topic":st,"value_template":"{{ value_json.%s }}"%code}
     if e.get("icon"): cfg["icon"]="mdi:"+str(e["icon"]).replace("icon-dp_","").replace("_","-")
     scale=int(e.get("scale") or 0); d=10**scale
-    if dom=="switch": cfg.update({"command_topic":cmd,"payload_on":"true","payload_off":"false","state_on":True,"state_off":False})
+    # El estado crudo publica el bool como true/false JSON; value_template lo
+    # renderiza como "True"/"False" (Jinja) -> state_on/off deben casar ese texto.
+    if dom=="switch": cfg.update({"command_topic":cmd,"payload_on":"true","payload_off":"false","state_on":"True","state_off":"False"})
     elif dom=="binary_sensor": cfg.update({"payload_on":True,"payload_off":False})
     elif dom=="select": cfg.update({"command_topic":cmd,"options":e.get("options") or []})
     elif dom=="number":

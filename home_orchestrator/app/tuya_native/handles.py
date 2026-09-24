@@ -166,10 +166,13 @@ class TuyaClimateHandle:
         if hvac_mode == "off":
             return
         if self._mode is not None:
+            # Fallback al valor crudo para modos fuera del set estandar (igual que
+            # el discovery, que anuncia TUYA_HVAC_MODE.get(v, v)) -> un modo
+            # anunciado en HA SIEMPRE tiene inverso y controla el aparato.
             reverse = {}
             for v in _enum_range(self._codes, self._mode):
-                ha = TUYA_HVAC_MODE.get(str(v))
-                if ha and ha not in reverse:
+                ha = TUYA_HVAC_MODE.get(str(v), str(v))
+                if ha not in reverse:
                     reverse[ha] = v
             raw = reverse.get(hvac_mode)
             if raw is not None:
