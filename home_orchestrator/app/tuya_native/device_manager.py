@@ -58,6 +58,16 @@ class TuyaDevice:
         bat=raw.get("battery_percentage") or raw.get("electricity_left")
         if bat is not None: o["battery_level"]=int(bat)
         if raw.get("suction") is not None: o["fan_speed"]=raw.get("suction")
+        # Reintento perezoso de las habitaciones si el fetch al arrancar fallo
+        # (red/token transitorio): 1 intento como mucho cada 5 min hasta lograrlo.
+        if not self.rooms:
+            import time as _t
+            if _t.time()-getattr(self,"_rooms_try",0) > 300:
+                self._rooms_try=_t.time()
+                try:
+                    from . import sweeper_map
+                    self.rooms=sweeper_map.fetch_rooms(self.api,self.device_id)
+                except Exception: pass
         if self.rooms: o["segments"]=dict(self.rooms)   # {id:nombre} -> HA clean_area
         return o
 
