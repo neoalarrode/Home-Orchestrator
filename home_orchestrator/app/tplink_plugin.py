@@ -60,6 +60,7 @@ class TplinkPlugin(Plugin):
         self._manager = TplinkDeviceManager(
             on_any_change=self._on_device_change,
             on_address_change=self._persist_address,
+            on_mac_change=self._persist_mac,
         )
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_tplink")
         self._mqtt_devices: dict[str, MqttTplinkDevice] = {}
@@ -194,6 +195,15 @@ class TplinkPlugin(Plugin):
         else:
             log.warning("TP-Link %s: no se encontro en el almacen para guardar la IP nueva", device_id)
 
+    def _persist_mac(self, device_id: str, mac: str) -> None:
+        """Guarda la MAC aprendida. Sin esto, tras un reinicio no se conoce la
+        MAC de un dispositivo que no conecta en su IP vieja, y el reconcile por
+        MAC no puede renovarle la IP aunque se vea en el escaneo LAN."""
+        try:
+            tplink_store.update_device(device_id, {"mac": mac})
+        except Exception:
+            log.exception("TP-Link %s: fallo persistiendo la MAC", device_id)
+
     def _rediscover_loop(self) -> None:
         """Escanea la LAN periodicamente sin que el usuario tenga que pulsar
         nada -- alimenta `/api/discovered` y reconecta solo lo que haya
@@ -225,6 +235,11 @@ class TplinkPlugin(Plugin):
 
     def _start_device(self, device: dict) -> None:
         cfg = device["config"]
+        # Sembrar la MAC conocida del store ANTES de intentar conectar: si la IP
+        # vieja ya no vale, el reconcile por MAC (rediscover) podra renovarla en
+        # cuanto el escaneo LAN vea el dispositivo, sin depender de un poll con exito.
+        if cfg.get("mac"):
+            self._manager.seed_mac(device["id"], cfg["mac"])
         if not cfg.get("host"):
             log.warning("Dispositivo TP-Link '%s' sin host -- no se conecta", cfg.get("name") or device["id"])
             return

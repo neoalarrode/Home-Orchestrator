@@ -69,12 +69,18 @@ class TplinkDeviceManager:
         self,
         on_any_change: Callable[[str], None] | None = None,
         on_address_change: Callable[[str, str], None] | None = None,
+        on_mac_change: Callable[[str, str], None] | None = None,
     ) -> None:
         self._on_any_change = on_any_change
         # Persistir la IP nueva es cosa de la capa de arriba (tplink_plugin,
         # que es quien conoce el almacen) -- mismo criterio que
         # `on_address_change` de TuyaDeviceManager.
         self._on_address_change = on_address_change
+        # Persistir la MAC aprendida: sin esto, tras un reinicio no se conoce la
+        # MAC de un dispositivo que no logra conectar en su IP vieja, y el
+        # reconcile por MAC (rediscover) NO puede renovarle la IP aunque se vea
+        # en el escaneo LAN. Se siembra desde el store al arrancar (seed_mac).
+        self._on_mac_change = on_mac_change
         self._devices: dict[str, Device] = {}
         # device_id -> time.time() del ultimo sondeo CON EXITO. Es la señal de
         # disponibilidad real (ver `connected`).
@@ -414,11 +420,29 @@ class TplinkDeviceManager:
             self._last_poll_ok.pop(device_id, None)
             self._known_macs.pop(device_id, None)
 
+    def seed_mac(self, device_id: str, mac: str | None) -> None:
+        """Siembra la MAC conocida de un dispositivo (desde el store, al
+        arrancar) para que el reconcile por MAC pueda renovarle la IP aunque
+        NUNCA logre conectar en su IP vieja. No dispara on_mac_change (ya viene
+        del store)."""
+        norm = _normalize_mac(mac)
+        if norm:
+            with self._lock:
+                self._known_macs.setdefault(device_id, norm)
+
     def _remember_mac(self, device_id: str, device: Device) -> None:
         mac = _normalize_mac(getattr(device, "mac", None))
-        if mac:
-            with self._lock:
-                self._known_macs[device_id] = mac
+        if not mac:
+            return
+        with self._lock:
+            changed = self._known_macs.get(device_id) != mac
+            self._known_macs[device_id] = mac
+        # Persistir en el store solo si es nueva/cambiada (evita escribir cada sondeo).
+        if changed and self._on_mac_change:
+            try:
+                self._on_mac_change(device_id, mac)
+            except Exception:
+                log.exception("TP-Link %s: fallo guardando la MAC", device_id)
 
     def get_device(self, device_id: str) -> Device | None:
         with self._lock:
