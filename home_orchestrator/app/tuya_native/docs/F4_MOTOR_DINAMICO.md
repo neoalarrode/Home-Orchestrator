@@ -50,3 +50,28 @@ Coincide 1:1 con `device_manager._room_clean`. Ver PANEL_DISPATCH_ROOMCLEAN.md.
 ## Recomendación
 F3 entregado y en prod. F4 (motor genérico) es endurecimiento multi-paso de ambos
 runtimes (shims React de render + service + orden de chunks). Abordar como fase dedicada.
+
+## Conclusión tras sondear la extracción (2026-09-27, 2ª tanda)
+Intenté extraer los encoders puros re-ejecutando el `factory` del módulo render con
+args proxy permisivos (leyendo `__renderScriptModules__[k] = {status,factory,argsLength,
+exports}`). Resultado: el chunk de encoders `c-a6f984cf.rjs.js` es un BUNDLE grande que
+mezcla **html2canvas** + wiring interno (`getCanvasById`, `sj`, ...). Sus args de factory
+(`r`=API nativa de render, `s`=document, etc.) los inyecta `view.js` SOLO cuando conduce
+el require dentro de un render de página real. Falsear esos args:
+- con proxies permisivos → avanza pero rompe en wiring interno (`sj is not a function`);
+- riesgo REAL: aunque saliera un frame, podría ser INCORRECTO y NO debe enviarse al robot.
+
+=> El camino FIEL de F4 NO es falsear el entorno, sino **levantar el render runtime de
+verdad**: dejar que `view.js` renderice la PÁGINA del panel (rutas de app-config.json),
+lo que dispara los require de módulos con los args nativos correctos y monta los
+componentes; entonces se simula la acción (p.ej. el tap de room clean) y se captura el
+envelope real en `ty.device.sendMqttMessage`/`publishDps` (ya interceptados en host5).
+Es un subsistema dedicado (render de página headless con view.js + DOM real + API nativa
+de render implementada), no un ajuste. Los arneses (`panel_host.js`, `render_host.js`)
+son la base: service runtime 0 errores con captura de transporte; render runtime arranca
+y registra módulos. Falta el render de página.
+
+### Por qué esto es suficiente por ahora
+F3 (room clean) ya está en producción y verificado 1:1 contra la app leyendo el original.
+El motor genérico F4 aporta AUTO-derivación para dispositivos/comandos FUTUROS; abordarlo
+como fase propia evita enviar comandos no verificados a hardware real.

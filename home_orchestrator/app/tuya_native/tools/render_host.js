@@ -11,6 +11,7 @@ const dom=new JSDOM('<!DOCTYPE html><html><head></head><body></body></html>',{ru
 const win=dom.window, ctx=dom.getInternalVMContext();
 for(const g of ["gzlJSBridge","ViewJSBridge","ServiceJSBridge","nativeRequest","mothra","releaseApi","onViewLoad","setGZLEventHandler","slots","__nativeCall__","requestAnimationFrame"]) win[g]=bridge(g);
 win.ty=bridge("ty"); win.__appCode__={}; win.__currentPath__=""; win.getNativeKits=function(){return {P2PKit:{},DeviceKit:{}};};
+win.createElement=function(){return {};}; win.h=win.createElement; win.React={createElement:win.createElement,Fragment:{},useContext:()=>({}),useState:x=>[x,function(){}],useEffect:function(){},useMemo:(f)=>f&&f(),useCallback:f=>f,useRef:()=>({current:null})};
 win.$reportError=e=>log("reportError:"+String(e&&e.message||e).split('\n')[0]);
 function run(file,fp){ try{ vm.runInContext(fs.readFileSync(fp,'utf8'),ctx,{filename:file}); return true; }catch(e){ log("ERR["+file+"]:"+String(e.message||e).split('\n')[0]); return false; } }
 win.Worker=class{constructor(){this.onmessage=null;}postMessage(){}terminate(){}addEventListener(){}removeEventListener(){}};
@@ -24,7 +25,9 @@ console.log("defineRenderScript=",typeof win.defineRenderScript,"| requireRender
 // 2) cargar TODOS los chunks del render (dependencias entre .rjs/.tpl)
 const ENC="c-a6f984cf.rjs.js";
 const chunks=fs.readdirSync(P).filter(f=>/\.(rjs|tpl)\.js$/.test(f));
-for(const f of chunks) run(f,path.join(P,f));
+const deps=chunks.filter(f=>f.startsWith('chunk-')), rest=chunks.filter(f=>!f.startsWith('chunk-'));
+  for(const f of deps.concat(rest)) run(f,path.join(P,f));
+  for(const f of deps.concat(rest)) run(f,path.join(P,f));
 console.log("chunks render cargados:", chunks.length);
 // 3) requerir y ejecutar
 let mod=null; try{ mod=win.requireRenderScript && win.requireRenderScript(ENC); }catch(e){ console.log("requireRenderScript ERR:",e.message); }
@@ -38,3 +41,15 @@ if(mod){
     console.log(">>> encodeRoomClean0x14([4],1) => len",fr&&fr.length,"=>",(hex||"").slice(0,220)); }catch(e){ console.log("encode ERR:",e.message); }
 }
 console.log("errores:", calls.filter(c=>/ERR/.test(c)).slice(0,8));
+
+// DEBUG extracción
+try{
+  const raw=win.requireRenderScript(ENC);
+  console.log("raw type:",typeof raw, raw&&Object.keys(raw).slice(0,8));
+  const d=raw&&raw.default; console.log("raw.default:",typeof d, d&&Object.keys(d).filter(k=>/^(encode|request)/.test(k)).slice(0,20));
+  const M=win.__renderScriptModules__;
+  const arr=Array.isArray(M)?M:Object.values(M);
+  const hit=arr.find(m=>m&&(m.id===ENC||m.name===ENC||m.path&&m.path.includes("a6f984cf")));
+  console.log("store entry keys:", hit?Object.keys(hit):"(no)");
+  if(hit){ const ex=hit.exports||hit.module&&hit.module.exports||hit.factory; console.log("hit.exports:",typeof ex, ex&&Object.keys(ex).filter(k=>/encode/.test(k)).slice(0,10)); }
+}catch(e){ console.log("DBG ERR:",e.message); }
