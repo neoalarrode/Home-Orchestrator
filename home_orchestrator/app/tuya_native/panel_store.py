@@ -85,6 +85,28 @@ def fetch_panel(client, product_id: str, cache_dir: str = "/data/tuya_panels") -
     return {"product_id": product_id, "version": ver, "dir": dest, "miniprogram_id": mid}
 
 
+def fetch_framework(client, uid: str, container_version: str = "3.0.0", cache_dir: str = "/data/tuya_panels") -> dict | None:
+    """Descarga y cachea el FRAMEWORK Ray (service.js/view.js/...) que el panel
+    necesita para ejecutarse. VERIFICADO: thing.m.miniprogram.basiclibrary.get v1.0
+    con {containerVersion, bundleId, whiteMark=MD5(uid).upper()} -> MiniAppFrameworkInfo
+    {jssdkUrl (tar.gz EN CLARO), jssdkVersion, randomNumber, sign}. Es la llamada de
+    PRODUCCION (GZLAtopRequest.k), NO la variante IDE (detail.get -> PARAMS_NULL).
+    `uid` = uid de la sesion de la app (auth.uid)."""
+    import hashlib
+    wm = hashlib.md5((uid or "").encode()).hexdigest().upper()
+    info = client.call("thing.m.miniprogram.basiclibrary.get", "1.0",
+                       post_data={"containerVersion": container_version, "bundleId": BUNDLE_ID, "whiteMark": wm},
+                       session_require=True)
+    if not isinstance(info, dict) or not info.get("jssdkUrl"):
+        return None
+    ver = info.get("jssdkVersion") or "unknown"
+    dest = os.path.join(cache_dir, "_framework", ver)
+    if not (os.path.isdir(dest) and os.path.exists(os.path.join(dest, "service.js"))):
+        with urllib.request.urlopen(info["jssdkUrl"], timeout=60) as r:
+            _extract(r.read(), dest)
+    return {"version": ver, "dir": dest, "info": info}
+
+
 def load_manifest(panel_dir: str) -> dict:
     """app-service.json (scripts a cargar en el motor) + app-config.json (paginas)."""
     out = {}
