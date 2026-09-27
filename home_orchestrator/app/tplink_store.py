@@ -26,6 +26,10 @@ PLUGIN_KEY = "tplink"
 DEFAULT_DEVICE_CONFIG = {
     "name": "",
     "host": "",
+    # MAC normalizada: se aprende al conectar y se persiste para poder
+    # reconocer el dispositivo cuando reaparece en otra IP (renovacion DHCP)
+    # tras un reinicio, aunque no logre conectar en su IP vieja.
+    "mac": "",
     # Ingestion interna por Lighting y exposicion por MQTT NO son
     # excluyentes -- mismo criterio que `expose_mqtt` de Tuya.
     "expose_mqtt": False,
