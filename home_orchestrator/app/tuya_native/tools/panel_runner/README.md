@@ -102,3 +102,17 @@ SOLUCIONES A PROBAR (próxima sesión, es 1 detalle de handshake):
 Con el render limpio: parsear el árbol (helper ya prototipado: nodos con PS["bind:tap"]="eh"+data-sid,
 paths de vnode) -> controles reales (room clean, etc.) -> postear domEvent {eventName:"domEvent",
 options:{eventList:[{ev,paths,eventName:"tap"}]}} -> capturar el envelope del comando.
+
+
+## Refinado (2026-09-30, cont.): quitar path del launch elimina el crash del auto-boot
+- Con `path` en location.search: el auto-boot `It` crashea (webviewId) -> error-boundary.
+- **Sin `path` (solo `query=deviceId`) + early-launch explícito desde el frame service**
+  (run_bridge2: micro-poll de ROUTER -> `ROUTER.launch({path,query},"1")`): el crash del
+  auto-boot DESAPARECE (ya no sale el error-boundary). Pero aparece un `indexOf`(e.url undefined)
+  en OTRA llamada de launch (171020) -> probable navegación interna de la home a una
+  functional-page/sub-ruta con url vacía; el render queda en esqueleto (17 ops, sin textos/taps).
+- SIGUIENTE (sesión enfocada): traza quién llama a launch con url undefined (¿la home navega a
+  roomFloor/functional al montar?) y proveer esa ruta/url; o interceptar esa navegación. Con eso
+  la home real monta -> controles (room clean) -> domEvent tap -> captura del envelope.
+- `earlyLaunch:true` confirmado (mi launch corre y setea fg), pero no gana la carrera a `It`
+  cuando hay path; por eso la vía correcta es quitar path y lanzar explícito.

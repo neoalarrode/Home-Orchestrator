@@ -14,7 +14,7 @@ const server=http.createServer((req,res)=>{ let u=decodeURIComponent(req.url.spl
   await page.addInitScript(bridge);
   try{fs.unlinkSync('/tmp/r2.log');}catch(e){}
   const devId=JSON.parse(DEVICE).devId;
-  const qs='?path='+encodeURIComponent('/pages/home/index')+'&query='+encodeURIComponent('deviceId='+devId+'&devId='+devId+'&groupId=');
+  const qs='?query='+encodeURIComponent('deviceId='+devId+'&devId='+devId+'&groupId=');
   await page.goto('http://localhost:'+port+'/parent.html',{waitUntil:'load',timeout:30000});
   // arrancar el iframe service
   await page.evaluate(qs=>window.__startSvc(qs), qs);
@@ -23,7 +23,7 @@ const server=http.createServer((req,res)=>{ let u=decodeURIComponent(req.url.spl
   const res=await page.evaluate(async ()=>{
     const f=document.getElementById('svc').contentWindow;
     const out={ROUTER:typeof (f.ROUTER), SB:typeof (f.ServiceJSBridge)};
-    try{ const devId=f.__DEVICE.devId; if(f.ROUTER&&f.ROUTER.launch) f.ROUTER.launch({path:"/pages/home/index",query:"deviceId="+devId+"&devId="+devId+"&groupId="},"1"); }catch(e){ out.launchErr=e.message; }
+    out.earlyLaunch=f.__EARLYLAUNCH;
     await new Promise(r=>setTimeout(r,600));
     // el parent (como vista) avisa onViewLoad -> el service procede a renderizar y envia ops
     try{ f.postMessage({$eventName:"window.onViewLoad", pageId:"1", options:{ua:""}}, "*"); }catch(e){ out.vlErr=e.message; }
