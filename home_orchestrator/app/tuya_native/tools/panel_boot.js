@@ -18,7 +18,7 @@ function mkDeviceKit(){return{
   subscribeDeviceRepDps:o=>cb(o,{}),unSubscribeDeviceRepDps:o=>cb(o,{}),subscribeDeviceInfoChange:o=>cb(o,{}),unSubscribeDeviceInfoChange:o=>cb(o,{}),onDpDataChange:o=>cb(o,{}),offDpDataChange:o=>cb(o,{}),getDeviceProperty:o=>cb(o,{}),subscribeMqttMessage:o=>cb(o,{}),unSubscribeMqttMessage:o=>cb(o,{}),
 };}
 const _devId=DEVICE.devId||DEVICE.deviceId||"";
-const _launch="https://localhost/?path="+encodeURIComponent("/pages/home/index")+"&query="+encodeURIComponent("deviceId="+_devId+"&devId="+_devId+"&groupId=");
+const _launch="https://localhost/";
 const dom=new JSDOM('<!DOCTYPE html><html><head></head><body></body></html>',{runScripts:"outside-only",pretendToBeVisual:true,url:_launch});
 const win=dom.window, ctx=dom.getInternalVMContext();
 win.Worker=class{postMessage(){}terminate(){}addEventListener(){}removeEventListener(){}};
@@ -47,3 +47,6 @@ setTimeout(function(){
   console.log("--- eventos/errores relevantes ---");
   calls.filter(c=>/router|launch|createPage|ERR|reportError|getDeviceInfo|publishDps|sendMqtt|Cannot|not a function|missing/i.test(c)).slice(0,30).forEach(c=>console.log("  "+c.slice(0,160)));
 }, 2200);
+
+module.exports={win,captured,DEVICE,calls};
+global.__H={win,captured,DEVICE,calls};
