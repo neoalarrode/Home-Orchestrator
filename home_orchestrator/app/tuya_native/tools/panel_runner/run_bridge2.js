@@ -1,5 +1,7 @@
 // init-script inyectado en el navegador ANTES de cualquier script del panel
-window.__CAPTURED=[]; window.__RENDER=[]; window.__LOG=[]; window.__webviewId__="1"; try{ if(window.top!==window.self) console.log("SVCLOC:"+location.search); }catch(e){}
+window.__CAPTURED=[]; window.__RENDER=[]; window.__LOG=[]; window.__webviewId__="1"; try{ if(window.top!==window.self){ console.log("SVCLOC:"+location.search);
+  var us=new URLSearchParams(location.search); var q=us.get("query")||""; var qq=new URLSearchParams(q);
+  console.log("PARSE: query.deviceId="+qq.get("deviceId")+" path="+us.get("path")); } }catch(e){console.log("PARSEERR:"+e.message);}
 window.__DEVICE=__DEVICE_JSON__;
 (function(){
   var D=window.__DEVICE;
@@ -21,7 +23,8 @@ window.__DEVICE=__DEVICE_JSON__;
     onSubFunctionDataChange:function(o){return cb(o,{});},
     dispatchSubFunctionTouchEvent:function(o){window.__CAPTURED.push({t:"dispatchSubFunctionTouchEvent",raw:o});return cb(o,{});},
   },{ get:function(t,p){ if(typeof p==="symbol")return t[p]; if(p in t)return t[p]; return function(o){ if(typeof o==="function")window.__dpCbs.push(o); return cb(o,{}); }; } }); }
-  window.getNativeKits=function(){ return {P2PKit:{}, DeviceKit:DeviceKit()}; };
+  function anyKit(){ return new Proxy({}, { get:function(t,p){ if(typeof p==="symbol")return undefined; return function(o){ return cb(o,{}); }; } }); }
+  window.getNativeKits=function(){ return new Proxy({ P2PKit:{}, DeviceKit:DeviceKit() }, { get:function(t,p){ if(typeof p==="symbol")return t[p]; if(p in t)return t[p]; return anyKit(); } }); };
 })();
 (function(){
   var _sys={platform:"android",appVersion:"7.9.0",version:"7.9.0",SDKVersion:"2.30.27",language:"es",theme:"light",screenWidth:1080,screenHeight:1920,windowWidth:1080,windowHeight:1920,pixelRatio:3,statusBarHeight:24,safeArea:{top:24,bottom:1920,left:0,right:1080,width:1080,height:1896}};

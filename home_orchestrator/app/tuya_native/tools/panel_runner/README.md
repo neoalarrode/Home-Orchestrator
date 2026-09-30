@@ -144,3 +144,21 @@ node.NS[node.CH[i]] para hallar nodos bind:tap con su path. Hoy el merge queda c
 (b) extraer los controles de la home de los ops crudos (59 detectados) con su path dotted->indices.
 SIGUIENTE: resolver el id del storage (probar uid/groupId, o precargar Dg) -> árbol limpio ->
 path del control -> domEvent tap -> capturar envelope del comando.
+
+
+## 2026-10-01 (final de la tanda): MODELO DE UI EXTRAÍDO + tap round-trip CONFIRMADO
+- Fix storage: groupId="" mantiene device single; el error residual del storage NO impide el render
+  de la home (op jobId=2 trae el árbol completo). `home_tree.js` coge el op con más textos, mergea su
+  patchData (claves dotted) y navega node.NS[node.CH[i]] -> **28 controles con path + etiqueta**:
+  开始/Start [0,0,4,0,3,0,0], 房间编辑/room-edit [0,0,3,0,0,1,1], 禁区编辑, Smart/Room/Zone/Pose
+  [0,0,4,0,1,0..3], 集尘/洗拖布/烘干, 清洁偏好, 全局/自定义模式, 地板材质, 重置密码, 好的/跳过...
+  -> docs/conga_home_controls.json. ES EL MODELO CAPACIDADES+UI auto-derivado (objetivo del usuario).
+- TAP round-trip CONFIRMADO: postear domEvent {eventName:"domEvent",options:{eventList:[{ev,paths,
+  eventName:"tap"}]}} con el path del control INVOCA su handler (se ve el flujo del handler ejecutarse).
+- Pendiente para capturar el envelope de un comando concreto (ej roomCleanSet): 开始/Start dispara un
+  flujo complejo (获取3D家具列表/lista de muebles 3D, mapa...) que necesita más andamiaje de kits/estado
+  antes de emitir el comando ("s is not a function" en el .catch del fetch de muebles). Opciones:
+  (a) satisfacer las deps del flujo Start (MapKit/SweeperKit + datos), o (b) tapear un control de comando
+  directo (p.ej. base-station 集尘) tras abrir su popup, o (c) usar el formato ya derivado por fuente
+  (panel_commands.js, roomCleanSet verificado) + la captura viva de queries (passwordQry proto64) como
+  verificación. Para el PLUGIN, los formatos de comando ya se conocen (descriptor + transporte verificado).

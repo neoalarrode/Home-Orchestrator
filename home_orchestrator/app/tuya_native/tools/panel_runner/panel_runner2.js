@@ -9,8 +9,8 @@ const server=http.createServer((req,res)=>{ let u=decodeURIComponent(req.url.spl
   const exe=require('os').homedir()+'/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
   const browser=await chromium.launch({executablePath:exe, headless:true, args:['--no-sandbox']});
   const page=await browser.newPage();
-  page.on('pageerror',e=>{ let extra=''; try{ if(e&&e.message==='Object'){ extra=JSON.stringify(e); } }catch(x){} fs.appendFileSync('/tmp/r2.log','PAGEERR: '+(e&&e.message)+' '+extra+'\n'+((e&&e.stack)||'').split('\n').slice(1,10).join('\n')+'\n---\n'); });
-  page.on('console',m=>{ const t=m.text(); if(/SVCLOC/.test(t))fs.appendFileSync('/tmp/r2.log','>>> '+t+'\n'); if(/error|fail|exception|reject/i.test(t)) fs.appendFileSync('/tmp/r2.log','CONSOLE: '+t.slice(0,300)+'\n'); });
+  page.on('requestfailed',r=>fs.appendFileSync('/tmp/r2.log','404REQ: '+r.url()+'\n')); page.on('response',r=>{if(r.status()>=400)fs.appendFileSync('/tmp/r2.log','HTTP'+r.status()+': '+r.url()+'\n');}); page.on('pageerror',e=>{ let extra=''; try{ if(e&&e.message==='Object'){ extra=JSON.stringify(e); } }catch(x){} fs.appendFileSync('/tmp/r2.log','PAGEERR: '+(e&&e.message)+' '+extra+'\n'+((e&&e.stack)||'').split('\n').slice(1,10).join('\n')+'\n---\n'); });
+  page.on('console',m=>{ const t=m.text(); if(/SVCLOC|PARSE/.test(t))fs.appendFileSync('/tmp/r2.log','>>> '+t+'\n'); if(/error|fail|exception|reject/i.test(t)) fs.appendFileSync('/tmp/r2.log','CONSOLE: '+t.slice(0,300)+'\n'); });
   let bridge=fs.readFileSync(path.join(HERE,'run_bridge2.js'),'utf8').replace('__DEVICE_JSON__', DEVICE);
   await page.addInitScript(bridge);
   try{fs.unlinkSync('/tmp/r2.log');}catch(e){}
@@ -28,10 +28,24 @@ const server=http.createServer((req,res)=>{ let u=decodeURIComponent(req.url.spl
     await new Promise(r=>setTimeout(r,600));
     // el parent (como vista) avisa onViewLoad -> el service procede a renderizar y envia ops
     try{ f.postMessage({$eventName:"window.onViewLoad", pageId:"1", options:{ua:""}}, "*"); }catch(e){ out.vlErr=e.message; }
-    await new Promise(r=>setTimeout(r,2500));
+    // esperar a que aparezca el op de la home (contiene 开始) y tapear YA (antes del error-boundary)
+    function tap(path,sid){ try{ f.postMessage({$eventName:"domEvent", pageId:"1", options:{eventList:[{ ev:{type:"tap", timeStamp:Date.now(), currentTarget:{id:sid,dataset:{sid:sid},offsetLeft:0,offsetTop:0}, target:{id:sid,dataset:{sid:sid}}, detail:{x:10,y:10}, touches:[{clientX:10,clientY:10}], changedTouches:[{clientX:10,clientY:10}] }, paths:path, eventName:"tap" }]}}, "*"); }catch(e){} }
+    let homeSeen=false;
+    for(let i=0;i<120;i++){ await new Promise(r=>setTimeout(r,25)); if((window.__STREAM||[]).some(m=>{try{return JSON.stringify(m).indexOf("开始")>=0;}catch(e){return false;}})){ homeSeen=true; break; } }
+    out.homeSeen=homeSeen; out.capBeforeTap=(f.__CAPTURED||[]).length;
+    tap([0,0,4,0,3,0,0],79); await new Promise(r=>setTimeout(r,1500));
+    out.capAfterTap=(f.__CAPTURED||[]).length; out.capturedAll=(f.__CAPTURED||[]).map(c=>({t:c.t,msg:c.raw&&c.raw.message}));
     out.streamLen=(window.__STREAM||[]).length; out.acks=window.__ACKS;
     out.streamEvents={}; (window.__STREAM||[]).forEach(m=>{const k=m&&(m.$eventName||(m.data&&m.data.eventName)||m.eventName||Object.keys(m||{}).slice(0,2).join(","));out.streamEvents[k]=(out.streamEvents[k]||0)+1;});
-    try{ out.captured=(f.__CAPTURED||[]).map(c=>c.t); out.getDeviceInfo=(f.__LOG||[]).filter(x=>x==='getDeviceInfo').length; }catch(e){ out.capErr=e.message; }
+    function tap(path,sid){ try{ f.postMessage({$eventName:"domEvent", pageId:"1", options:{eventList:[{ ev:{type:"tap", timeStamp:Date.now(), currentTarget:{id:sid,dataset:{sid:sid},offsetLeft:0,offsetTop:0}, target:{id:sid,dataset:{sid:sid}}, detail:{x:10,y:10}, touches:[{clientX:10,clientY:10}], changedTouches:[{clientX:10,clientY:10}] }, paths:path, eventName:"tap" }]}}, "*"); }catch(e){} }
+    out.capBeforeTap=(f.__CAPTURED||[]).length;
+    tap([0,0,4,0,1,1],67);  // Room mode
+    await new Promise(r=>setTimeout(r,400));
+    tap([0,0,4,0,3,0,0],79);  // Start
+    await new Promise(r=>setTimeout(r,1500));
+    out.capAfterTap=(f.__CAPTURED||[]).length;
+    out.capturedAll=(f.__CAPTURED||[]).map(c=>({t:c.t, msg:c.raw&&c.raw.message}));
+    out.captured=(f.__CAPTURED||[]).map(c=>c.t); out.getDeviceInfo=(f.__LOG||[]).filter(x=>x==='getDeviceInfo').length;
     return out;
   });
   try{ const full=await page.evaluate(()=>JSON.stringify(window.__STREAM||[])); fs.writeFileSync("/tmp/stream.json", full); }catch(e){}
