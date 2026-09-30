@@ -36,7 +36,15 @@ se OBSERVA su efecto (el envelope) en el boundary, que es lo único que la app e
 - Resolver el grafo de dependencias y cargar en orden (dos pasadas ya ayuda; formalizar).
 - Criterio: requerir el módulo de la página del aspirador sin "module not defined".
 
-## F4.3 — Montaje (render) de la página headless
+## F4.3 — Montaje (render) de la página headless [NECESARIO — atajos agotados]
+### Atajos descartados (probados, 2026-09-30)
+1. Extraer encoders por require → NO exportados (F4.1).
+2. Disparar la acción en service via configs de Page()/Component() → capturados 1 App,
+   27 Pages, 30 Components (`tools/service_page_capture.js`), pero NINGÚN método de config
+   referencia `roomClean`/`setRoomClean`: las páginas son shell de miniprograma (onLoad/
+   onShow/data) y la lógica del aspirador está en COMPONENTES FUNCIONALES React (los
+   `useContext`/hook `Ej`), que NO pasan por Page()/Component(). Sin disparo service-side.
+=> ÚNICA vía: montar el árbol React de la página y simular la interacción.
 Conducir `view.js` para renderizar el árbol de la página en el DOM de jsdom.
 - Esto instancia los componentes y hooks; el hook de acción `Ej` obtiene su contexto React `dc`.
 - Criterio: la página monta sin throw y quedan accesibles los handlers de los controles.
