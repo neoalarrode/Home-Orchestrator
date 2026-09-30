@@ -9,7 +9,7 @@ const server=http.createServer((req,res)=>{ let u=decodeURIComponent(req.url.spl
   const exe=require('os').homedir()+'/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
   const browser=await chromium.launch({executablePath:exe, headless:true, args:['--no-sandbox']});
   const page=await browser.newPage();
-  page.on('pageerror',e=>fs.appendFileSync('/tmp/r2.log','PAGEERR: '+e.message+'\n'));
+  page.on('pageerror',e=>fs.appendFileSync('/tmp/r2.log','PAGEERR: '+e.message+'\n'+(e.stack||'').split('\n').slice(1,5).join('\n')+'\n---\n'));
   let bridge=fs.readFileSync(path.join(HERE,'run_bridge2.js'),'utf8').replace('__DEVICE_JSON__', DEVICE);
   await page.addInitScript(bridge);
   try{fs.unlinkSync('/tmp/r2.log');}catch(e){}
@@ -31,7 +31,6 @@ const server=http.createServer((req,res)=>{ let u=decodeURIComponent(req.url.spl
     out.streamLen=(window.__STREAM||[]).length; out.acks=window.__ACKS;
     out.streamEvents={}; (window.__STREAM||[]).forEach(m=>{const k=m&&(m.$eventName||(m.data&&m.data.eventName)||m.eventName||Object.keys(m||{}).slice(0,2).join(","));out.streamEvents[k]=(out.streamEvents[k]||0)+1;});
     try{ out.captured=(f.__CAPTURED||[]).map(c=>c.t); out.getDeviceInfo=(f.__LOG||[]).filter(x=>x==='getDeviceInfo').length; }catch(e){ out.capErr=e.message; }
-    out.streamDetail=(window.__STREAM||[]).slice(0,12).map(m=>{ try{return JSON.stringify(m).slice(0,160);}catch(e){return "?";} });
     return out;
   });
   try{ const full=await page.evaluate(()=>JSON.stringify(window.__STREAM||[])); fs.writeFileSync("/tmp/stream.json", full); }catch(e){}

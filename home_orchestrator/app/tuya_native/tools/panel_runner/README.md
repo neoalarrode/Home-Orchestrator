@@ -80,3 +80,25 @@ Nodos interactivos: `PS:{"bind:tap":"eh","data-sid":N}` + `TX` (texto). El servi
 leaf path>, eventName:"tap"}]}}` -> `searchVnodeByLeafPath(paths)` -> invoca el handler -> el
 comando sale por DeviceKit.sendMqttMessage/publishDps (capturado). Falta: calcular el `paths` del
 nodo objetivo desde el árbol y postearlo -> captura el envelope del comando (ej. roomCleanSet).
+
+## Estado fino y ÚNICO blocker para render limpio (2026-09-30)
+El pipeline de render funciona y captura el VDOM completo. PERO la home se renderiza como el
+**error-boundary de la app** ("发生点意外 / 提交" = algo inesperado / enviar feedback), no la UI real.
+Causa raíz identificada: el **auto-boot del framework** (`It` lee launch options de location.search
+y llama `Ue.launch(t)` con UN arg, sin webviewId) crashea en `(n||xr()).toString()` porque en modo
+WEB la primera página no tiene webviewId: `fg` (current webview) SOLO lo setea `Dr(id)` (dentro de
+`launch`), sin default de arranque. El error async sube y el error-boundary de React reemplaza el árbol.
+- `xr()`/`Ot()` devuelven `fg` (=undefined al inicio). `Dr(e){fg=e}` (service.js ~418293). Sin Dr de boot.
+- Mi `ROUTER.launch({path},"1")` SÍ pasa webviewId y llama Dr("1"), pero el auto-boot `It` dispara ANTES
+  (poll rápido en cuanto location.search tiene path) y crashea primero.
+SOLUCIONES A PROBAR (próxima sesión, es 1 detalle de handshake):
+1. Presetear el webviewId de entrada como hace el host web real (buscar si el host web setea `fg`
+   via un mensaje del view o un global/param antes de `It`; o si el view frame, al cargar, postea su id).
+2. Ganarle la carrera a `It`: en run_bridge2 (addInitScript, corre pronto en el frame service),
+   micro-poll de `window.ROUTER` y llamar `ROUTER.launch({path},"1")` ANTES de que `It` resuelva su poll
+   (así `Dr("1")` setea `fg` y el auto-boot de `It` ya no crashea).
+3. Suprimir el auto-boot (quitar `path` de location.search) y arreglar el `indexOf`(e.url undefined) que
+   aparece entonces en MI launch (investigar por qué r.path no llega; posible redirect a functional-page).
+Con el render limpio: parsear el árbol (helper ya prototipado: nodos con PS["bind:tap"]="eh"+data-sid,
+paths de vnode) -> controles reales (room clean, etc.) -> postear domEvent {eventName:"domEvent",
+options:{eventList:[{ev,paths,eventName:"tap"}]}} -> capturar el envelope del comando.
