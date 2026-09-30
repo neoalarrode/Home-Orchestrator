@@ -58,3 +58,25 @@ lo da el descriptor por fuente (verificado 1:1 con lo que la app emite en los qu
 PROXIMO opcional (si se quiere disparar cualquier comando y leer el arbol de UI completo):
 reconstruir el launcher web service<->view (dos contextos + puente postMessage) en Chromium,
 para que el panel renderice a DOM real; entonces se leen controles y se simulan taps.
+
+## OPCIÓN 2 LOGRADA (2026-09-30): runtime service+view -> ÁRBOL DE UI + comandos
+Topología real del runtime WEB de Ray: service y view son IFRAMES que hablan por
+`window.parent.postMessage` (bridge `mm`; `ue()`=native elige worker `Em`, web elige `mm`).
+Montaje headless (tools/panel_runner/{panel_runner2.js, run_bridge2.js, parent.html}):
+- parent.html = página normal (no Ray, así `page.evaluate` funciona) con un iframe al bundle
+  service (service.html) + RELAY: captura todo iframe->parent en `window.__STREAM` y ACKea los
+  `$syncCallbackKey` (hace de "vista" -> desbloquea el pipeline de render del service).
+- run_bridge2.js (addInitScript, todos los frames): getNativeKits()->DeviceKit (device+captura)
+  + ty shim. panel_runner2 arranca el iframe, hace `iframe.ROUTER.launch({path,query},"1")`, y
+  el parent postea `{$eventName:"window.onViewLoad", pageId:"1"}` al iframe -> el service RENDERIZA.
+RESULTADO: __STREAM con 37 msgs = el stream de render COMPLETO: devInfo, toasts de estado real
+("请装回尘盒再启动"=pon la caja de polvo), componentsConfigMap, PAGE_FIRST_RENDER, y **16 ops
+`action:"setData"` con `patchData` = el VDOM real** (186 view, text, image, button, input, icons,
+popups, nav-bar...). Eso es el MODELO DE CAPACIDADES+UI auto-derivado de la app, sin nada a mano.
+
+### Disparar comandos (view->service), mecanismo mapeado
+Nodos interactivos: `PS:{"bind:tap":"eh","data-sid":N}` + `TX` (texto). El service escucha
+`$eventName:"domEvent"` con `{pageId, options:{eventList:[{ev:{currentTarget,target}, paths:<vnode
+leaf path>, eventName:"tap"}]}}` -> `searchVnodeByLeafPath(paths)` -> invoca el handler -> el
+comando sale por DeviceKit.sendMqttMessage/publishDps (capturado). Falta: calcular el `paths` del
+nodo objetivo desde el árbol y postearlo -> captura el envelope del comando (ej. roomCleanSet).
