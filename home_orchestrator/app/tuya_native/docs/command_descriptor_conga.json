@@ -1,0 +1,168 @@
+{
+  "product_id": "",
+  "source": "panel/main.js (dispatch de la app)",
+  "reqTypes": [
+    "SaveCurrMapSet",
+    "deleteMapSet",
+    "partDivisionSet",
+    "partMergeSet",
+    "passwordSet",
+    "passwordSet",
+    "quietHoursSet",
+    "resetCurrMapSet",
+    "restrictedAreaSet",
+    "roomCleanSet",
+    "roomPropertySet",
+    "scheduleSet",
+    "spotCleanSet",
+    "useMapSet",
+    "virtualWallSet",
+    "voiceLanguageSet",
+    "zoneCleanSet"
+  ],
+  "proto64_commands": [
+    {
+      "command": "partDivisionSet",
+      "transport": "mqtt_proto64",
+      "version": "1.0.0",
+      "protocol": 64,
+      "message_fields": [
+        "lines",
+        "ids"
+      ]
+    },
+    {
+      "command": "partMergeSet",
+      "transport": "mqtt_proto64",
+      "version": "1.0.0",
+      "protocol": 64,
+      "message_fields": [
+        "ids"
+      ]
+    },
+    {
+      "command": "passwordSet",
+      "transport": "mqtt_proto64",
+      "version": "1.0.0",
+      "protocol": 64,
+      "message_fields": [
+        "password",
+        "oldPassword"
+      ]
+    },
+    {
+      "command": "restrictedAreaSet",
+      "transport": "mqtt_proto64",
+      "version": "1.0.0",
+      "protocol": 64,
+      "message_fields": [
+        "polygons",
+        "num",
+        "modes",
+        "names"
+      ]
+    },
+    {
+      "command": "spotCleanSet",
+      "transport": "mqtt_proto64",
+      "version": "1.0.0",
+      "protocol": 64,
+      "message_fields": [
+        "num",
+        "polygons",
+        "suctions",
+        "cisterns",
+        "cleanCounts",
+        "yMops",
+        "sweepMopModes"
+      ]
+    },
+    {
+      "command": "zoneCleanSet",
+      "transport": "mqtt_proto64",
+      "version": "1.0.0",
+      "protocol": 64,
+      "message_fields": [
+        "num",
+        "switchGo",
+        "polygons",
+        "suctions",
+        "cisterns",
+        "cleanCounts",
+        "yMops",
+        "sweepMopModes",
+        "names"
+      ]
+    },
+    {
+      "command": "roomCleanSet",
+      "transport": "mqtt_proto64",
+      "version": "1.0.0",
+      "protocol": 64,
+      "message_fields": [
+        "ids",
+        "suctions",
+        "cisterns",
+        "cleanCounts",
+        "yMops",
+        "sweepMopModes",
+        "num"
+      ]
+    },
+    {
+      "command": "deleteMapSet",
+      "transport": "mqtt_proto64",
+      "version": "1.0.0",
+      "protocol": 64,
+      "message_fields": [
+        "mapId"
+      ]
+    },
+    {
+      "command": "SaveCurrMapSet",
+      "transport": "mqtt_proto64",
+      "version": "1.0.0",
+      "protocol": 64,
+      "message_fields": [
+        "oper"
+      ]
+    }
+  ],
+  "dp_commands": [
+    {
+      "encoder": "requestVirtualArea0x1b",
+      "transport": "dp_command_trans",
+      "args": [
+        "version"
+      ]
+    },
+    {
+      "encoder": "requestVirtualWall0x13",
+      "transport": "dp_command_trans",
+      "args": [
+        "version"
+      ]
+    },
+    {
+      "encoder": "requestZoneClean0x3b",
+      "transport": "dp_command_trans",
+      "args": [
+        "version"
+      ]
+    },
+    {
+      "encoder": "requestRoomClean0x15",
+      "transport": "dp_command_trans",
+      "args": [
+        "version"
+      ]
+    },
+    {
+      "encoder": "encodeResetMap0x42",
+      "transport": "dp_command_trans",
+      "args": [
+        "version"
+      ]
+    }
+  ]
+}

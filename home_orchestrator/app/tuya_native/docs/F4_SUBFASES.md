@@ -72,3 +72,24 @@ de forma genérica. Integrar en el plugin (sustituye lógica por-dispositivo a m
 Todo LOCAL (~/dev/tuya-emu/hg, ~/.tuya_native venv), NUNCA producción. No enviar a
 hardware real ningún comando derivado hasta verificación cruzada con la implementación
 ya probada. Ver [[feedback_no_prod_before_proof]] / [[feedback_tuya_device_control]].
+
+## F4 realización PRAGMÁTICA y FIEL (2026-09-30): derivación de comandos por fuente
+Dado que el render React headless es un subsistema desproporcionado y los 3 atajos de
+ejecución están agotados, se adopta la vía que YA funcionó para room clean: DERIVAR el
+descriptor de comandos leyendo el dispatch de la app en `panel/main.js` (no ejecutar).
+- `tools/panel_commands.js <panelDir> [productId]`: parsea main.js y emite JSON con
+  proto64_commands ({command=reqType, version, protocol 64, message_fields}) y dp_commands
+  ({encoder, args}) + la lista de reqTypes. Es la MISMA lógica de la app, por producto.
+- Conga (`docs/command_descriptor_conga.json`): 9 comandos proto64 (roomCleanSet,
+  zoneCleanSet, spotCleanSet, restrictedAreaSet, partDivisionSet, partMergeSet,
+  deleteMapSet, SaveCurrMapSet, passwordSet) + 5 DP + 17 reqTypes. roomCleanSet coincide
+  EXACTO con `device_manager._room_clean` (ya verificado en prod).
+- ALCANCE/limite honesto: el descriptor da el ESQUEMA fiel (reqType + campos + transporte).
+  Los comandos simples (room clean: ids+defaults) quedan turnkey. Los que dependen de
+  geometría de mapa (zone/spot/virtual: `polygons` a partir de coords de la UI) necesitan
+  además la transformación de valores de la UI — el esquema está, falta el cálculo de
+  polígonos para esos. Para el plugin: expone/implementa comando a comando sobre este
+  descriptor, empezando por los que no requieren geometría.
+Esto cumple "exactamente como la app, sin encoder a mano" para el dispatch; el render
+headless (F4.3) queda como opción futura solo si se quisiera capturar también la geometría
+de mapa automáticamente.
