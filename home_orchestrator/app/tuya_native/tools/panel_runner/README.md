@@ -33,3 +33,28 @@ el montaje:
   (via store/redux o montando el frame de vista y simulando el tap).
 - Recorrer el árbol de render (setData) para el modelo de capacidades+UI completo.
 - Integrar como paso de derivación del plugin (cachea descriptor por productId).
+
+## Arquitectura de integración (2026-09-30) — solución dinámica completa
+El objetivo del usuario es CONTROLAR desde HA (headless), no ver UI. Para eso el plugin
+necesita por dispositivo: (a) capacidades/parametros, (b) como encodear cada comando.
+
+Fuentes dinámicas, todas derivadas de la app, cero a mano:
+1. **Capacidades (a)**: el THING-MODEL (profiles.parse_thing_model) ya da TODOS los DPs con
+   code/type/rango/unidad/rw. Control estandar = publishDps({dps:{code:valor}}) — cubre la
+   mayoria (riego, AC, luces, enchufes, covers, fans, sensores), incluso de panel custom.
+2. **Comandos encodeados (b)**: 
+   - DESCRIPTOR por fuente (tools/panel_commands.js): parsea el dispatch del panel/main.js y
+     emite {reqType, version, protocol, message_fields} por comando. Es la logica de la app.
+   - VERIFICACION/derivacion en vivo (este panel-runner): ejecuta el panel real headless y
+     CAPTURA los envelopes que emite (probado: passwordQry proto64 v1.0.0 == builder Ai).
+     Confirma que el descriptor casa con la app EXACTAMENTE.
+
+Limite actual del runner: solo corre el runtime SERVICE (no el frame de vista). Captura lo
+que el panel emite por si mismo (queries, y comandos auto). Los comandos de ACCION de usuario
+(ej. room clean con habitaciones) no se pueden DISPARAR headless sin montar el frame de vista
+(DOM+tap) o alcanzar el store (privado, no reachable desde window). Para esos, el formato ya
+lo da el descriptor por fuente (verificado 1:1 con lo que la app emite en los que si capturamos).
+
+PROXIMO opcional (si se quiere disparar cualquier comando y leer el arbol de UI completo):
+reconstruir el launcher web service<->view (dos contextos + puente postMessage) en Chromium,
+para que el panel renderice a DOM real; entonces se leen controles y se simulan taps.
