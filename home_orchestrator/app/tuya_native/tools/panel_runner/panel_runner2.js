@@ -9,12 +9,12 @@ const server=http.createServer((req,res)=>{ let u=decodeURIComponent(req.url.spl
   const exe=require('os').homedir()+'/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing';
   const browser=await chromium.launch({executablePath:exe, headless:true, args:['--no-sandbox']});
   const page=await browser.newPage();
-  page.on('pageerror',e=>fs.appendFileSync('/tmp/r2.log','PAGEERR: '+e.message+'\n'+(e.stack||'').split('\n').slice(1,5).join('\n')+'\n---\n'));
+  page.on('pageerror',e=>fs.appendFileSync('/tmp/r2.log','PAGEERR: '+e.message+'\n'+(e.stack||'').split('\n').slice(1,14).join('\n')+'\n---\n'));
   let bridge=fs.readFileSync(path.join(HERE,'run_bridge2.js'),'utf8').replace('__DEVICE_JSON__', DEVICE);
   await page.addInitScript(bridge);
   try{fs.unlinkSync('/tmp/r2.log');}catch(e){}
   const devId=JSON.parse(DEVICE).devId;
-  const qs='?query='+encodeURIComponent('deviceId='+devId+'&devId='+devId+'&groupId=');
+  const qs='?path='+encodeURIComponent('/pages/home/index')+'&query='+encodeURIComponent('deviceId='+devId+'&devId='+devId+'&groupId=')+'&webviewId=1';
   await page.goto('http://localhost:'+port+'/parent.html',{waitUntil:'load',timeout:30000});
   // arrancar el iframe service
   await page.evaluate(qs=>window.__startSvc(qs), qs);

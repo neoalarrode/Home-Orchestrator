@@ -116,3 +116,15 @@ options:{eventList:[{ev,paths,eventName:"tap"}]}} -> capturar el envelope del co
   la home real monta -> controles (room clean) -> domEvent tap -> captura del envelope.
 - `earlyLaunch:true` confirmado (mi launch corre y setea fg), pero no gana la carrera a `It`
   cuando hay path; por eso la vía correcta es quitar path y lanzar explícito.
+
+
+## ✅ RESUELTO (2026-10-01): la HOME REAL renderiza headless — opción 2 completa
+Fix del blocker: `xr()` (webviewId) = `window.__webviewId__` || parse(location.search).webviewId
+(service.js ~314087), NO `fg`. Basta con `webviewId=1` en location.search (+ window.__webviewId__="1").
+Con eso el auto-boot del framework lanza LIMPIO (sin toString/indexOf) y la home real monta.
+RESULTADO: 17 ops setData, **80 textos** de la UI real del aspirador (房间编辑/room edit, 禁区编辑/
+restricted, 开始/start, Smart/Room/Zone/Pose, 集尘/洗拖布/烘干, 清洁偏好/清扫模式, área m²/min/%...),
+**59 handlers de tap** (bind:tap + data-sid). = MODELO DE CAPACIDADES+UI COMPLETO auto-derivado de la app.
+Setup final: location.search = ?path=/pages/home/index&query=deviceId=..&webviewId=1 ; window.__webviewId__="1".
+SIGUIENTE: mergear los ops setData -> árbol completo -> path de vnode de un control (ej. 开始/房间编辑)
+-> postear domEvent tap -> capturar el envelope del comando (roomCleanSet, etc.).

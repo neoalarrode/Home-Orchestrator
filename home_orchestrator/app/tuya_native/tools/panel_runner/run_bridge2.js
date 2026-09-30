@@ -1,5 +1,5 @@
 // init-script inyectado en el navegador ANTES de cualquier script del panel
-window.__CAPTURED=[]; window.__RENDER=[]; window.__LOG=[];
+window.__CAPTURED=[]; window.__RENDER=[]; window.__LOG=[]; window.__webviewId__="1";
 window.__DEVICE=__DEVICE_JSON__;
 (function(){
   var D=window.__DEVICE;
@@ -26,7 +26,7 @@ window.__DEVICE=__DEVICE_JSON__;
 (function(){
   var _sys={platform:"android",appVersion:"7.9.0",version:"7.9.0",SDKVersion:"2.30.27",language:"es",theme:"light",screenWidth:1080,screenHeight:1920,windowWidth:1080,windowHeight:1920,pixelRatio:3,statusBarHeight:24,safeArea:{top:24,bottom:1920,left:0,right:1080,width:1080,height:1896}};
   function cb(o,d){try{if(o&&typeof o.success==="function")o.success(d);if(o&&typeof o.complete==="function")o.complete(d);}catch(e){}return d;}
-  var _lo={path:"",query:{deviceId:(window.__DEVICE||{}).devId,devId:(window.__DEVICE||{}).devId,groupId:""},scene:10001};
+  var _lo={path:"/pages/home/index",query:{deviceId:(window.__DEVICE||{}).devId,devId:(window.__DEVICE||{}).devId,groupId:""},scene:10001};
   var ov={getLaunchOptionsSync:function(){return _lo;},getLaunchOptions:function(o){return cb(o,_lo);},getEnterOptionsSync:function(){return _lo;},getEnterOptions:function(o){return cb(o,_lo);},getSystemInfoSync:function(){return _sys;},getSystemInfo:function(o){return cb(o,_sys);},getAppBaseInfo:function(){return _sys;},getWindowInfo:function(){return _sys;},getDeviceInfo:function(){return _sys;},getLogManager:function(){return new Proxy({},{get:function(){return function(){};}});}};
   function mk(name){ var fn=function(){return mk(name+"()");}; return new Proxy(fn,{get:function(t,p){ if(typeof p==="symbol")return p===Symbol.toPrimitive?function(){return "";}:t[p]; if(p==="then")return undefined; if(name==="ty"&&ov[p]!==undefined)return ov[p]; return mk(name+"."+String(p)); }, apply:function(){return fn();}}); }
   window.ty=mk("ty");
@@ -37,8 +37,8 @@ window.__DEVICE=__DEVICE_JSON__;
   if(window.top===window.self) return; // solo en el iframe service (no en el parent)
   var did=false;
   function tryLaunch(){ if(did)return; if(window.ROUTER&&window.ROUTER.launch&&window.__DEVICE){ did=true; try{ var id=window.__DEVICE.devId; window.ROUTER.launch({path:"/pages/home/index",query:{deviceId:id,devId:id,groupId:""}},"1"); window.__EARLYLAUNCH=true; }catch(e){ window.__EARLYLAUNCH="err:"+e.message; } return; } }
-  var iv=setInterval(function(){ tryLaunch(); if(did)clearInterval(iv); },1);
+  var iv=null;
   // también lo antes posible tras cada script
-  var mo=setInterval(tryLaunch,0);
-  setTimeout(function(){clearInterval(mo);},4000);
+  var mo=null;
+  
 })();
