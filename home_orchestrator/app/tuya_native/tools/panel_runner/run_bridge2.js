@@ -1,5 +1,5 @@
 // init-script inyectado en el navegador ANTES de cualquier script del panel
-window.__CAPTURED=[]; window.__RENDER=[]; window.__LOG=[]; window.__webviewId__="1";
+window.__CAPTURED=[]; window.__RENDER=[]; window.__LOG=[]; window.__webviewId__="1"; try{ if(window.top!==window.self) console.log("SVCLOC:"+location.search); }catch(e){}
 window.__DEVICE=__DEVICE_JSON__;
 (function(){
   var D=window.__DEVICE;

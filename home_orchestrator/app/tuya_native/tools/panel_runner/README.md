@@ -128,3 +128,19 @@ restricted, 开始/start, Smart/Room/Zone/Pose, 集尘/洗拖布/烘干, 清洁�
 Setup final: location.search = ?path=/pages/home/index&query=deviceId=..&webviewId=1 ; window.__webviewId__="1".
 SIGUIENTE: mergear los ops setData -> árbol completo -> path de vnode de un control (ej. 开始/房间编辑)
 -> postear domEvent tap -> capturar el envelope del comando (roomCleanSet, etc.).
+
+
+## Estado 2026-10-01 (cont.): home renderiza + 59 controles; queda limpiar 1 error residual
+La home REAL renderiza headless y se capturan 80 textos + **59 handlers de tap** (room edit,
+start, Smart/Room/Zone/Pose, base station, clean preference...) = capability/UI model completo.
+ADEMÁS se renderiza un subárbol error-boundary por un error residual: un STORAGE con ámbito
+(clase IV) lanza "id is required" en module-init -> luego `this.storage.get` sobre undefined
+(main.js:1153279) -> rayjs-error-catch. La location.search del iframe es correcta (lleva deviceId),
+así que es un edge de orden-de-carga/id (el singleton de storage se construye y `Dg().query.deviceId`
+no resuelve en ese instante). NO impide el render de la home (ambos árboles están en el stream).
+Herramienta build_tree.js: mergea los ops setData (patchData con claves dotted "root.NS.x") y navega
+node.NS[node.CH[i]] para hallar nodos bind:tap con su path. Hoy el merge queda con el error-boundary
+(último patch en root); para el tap hay que (a) limpiar el error del storage (para árbol limpio) o
+(b) extraer los controles de la home de los ops crudos (59 detectados) con su path dotted->indices.
+SIGUIENTE: resolver el id del storage (probar uid/groupId, o precargar Dg) -> árbol limpio ->
+path del control -> domEvent tap -> capturar envelope del comando.
