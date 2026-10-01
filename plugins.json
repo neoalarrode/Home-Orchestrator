@@ -73,6 +73,9 @@
       "sha256": "2c93c4608fbad55972296becb8c2dffee48885c8e58789c429a48b12bb6e37fa",
       "files": [
         "tuya_plugin.py",
+        "tuya_native_plugin.py",
+        "tuya_native",
+        "tuya_native_templates",
         "tuya",
         "tuya_templates"
       ]
