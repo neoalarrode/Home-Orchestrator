@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home Orchestrator — Tuya</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2024%2024%27%3E%3Crect%20width%3D%2724%27%20height%3D%2724%27%20rx%3D%276%27%20fill%3D%27%23e0a422%27%2F%3E%3Cpath%20d%3D%27M6%204h9a2%202%200%200%201%202%202v9l-7%207-9-9V6a2%202%200%200%201%202-2Zm2.5%202.5a1.5%201.5%200%201%200%200%203%201.5%201.5%200%200%200%200-3Z%27%20fill%3D%27%23000000%27%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="../../shared/design-system.css">
+<style>
+  input[type=text], input[type=password], select {
+    width: 100%; padding: 9px 11px; border-radius: 8px; border: 1px solid var(--glass-border);
+    background: var(--glass-bg); color: var(--text); font-size: .85rem; box-sizing: border-box;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+  .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .device-card { border: 1px solid var(--glass-border); border-radius: var(--radius); padding: 16px 18px; background: var(--glass-bg); box-shadow: var(--shadow); }
+  .device-name { font-family: var(--font-display); font-weight: 700; font-size: 1rem; }
+  .device-meta { font-size: .76rem; color: var(--muted); font-family: var(--font-mono); margin: 4px 0 12px; }
+  .toggle-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: .82rem; }
+  .toggle-row input { width: auto; }
+  .pill-mqtt { background: var(--accent-soft); color: var(--accent); }
+  .pill-internal { background: var(--glass-bg); color: var(--muted); border: 1px solid var(--glass-border); }
+  #qrbox { font-family: var(--font-mono); font-size: 10px; line-height: 10px; white-space: pre; background:#fff; color:#000; padding:10px; border-radius:8px; display:none; overflow:auto; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 9px; font-size: 0.85rem; opacity: 0; transition: opacity .25s; pointer-events:none; }
+  .toast.show { opacity: 0.95; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <h1><span class="brand-mark" aria-hidden="true">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M6 4h9a2 2 0 0 1 2 2v9l-7 7-9-9V6a2 2 0 0 1 2-2Zm2.5 2.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z" fill="currentColor"/>
+      </svg>
+    </span>Home Orchestrator<span class="plugin-badge">Tuya</span></h1>
+    <div class="subtitle">Plugin nativo (reimplementa la app Tuya). Cada dispositivo se consume internamente por Climate/Iluminación y/o se expone a Home Assistant por MQTT.</div>
+  </div>
+  <div class="topbar-right">
+    <nav class="plugin-switch" id="plugin-switch-nav" aria-label="Cambiar de plugin"></nav>
+  </div>
+</div>
+
+<div class="card">
+  <h2><span>Cuenta Tuya</span> <span class="hint" id="account-status">—</span></h2>
+  <p class="help">Inicia sesión con tu cuenta de la app Tuya Smart. Con <strong>email/contraseña</strong> la sesión se renueva sola (como la app). El <strong>QR</strong> es alternativa pero no renueva sesión.</p>
+
+  <div class="grid2">
+    <div>
+      <h3 style="margin:.2rem 0 .6rem">Email / contraseña</h3>
+      <label for="li-cc">País (código)</label>
+      <input type="text" id="li-cc" value="34" placeholder="34">
+      <label for="li-email" style="margin-top:8px;display:block">Email</label>
+      <input type="text" id="li-email" placeholder="tu@email.com" autocomplete="username">
+      <label for="li-pass" style="margin-top:8px;display:block">Contraseña</label>
+      <input type="password" id="li-pass" autocomplete="current-password">
+      <button class="primary" style="margin-top:12px" onclick="loginPassword()">Iniciar sesión</button>
+    </div>
+    <div>
+      <h3 style="margin:.2rem 0 .6rem">Código QR</h3>
+      <p class="help">Genera un QR y escanéalo en la app Tuya Smart: pestaña <em>Yo</em> → icono de escáner.</p>
+      <button onclick="qrStart()">Generar QR</button>
+      <div id="qrbox"></div>
+      <div class="hint" id="qr-status" style="margin-top:8px"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2><span>Dispositivos</span> <span class="hint" id="dev-count">—</span></h2>
+  <p class="help"><span class="pill pill-mqtt">MQTT</span> = expuesto como entidad nativa en Home Assistant. <span class="pill pill-internal">interno</span> = solo consumible por otros plugins (Climate/Iluminación) sin publicar en HA. No son excluyentes. <strong>Avanzado</strong> = expone también los DPs secundarios/avanzados del dispositivo.</p>
+  <div class="device-grid" id="devices"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2200); }
+
+async function api(path, opts){ const r = await fetch("api/"+path, opts); let j={}; try{ j=await r.json(); }catch(e){} if(!r.ok) throw new Error(j.error||("HTTP "+r.status)); return j; }
+
+async function refreshStatus(){
+  try{
+    const s = await api("status");
+    const el = $("#account-status");
+    if(s.session_ready){ el.textContent = "sesión activa" + (s.email?(" · "+s.email):"") + (s.auth_mode==="app_password"?" · auto-renovación":" · QR"); el.style.color="var(--ok,#3a3)"; }
+    else if(!s.creds_ready){ el.textContent = "faltan credenciales de la app (app_secret/bmp/cert en config)"; el.style.color="var(--danger,#c33)"; }
+    else { el.textContent = "sin sesión — inicia sesión"; el.style.color="var(--muted)"; }
+    if(s.email) $("#li-email").value = s.email;
+    if(s.country_code) $("#li-cc").value = s.country_code;
+  }catch(e){ $("#account-status").textContent = "error: "+e.message; }
+}
+
+async function loginPassword(){
+  const body = { email:$("#li-email").value.trim(), password:$("#li-pass").value, country_code:$("#li-cc").value.trim()||"34" };
+  if(!body.email||!body.password){ toast("Email y contraseña requeridos"); return; }
+  try{ await api("login/password",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+       toast("Sesión iniciada"); $("#li-pass").value=""; await refreshStatus(); setTimeout(loadDevices,1500); }
+  catch(e){ toast("Error: "+e.message); }
+}
+
+let qrTimer=null;
+async function qrStart(){
+  if(qrTimer){ clearInterval(qrTimer); qrTimer=null; }
+  $("#qr-status").textContent="Generando…";
+  try{
+    const r = await api("login/qr/start",{method:"POST"});
+    const box=$("#qrbox"); box.style.display="block";
+    // QR en ASCII generado en cliente si hay lib; si no, mostramos la URL.
+    box.textContent = r.url;
+    $("#qr-status").textContent="Escanea en la app Tuya Smart (Yo → escáner). Esperando…";
+    qrTimer=setInterval(async()=>{
+      try{ const p=await api("login/qr/poll");
+        if(p.status==="ok"){ clearInterval(qrTimer); qrTimer=null; $("#qr-status").textContent="¡Sesión iniciada!"; $("#qrbox").style.display="none"; toast("Sesión iniciada (QR)"); await refreshStatus(); setTimeout(loadDevices,1500); }
+      }catch(e){ clearInterval(qrTimer); qrTimer=null; $("#qr-status").textContent="Error: "+e.message; }
+    },2500);
+  }catch(e){ $("#qr-status").textContent="Error: "+e.message; }
+}
+
+async function setFlag(did, key, val){
+  try{ const b={}; b[key]=val; await api("device/"+did+"/flags",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}); toast("Guardado"); }
+  catch(e){ toast("Error: "+e.message); loadDevices(); }
+}
+
+async function loadDevices(){
+  try{
+    const list = await api("devices");
+    $("#dev-count").textContent = list.length + " dispositivo" + (list.length===1?"":"s");
+    const box=$("#devices"); box.innerHTML="";
+    if(!list.length){ box.innerHTML='<p class="help">Sin dispositivos. Inicia sesión y recarga.</p>'; return; }
+    for(const d of list){
+      const card=document.createElement("div"); card.className="device-card";
+      const pill = d.expose_mqtt ? '<span class="pill pill-mqtt">MQTT</span>' : '<span class="pill pill-internal">interno</span>';
+      card.innerHTML = `
+        <div class="device-name">${d.name} ${pill}</div>
+        <div class="device-meta">${d.domain||"?"} · ${d.category||""} · ${d.device_id}</div>
+        <label class="toggle-row"><input type="checkbox" ${d.expose_mqtt?"checked":""} onchange="setFlag('${d.device_id}','expose_mqtt',this.checked)"> Exponer en Home Assistant (MQTT)</label>
+        <label class="toggle-row"><input type="checkbox" ${d.expose_advanced?"checked":""} onchange="setFlag('${d.device_id}','expose_advanced',this.checked)"> Controles avanzados</label>`;
+      box.appendChild(card);
+    }
+  }catch(e){ $("#devices").innerHTML='<p class="help">Error: '+e.message+'</p>'; }
+}
+
+refreshStatus(); loadDevices();
+</script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+"""Catalogo COMPLETO de kits Tuya (los de la app) y su mecanismo/estado."""
+KITS={
+ "DeviceKit":{"mechanism":"dp","ha":"*","status":"done"},
+ "LightKit":{"mechanism":"dp+codec","ha":"light","status":"wip"},
+ "SweeperKit":{"mechanism":"mqtt_req","ha":"vacuum","status":"wip"},
+ "MapKit":{"mechanism":"mqtt_req","ha":"camera","status":"todo"},
+ "CategoryCommonBizKit":{"mechanism":"dp","ha":"*","status":"todo"},
+ "IPCKit":{"mechanism":"stream","ha":"camera","status":"todo"},
+ "P2PKit":{"mechanism":"stream","ha":"camera","status":"todo"},
+ "AVideoKit":{"mechanism":"stream","ha":"camera","status":"todo"},
+ "PlayNetKit":{"mechanism":"stream","ha":"camera","status":"todo"},
+ "MediaKit":{"mechanism":"stream","ha":"media_player","status":"todo"},
+ "MediaPlayerKit":{"mechanism":"stream","ha":"media_player","status":"todo"},
+ "HealthKit":{"mechanism":"dp","ha":"sensor","status":"todo"},
+ "WearKit":{"mechanism":"dp","ha":"sensor","status":"todo"},
+ "AIKit":{"mechanism":"app_infra","ha":None,"status":"todo"},
+ "AIStreamKit":{"mechanism":"stream","ha":None,"status":"todo"},
+ "BaseKit":{"mechanism":"app_infra","ha":None,"status":"done"},
+ "BizKit":{"mechanism":"app_infra","ha":None,"status":"done"},
+ "MiniKit":{"mechanism":"app_infra","ha":None,"status":"done"},
+ "HomeKit":{"mechanism":"app_infra","ha":None,"status":"done"},
+ "ThirdAuthKit":{"mechanism":"app_infra","ha":None,"status":"done"},
+ "ThirdPartyDeviceKit":{"mechanism":"app_infra","ha":None,"status":"todo"},
+}
+def device_kits(): return {k:v for k,v in KITS.items() if v["mechanism"]!="app_infra"}
