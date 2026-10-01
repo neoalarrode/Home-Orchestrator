@@ -22,6 +22,15 @@ def _dp_entity(code,info):
     if typ in ("string","json","raw","bitmap"): return {**base,"domain":"sensor"} if ro else None
     return None
 def build_entities(category,codes,name,device_id,base_topic="tuya_native",state=None,expose_advanced=False):
+    # CABLEADO (2026-10-01): auto-mapeo GENÉRICO desde el thing-model, sin tablas por
+    # dispositivo ni DPs a mano. Detecta el dominio por códigos estándar e ingiere en la
+    # entidad final todo lo compatible (vacuum: succión/habitaciones/batería/estado;
+    # climate: temp/modo/fan/swing/presets; light: brillo/color/color_temp), exponiendo el
+    # resto como entidades por tipo con todas sus características. Ver auto_entities.py.
+    from . import auto_entities
+    return auto_entities.build_entities_auto(category,codes,name,device_id,base_topic)
+
+def _legacy_build_entities(category,codes,name,device_id,base_topic="tuya_native",state=None,expose_advanced=False):
     bt="%s/%s"%(base_topic,device_id); main=CATEGORY_MAIN.get(category,"switch"); ents=[]; consumed=set()
     if main=="climate":
         ents.append({"domain":"climate","role":"main","config":ha_climate.build_climate(device_id,name,codes,bt)}); consumed|={c for c in codes if c in ha_climate.CLIMATE_MAINCODES}
