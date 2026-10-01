@@ -162,3 +162,20 @@ path del control -> domEvent tap -> capturar envelope del comando.
   directo (p.ej. base-station 集尘) tras abrir su popup, o (c) usar el formato ya derivado por fuente
   (panel_commands.js, roomCleanSet verificado) + la captura viva de queries (passwordQry proto64) como
   verificación. Para el PLUGIN, los formatos de comando ya se conocen (descriptor + transporte verificado).
+
+
+## 2026-10-01: disparo del handler — por qué no emite en 1 tap (balance)
+Se probó disparar comandos vía domEvent con 3 formatos de path: plano, paths crudos de los ops
+setData, y SEGMENTADOS por frontera de componente (segpaths.js: parte el path plano en cada nodo
+componente custom -TG *-index-*/c-*-, igual que `$m` que navega tree.children[i] y cambia de
+patchTree en cada Y(r)). NINGUNO emite un comando, y SIN error/toast/elemento-no-encontrado.
+Conclusión: los handlers alcanzables son STATE-SETTERS (seleccionar modo Smart/Room/Zone, abrir
+diálogo base, etc.); el comando MQTT real (roomCleanSet) sale tras un FLUJO MULTI-PASO (seleccionar
+habitaciones -> confirmar -> start) con estado de dispositivo válido, y 开始/Start arrastra deps
+(muebles 3D/mapa). Además el fiber tree/handlers viven en closures privados (scan de window: 1828
+objs, 0 fiber roots) y el hook DevTools inyecta (inject id=1) pero onCommitFiberRoot NO dispara
+(build producción, 2 reconcilers). 
+=> Capturar un envelope EN VIVO por tap requiere: (a) montar también el runtime VIEW real (view.js)
+para obtener DOM + paths de tap reales y simular el flujo completo, o (b) parchear el reconciler.
+Es un sub-esfuerzo grande y NO es necesario para el plugin: el formato roomCleanSet ya está derivado
+por fuente y verificado en prod, y el modelo de capacidades+UI ya se auto-extrae (28 controles).

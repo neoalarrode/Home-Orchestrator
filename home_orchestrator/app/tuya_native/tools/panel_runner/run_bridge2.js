@@ -1,5 +1,13 @@
 // init-script inyectado en el navegador ANTES de cualquier script del panel
-window.__CAPTURED=[]; window.__RENDER=[]; window.__LOG=[]; window.__webviewId__="1"; try{ if(window.top!==window.self){ console.log("SVCLOC:"+location.search);
+window.__CAPTURED=[]; window.__RENDER=[]; window.__LOG=[]; window.__webviewId__="1";
+// React DevTools hook: capturar las raíces de fibras del reconciler del panel
+window.__FIBERROOTS=[];
+window.__REACT_DEVTOOLS_GLOBAL_HOOK__={ supportsFiber:true, renderers:new Map(), _id:0,
+  inject:function(r){ var id=++this._id; this.renderers.set(id,r); try{console.log('HOOK:inject id='+id);}catch(e){} return id; },
+  onScheduleFiberRoot:function(){}, onCommitFiberUnmount:function(){},
+  onCommitFiberRoot:function(id,root){ try{ if(window.__FIBERROOTS.indexOf(root)<0){ window.__FIBERROOTS.push(root); console.log('HOOK:commit root#'+window.__FIBERROOTS.length); } }catch(e){} },
+  onPostCommitFiberRoot:function(){}, checkDCE:function(){} };
+ try{ if(window.top!==window.self){ console.log("SVCLOC:"+location.search);
   var us=new URLSearchParams(location.search); var q=us.get("query")||""; var qq=new URLSearchParams(q);
   console.log("PARSE: query.deviceId="+qq.get("deviceId")+" path="+us.get("path")); } }catch(e){console.log("PARSEERR:"+e.message);}
 window.__DEVICE=__DEVICE_JSON__;
