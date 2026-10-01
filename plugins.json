@@ -67,10 +67,10 @@
       "description": "Puente de ingesta para dispositivos Tuya-por-LAN -- consumo interno por Climate y/o exposicion opcional a HA por MQTT",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "downloadable": true,
-      "tag": "v0.77.69",
-      "sha256": "6d8e922bc77fd38572e88241b004cd63b2ed8cb363d105a6eb8e436fcdc42b10",
+      "tag": "v0.77.70",
+      "sha256": "b501bd2030108fcc4bf6d44c0e9ca99f2715ec58f4bb629986b5f22f917b41d6",
       "files": [
         "tuya_plugin.py",
         "tuya_native_plugin.py",
