@@ -312,9 +312,9 @@ class TuyaNativePlugin(Plugin):
                 return jsonify({"ok": False, "error": "faltan credenciales de la app (app_secret/bmp/cert)"}), 400
             try:
                 user = tauth.login_email_password(c, email, password, country_code=cc)
-            except Exception as e:
+            except Exception:
                 log.exception("login password fallido")
-                return jsonify({"ok": False, "error": str(e)}), 400
+                return jsonify({"ok": False, "error": "login fallido (detalle en los logs del addon)"}), 400
             # Guardar sesion + guardar email/password para re-auth automatica (como la app)
             _persist_auth({"mode": "app_password", "email": email, "password": password,
                            "country_code": cc, "sid": user.get("sid"), "ecode": user.get("ecode"),
@@ -330,8 +330,9 @@ class TuyaNativePlugin(Plugin):
             cc = (sec.get("auth") or {}).get("country_code")
             try:
                 token = tauth.qr_create_token(c, country_code=cc)
-            except Exception as e:
-                return jsonify({"ok": False, "error": str(e)}), 400
+            except Exception:
+                log.exception("login QR start fallido")
+                return jsonify({"ok": False, "error": "no se pudo iniciar el login QR (detalle en los logs)"}), 400
             self._qr = {"token": token, "country_code": cc}
             return jsonify({"ok": True, "token": token, "url": tauth.qr_login_url(token)})
 
@@ -342,9 +343,10 @@ class TuyaNativePlugin(Plugin):
             sec = _section(); c = self._login_client(sec)
             try:
                 user = tauth.qr_poll(c, self._qr["token"], country_code=self._qr.get("country_code"))
-            except Exception as e:
+            except Exception:
+                log.exception("login QR poll fallido")
                 self._qr = None
-                return jsonify({"ok": False, "status": "error", "error": str(e)}), 400
+                return jsonify({"ok": False, "status": "error", "error": "fallo en el login QR (detalle en los logs)"}), 400
             if not user:
                 return jsonify({"ok": True, "status": "pending"})
             _persist_auth({"mode": "app_qr", "sid": user.get("sid"), "ecode": user.get("ecode"),

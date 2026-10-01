@@ -3,7 +3,7 @@ const setd=st.filter(m=>m.data&&m.data.action==="setData");
 // árbol de la home (op con más textos)
 let home=null,best=-1;
 setd.forEach(m=>{let c=0;(function w(o,d){if(!o||typeof o!=="object"||d>50)return;if(o.TX)c++;for(const k in o)try{w(o[k],d+1)}catch(e){}})(m.data.data,0);if(c>best){best=c;home=m.data;}});
-const tree={}; function setDotted(ob,dk,v){const p=dk.split(".");let o=ob;for(let i=0;i<p.length-1;i++){if(o[p[i]]==null)o[p[i]]={};o=o[p[i]];}o[p[p.length-1]]=v;}
+const tree={}; function setDotted(ob,dk,v){const p=dk.split(".");if(p.some(_k=>_k==="__proto__"||_k==="constructor"||_k==="prototype"))return;let o=ob;for(let i=0;i<p.length-1;i++){if(o[p[i]]==null)o[p[i]]={};o=o[p[i]];}o[p[p.length-1]]=v;}
 for(const k in home.data.patchData) setDotted(tree,k,home.data.patchData[k]);
 const root=tree.root;
 function childAt(n,i){const id=n&&n.CH&&n.CH[i];return id!=null&&n.NS?n.NS[id]:null;}

@@ -1,7 +1,7 @@
 const st=require("/tmp/stream.json");
 const setd=st.filter(m=>m.data&&m.data.action==="setData");
 const tree={};
-function setDotted(obj,dotted,val){ const parts=dotted.split("."); let o=obj; for(let i=0;i<parts.length-1;i++){ const k=parts[i]; if(o[k]==null)o[k]={}; o=o[k]; } o[parts[parts.length-1]]=val; }
+function setDotted(obj,dotted,val){ const parts=dotted.split("."); if(parts.some(_k=>_k==="__proto__"||_k==="constructor"||_k==="prototype"))return; let o=obj; for(let i=0;i<parts.length-1;i++){ const k=parts[i]; if(o[k]==null)o[k]={}; o=o[k]; } o[parts[parts.length-1]]=val; }
 setd.forEach(m=>{ const pd=m.data.data&&m.data.data.patchData; if(pd) for(const k in pd) setDotted(tree,k,pd[k]); });
 const root=tree.root;
 console.log("root keys:", root?Object.keys(root):"(no root)");

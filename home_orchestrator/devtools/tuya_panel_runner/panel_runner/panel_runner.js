@@ -3,7 +3,7 @@ const http=require('http'), fs=require('fs'), path=require('path'), {chromium}=r
 const HERE=__dirname, WEB=path.join(HERE,'web');
 const DEVICE=fs.readFileSync(path.join(HERE,'device_full.json'),'utf8');
 const MIME={'.js':'application/javascript','.css':'text/css','.html':'text/html','.json':'application/json','.svg':'image/svg+xml'};
-const server=http.createServer((req,res)=>{ let u=decodeURIComponent(req.url.split('?')[0]); if(u==='/')u='/host.html'; const fp=path.join(WEB,u);
+const server=http.createServer((req,res)=>{ let u=decodeURIComponent(req.url.split('?')[0]); if(u==='/')u='/host.html'; const fp=path.join(WEB,u); if(!path.resolve(fp).startsWith(path.resolve(WEB)+path.sep)){res.writeHead(403);res.end('forbidden');return;}
   fs.readFile(fp,(e,data)=>{ if(e){res.writeHead(404);res.end('nf');return;} res.writeHead(200,{'Content-Type':MIME[path.extname(fp)]||'text/plain'}); res.end(data); }); });
 (async()=>{
   await new Promise(r=>server.listen(0,r)); const port=server.address().port;
