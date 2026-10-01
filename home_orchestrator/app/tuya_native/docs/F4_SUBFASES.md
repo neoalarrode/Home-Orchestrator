@@ -93,3 +93,16 @@ descriptor de comandos leyendo el dispatch de la app en `panel/main.js` (no ejec
 Esto cumple "exactamente como la app, sin encoder a mano" para el dispatch; el render
 headless (F4.3) queda como opción futura solo si se quisiera capturar también la geometría
 de mapa automáticamente.
+
+## Auto-mapeo + BIDIRECCIONALIDAD verificados en Mac (2026-10-01)
+auto_entities.build_entities_auto (entities.build_entities delega en el): auto-mapea entidades
+HA solo del thing-model, ingiriendo lo compatible en la entidad final (vacuum: fan_speed/
+clean_segments/battery/status; climate: temp/modo/fan/swing/presets; light: brillo/color), resto
+por tipo con todas sus caracteristicas. Verificado contra 16 dispositivos reales (sd/dj/kt/qn/ggq/
+cz/msp): cada uno auto-detecta dominio y entidades, cero a mano, cero DPs manuales.
+COMUNICACION BIDIRECCIONAL verificada en vivo (Conga, no-climate):
+- device->HA (dp.get): valores en vivo (sweep_mop_mode=both_work, water_output=high, clean_time=17,
+  clean_area=7, edge_brush_life=5771...) = lo que publica el state_topic (value_json.<code>).
+- HA->device (publish_dps): volume_set 0->20, readback=20 OK, restaurado a 0.
+Llamadas por devId (dp.get/dp.publish) funcionan con la sesion app; group.device.list falla solo
+en 2 hogares compartidos sin acceso (no afecta control). NO desplegado a prod (pendiente OK usuario).
