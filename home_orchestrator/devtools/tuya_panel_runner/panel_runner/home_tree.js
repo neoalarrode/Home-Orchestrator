@@ -6,7 +6,7 @@ setd.forEach(m=>{ let c=0;(function w(o,d){if(!o||typeof o!=="object"||d>50)retu
 console.log("home op jobId="+home.jobId+" txts="+best);
 // aplicar patchData dotted a un árbol nested
 const tree={};
-function setDotted(obj,dotted,val){ const p=dotted.split("."); if(p.some(_k=>_k==="__proto__"||_k==="constructor"||_k==="prototype"))return; let o=obj; for(let i=0;i<p.length-1;i++){ if(o[p[i]]==null)o[p[i]]={}; o=o[p[i]]; } o[p[p.length-1]]=val; }
+function setDotted(obj,dotted,val){ const p=dotted.split("."); let o=obj; for(let i=0;i<p.length;i++){ const k=p[i]; if(k==="__proto__"||k==="constructor"||k==="prototype")return; if(i===p.length-1){ o[k]=val; } else { if(o[k]==null)o[k]={}; o=o[k]; } } }
 const pd=home.data.patchData; for(const k in pd) setDotted(tree,k,pd[k]);
 const root=tree.root;
 console.log("root.CH:",JSON.stringify(root.CH),"root.NS ids:",root.NS?Object.keys(root.NS).length:0);
