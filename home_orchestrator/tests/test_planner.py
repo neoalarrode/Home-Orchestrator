@@ -92,8 +92,12 @@ class PvpcFallback(unittest.TestCase):
         now = datetime(2026, 9, 22, 12, 0)
         today = datetime(2026, 9, 22)
         hourly = {today + timedelta(hours=h): (0.05 if h < 8 else 0.20) for h in range(24)}
+        orig = tariff_source._read_pvpc_hourly_prices
         tariff_source._read_pvpc_hourly_prices = lambda e, n: hourly
-        p = tariff_source.pvpc_sensor_prices("sensor.x", now, 36)
+        try:
+            p = tariff_source.pvpc_sensor_prices("sensor.x", now, 36)
+        finally:
+            tariff_source._read_pvpc_hourly_prices = orig   # no dejar el parche puesto para otras pruebas
         tomorrow_night = p[12 + 2]   # 02:00 de mañana
         self.assertAlmostEqual(tomorrow_night[0], 0.05)
         self.assertEqual(tomorrow_night[1], "valle")

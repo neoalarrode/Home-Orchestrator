@@ -1178,7 +1178,7 @@ es: {
   btn_save_deferrable: "Guardar carga", btn_save_deferrable_changes: "Guardar cambios",
   editing_deferrable: 'Editando "{name}"',
   btn_reschedule: "Reprogramar",
-  kv_switch: "Switch", kv_power_sensor: "Sensor de consumo", kv_duration: "Duración", kv_frequency: "Frecuencia",
+  kv_switch: "Switch", kv_deferrable_power_sensor: "Sensor de consumo", kv_duration: "Duración", kv_frequency: "Frecuencia",
   kv_days: "Días", kv_estimated_energy: "Consumo estimado", kv_auto_energy: "Estimado por histórico",
   freq_once_label: "Puntual", freq_daily_label: "Diaria", freq_multiple_label: "{n} veces al día",
   freq_once_done: "ya ejecutada",
@@ -1527,7 +1527,7 @@ en: {
   btn_save_deferrable: "Save load", btn_save_deferrable_changes: "Save changes",
   editing_deferrable: 'Editing "{name}"',
   btn_reschedule: "Reschedule",
-  kv_switch: "Switch", kv_power_sensor: "Power sensor", kv_duration: "Duration", kv_frequency: "Frequency",
+  kv_switch: "Switch", kv_deferrable_power_sensor: "Power sensor", kv_duration: "Duration", kv_frequency: "Frequency",
   kv_days: "Days", kv_estimated_energy: "Estimated energy", kv_auto_energy: "Estimated from history",
   freq_once_label: "One-off", freq_daily_label: "Daily", freq_multiple_label: "{n} times a day",
   freq_once_done: "already run",
@@ -1597,6 +1597,12 @@ const LOG_LINE_PATTERNS_EN = [
   [/^\[(.+?)\] DESCARGA activada, limite ([\d.]+) W \((.+?), SOC ([\d.]+%|N\/D)\)$/, (m) => `[${m[1]}] DISCHARGE enabled, limit ${m[2]} W (${translateNote(m[3])}, SOC ${m[4]})`],
   [/^\[(.+?)\] descarga BLOQUEADA a 0W \((.+?), SOC ([\d.]+%|N\/D)\)$/, (m) => `[${m[1]}] discharge BLOCKED at 0W (${translateNote(m[2])}, SOC ${m[3]})`],
   [/^\[(.+?)\] sin accion \(SOC ([\d.]+%|N\/D)\)$/, (m) => `[${m[1]}] no action (SOC ${m[2]})`],
+  [/^\[(.+?)\] sin carga propia, el grupo sigue cargando: limite de carga a 0 W \(SOC ([\d.]+%|N\/D)\)$/,
+    (m) => `[${m[1]}] nothing to charge itself, the group keeps charging: charge limit at 0 W (SOC ${m[2]})`],
+  [/^\[(.+?)\] el grupo descarga, limite comun ([\d.]+) W \((.+?): su propio minimo lo aplica el equipo, SOC ([\d.]+%|N\/D)\)$/,
+    (m) => `[${m[1]}] the group is discharging, shared limit ${m[2]} W (${translateNote(m[3])}: its own minimum is enforced by the device, SOC ${m[4]})`],
+  [/^\[(.+?)\] OMITIDA — (.+?) — sin SOC desde hace (\d+) min: carga cortada por seguridad$/,
+    (m) => `[${m[1]}] SKIPPED — ${translateNote(m[2])} — no SOC for ${m[3]} min: charging cut for safety`],
   [/^\[(.+?)\] OMITIDA — (.+)$/, (m) => `[${m[1]}] SKIPPED — ${translateNote(m[2])}`],
   [/^\[(.+?)\] ENCENDIDA \((excedente solar|hora barata), ventana (\d{2}:\d{2})-(\d{2}:\d{2})\)$/,
     (m) => `[${m[1]}] ON (${m[2] === 'excedente solar' ? 'solar surplus' : 'cheap hour'}, window ${m[3]}-${m[4]})`],
@@ -1615,6 +1621,13 @@ function translateLogLine(esLine) {
   if (avisoMatch) {
     const verb = { aplicar: 'apply', encender: 'turn on', apagar: 'turn off' }[avisoMatch[2]];
     line = avisoMatch[1]; suffix = ` — WARNING: could not ${verb} in Home Assistant (${avisoMatch[3]})`;
+  }
+  // Coletilla del antirrebote de ordenes (battery_exec.py): sin quitarla, la
+  // linea no encajaba en ningun patron y se quedaba entera en español.
+  const repeated = ' [misma orden ya enviada hace poco, omitida]';
+  if (line.endsWith(repeated)) {
+    line = line.slice(0, -repeated.length);
+    suffix = ' [same command sent recently, skipped]' + suffix;
   }
   const simPrefix = line.startsWith('[SIMULACION] ');
   if (simPrefix) line = line.slice('[SIMULACION] '.length);
@@ -2575,7 +2588,7 @@ function renderDeferrableLoads() {
       </summary>
       <div class="item-body">
         <div class="kv"><span>${t('kv_switch')}</span><code>${escapeHtml(load.switch_entity)}</code></div>
-        ${load.power_sensor ? `<div class="kv"><span>${t('kv_power_sensor')}</span><code>${escapeHtml(load.power_sensor)}</code></div>` : ''}
+        ${load.power_sensor ? `<div class="kv"><span>${t('kv_deferrable_power_sensor')}</span><code>${escapeHtml(load.power_sensor)}</code></div>` : ''}
         <div class="kv"><span>${t('kv_duration')}</span><code>${load.duration_hours}h</code></div>
         <div class="kv"><span>${t('kv_frequency')}</span><code>${deferrableFrequencyLabel(load)}</code></div>
         ${(load.days_of_week && load.days_of_week.length) ? `<div class="kv"><span>${t('kv_days')}</span><code>${load.days_of_week.map(d => t(DAY_KEYS[d])).join(', ')}</code></div>` : ''}

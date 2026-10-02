@@ -562,6 +562,44 @@ def plan_distribution(batteries: list[Battery], charge_w: float, discharge_w: fl
     return {"action": action, "per_battery": per_battery}
 
 
+def _ecoflow_group_key(b: Battery) -> str | None:
+    """Grupo EcoFlow (unidades STREAM enlazadas) al que pertenece la bateria, o
+    None si no es EcoFlow o no se conoce su grupo."""
+    if b.source != "ecoflow":
+        return None
+    return b.ecoflow_main_sn or None
+
+
+def _ecoflow_group_plan(batteries: list[Battery], distribution: dict) -> dict[str, dict]:
+    """Que hace cada GRUPO EcoFlow este ciclo.
+
+    Las unidades STREAM enlazadas comparten UNA tarea de carga y UNA de
+    descarga (comprobado contra el equipo real: las cuatro unidades devuelven
+    el mismo `discharging_power_limit` y el mismo `charging_task_enabled`). De
+    todo lo que manda `execute()`, solo el limite de potencia de CARGA es de
+    cada unidad; el interruptor de la tarea de carga, el de la de descarga y el
+    limite de descarga son del grupo entero.
+
+    Devuelve, por grupo: `charging` (alguna unidad tiene que cargar) y
+    `discharge_limit_w` (el mayor limite entre las unidades que pueden
+    descargar; 0 si ninguna puede).
+    """
+    by_id = {b.id: b for b in batteries}
+    action = distribution["action"]
+    groups: dict[str, dict] = {}
+    for entry in distribution["per_battery"]:
+        b = by_id.get(entry["id"])
+        key = _ecoflow_group_key(b) if b is not None else None
+        if key is None or entry["soc_pct"] is None:
+            continue
+        g = groups.setdefault(key, {"charging": False, "discharge_limit_w": 0})
+        if action == "charge" and entry["enabled"]:
+            g["charging"] = True
+        elif action == "discharge" and entry["enabled"]:
+            g["discharge_limit_w"] = max(g["discharge_limit_w"], round(entry["power_w"]))
+    return groups
+
+
 def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) -> list[str]:
     """
     Aplica la distribucion a HA. En dry_run solo devuelve lo que HARIA.
@@ -576,6 +614,7 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
     action = distribution["action"]
     by_id = {b.id: b for b in batteries}
     now = datetime.now(timezone.utc)
+    groups = _ecoflow_group_plan(batteries, distribution)
 
     for entry in distribution["per_battery"]:
         b = by_id[entry["id"]]
@@ -621,8 +660,35 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
         # — nunca se mezclan entidades de HA con comandos EcoFlow para la
         # misma bateria.
         is_ecoflow = b.source == "ecoflow"
+        # BUG REAL: cada bateria mandaba su orden como si la tarea fuera suya,
+        # pero en un grupo EcoFlow el interruptor de la tarea de carga y el
+        # limite de descarga son COMUNES (ver `_ecoflow_group_plan`). Una
+        # unidad que se llenaba antes que las demas recibia "sin accion" y eso
+        # apagaba la carga de TODO el grupo; una al minimo ponia el limite de
+        # descarga de todas a 0. Quien ganaba dependia del orden de la lista.
+        # Ahora lo comun se decide una vez por grupo y cada unidad solo ajusta
+        # por su cuenta lo que de verdad es suyo (su limite de carga).
+        group = groups.get(_ecoflow_group_key(b)) if is_ecoflow else None
 
-        if action == "charge" and entry["enabled"]:
+        if group and group["charging"] and not (action == "charge" and entry["enabled"]):
+            signature = ("charge_hold",)
+            line = f"[{b.name}] sin carga propia, el grupo sigue cargando: limite de carga a 0 W (SOC {soc_txt})"
+
+            def apply(b=b):
+                if not b.ecoflow_set_charging_task(power_limit_w=0):
+                    raise RuntimeError("EcoFlow no confirmo el limite de carga a 0")
+        elif group and group["discharge_limit_w"] > 0 and not entry["enabled"]:
+            limit = group["discharge_limit_w"]
+            signature = ("discharge_group", limit)
+            line = (f"[{b.name}] el grupo descarga, limite comun {limit:.0f} W "
+                    f"({entry['note']}: su propio minimo lo aplica el equipo, SOC {soc_txt})")
+
+            def apply(b=b, limit=limit):
+                ok_off = b.ecoflow_set_charging_task(enable=False)
+                ok_on = b.ecoflow_set_discharging_task(enable=True, power_limit_w=limit)
+                if not (ok_off and ok_on):
+                    raise RuntimeError("EcoFlow no confirmo el comando de descarga")
+        elif action == "charge" and entry["enabled"]:
             signature = ("charge", round(power))
             line = f"[{b.name}] CARGAR a {power:.0f} W ({entry['note']}, SOC {soc_txt})"
             if is_ecoflow:
@@ -638,6 +704,8 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
                     if b.charge_power_limit_entity:
                         ha_client.set_number(b.charge_power_limit_entity, power)
         elif action == "discharge" and entry["enabled"]:
+            if group:
+                power = group["discharge_limit_w"]   # limite comun del grupo (ver arriba)
             signature = ("discharge", round(power))
             line = f"[{b.name}] DESCARGA activada, limite {power:.0f} W ({entry['note']}, SOC {soc_txt})"
             if is_ecoflow:

@@ -602,15 +602,14 @@ def _reconcile_ecoflow_ble_addresses(cfg: dict) -> None:
         return  # puente sin instalar o sin nada visible ahora mismo -- se reintenta en el proximo turno
 
     by_sn = {d.get("sn"): d for d in devices if d.get("sn")}
-    changed = False
     for b in due:
         d = by_sn.get(b.get("ecoflow_sn")) or by_sn.get(b.get("ecoflow_main_sn"))
         if d and d.get("address"):
-            b["ecoflow_ble_address"] = d["address"]
-            changed = True
+            # Solo se toca ESTE campo, sobre la config recien leida: guardar el
+            # `cfg` entero (cargado al empezar el ciclo) pisaba lo que se
+            # hubiera cambiado desde la interfaz mientras tanto.
+            config_store.update_battery(cfg, b["id"], {"ecoflow_ble_address": d["address"]})
             log.info(f"[{b.get('name')}] vinculada automaticamente por Bluetooth ({d['address']}) — ya no depende solo de Cloud")
-    if changed:
-        config_store.save_config(cfg)
 
 
 def _reconcile_ecoflow_sn_from_ble(cfg: dict) -> None:
@@ -640,17 +639,51 @@ def _reconcile_ecoflow_sn_from_ble(cfg: dict) -> None:
     if not user_id:
         return
 
-    changed = False
     for b in pending:
         state = ecoflow_ble.get_state(b["ecoflow_ble_address"], user_id)  # cache, no fuerza conexion
         sn = state.get("sn") if state else None
         if sn:
-            b["ecoflow_sn"] = sn
-            b.setdefault("ecoflow_main_sn", sn)
-            changed = True
+            updates = {"ecoflow_sn": sn}
+            if "ecoflow_main_sn" not in b:
+                updates["ecoflow_main_sn"] = sn
+            config_store.update_battery(cfg, b["id"], updates)
             log.info(f"[{b.get('name')}] SN vinculado automaticamente desde BLE ({sn}) — ya puede caer a Cloud si Bluetooth falla")
-    if changed:
-        config_store.save_config(cfg)
+
+
+_ecoflow_main_sn_last_try: dict[str, datetime] = {}
+ECOFLOW_MAIN_SN_RETRY_SECONDS = 600
+
+
+def _reconcile_ecoflow_main_sn(cfg: dict) -> None:
+    """Completa `ecoflow_main_sn` (la unidad principal del grupo) en las
+    baterias EcoFlow cloud/hibridas que se quedaron sin el.
+
+    BUG REAL, visto en produccion: dos de cuatro unidades de un mismo grupo
+    estaban dadas de alta sin `ecoflow_main_sn` (alta por Bluetooth, o la API no
+    respondio en ese momento). Sin el, (1) su respaldo por Cloud no puede mandar
+    ninguna orden -- si Bluetooth falla se quedan sin control -- y (2) no se
+    sabe que pertenecen al mismo grupo que las demas (ver
+    `battery_exec._ecoflow_group_plan`). Antes solo se avisaba en el log; la API
+    lo resuelve a partir del numero de serie de cualquier unidad, asi que se
+    pregunta y se guarda. Como mucho un intento cada 10 minutos por bateria.
+    """
+    access_key, secret_key = cfg.get("ecoflow_access_key"), cfg.get("ecoflow_secret_key")
+    if not (access_key and secret_key):
+        return
+    now = datetime.now()
+    pending = [
+        b for b in cfg["batteries"]
+        if b.get("source") == "ecoflow" and b.get("ecoflow_mode") in ("cloud", "hybrid")
+        and b.get("ecoflow_sn") and not b.get("ecoflow_main_sn")
+        and now - _ecoflow_main_sn_last_try.get(b["id"], datetime.min)
+        >= timedelta(seconds=ECOFLOW_MAIN_SN_RETRY_SECONDS)
+    ]
+    for b in pending:
+        _ecoflow_main_sn_last_try[b["id"]] = now
+        main_sn = ecoflow_cloud.get_main_sn(access_key, secret_key, b["ecoflow_sn"])
+        if main_sn:
+            config_store.update_battery(cfg, b["id"], {"ecoflow_main_sn": main_sn})
+            log.info(f"[{b.get('name')}] unidad principal del grupo resuelta por la API de EcoFlow — ya puede recibir ordenes por Cloud")
 
 
 def _stable_battery_key(b) -> str:
@@ -843,6 +876,7 @@ def run_cycle():
     _ha_ws_client.set_watched_entities(_watched_entities_from_cfg(cfg), key="battery")
     _reconcile_ecoflow_ble_addresses(cfg)
     _reconcile_ecoflow_sn_from_ble(cfg)
+    _reconcile_ecoflow_main_sn(cfg)
     batteries_cfg = cfg["batteries"]
     dry_run = bool(cfg["general"]["dry_run"])
     # (ya no se calcula `cycle_hours`: era el intervalo NOMINAL y su ultimo uso
@@ -1943,11 +1977,49 @@ def api_get_config():
     return jsonify(config_store.load_config())
 
 
+# Claves de la configuracion que el formulario general NO edita: las listas
+# tienen sus propios endpoints (/api/batteries, /api/pv_arrays...) y el resto
+# las escribe el propio backend. Ver `api_save_config`.
+_CONFIG_KEYS_NOT_FROM_FORM = (
+    "batteries", "pv_arrays", "tracked_entities", "deferrable_loads",
+    "climate_orchestrator_zones", "climate_orchestrator_zones_discovered_at",
+    "grafana_last_sync", "grafana_last_sync_error", "_energy_history_backfilled_at",
+)
+
+
+def _merge_form_config(fresh: dict, incoming: dict) -> None:
+    """Aplica sobre `fresh` (recien leido de disco) lo que manda el formulario,
+    dejando intacto lo que el formulario no edita."""
+    for key, value in incoming.items():
+        if key not in _CONFIG_KEYS_NOT_FROM_FORM:
+            fresh[key] = value
+
+
+def _update_config(mutate) -> dict:
+    """Lectura-modificacion-escritura de la config sobre una copia RECIEN
+    leida y bajo el candado del almacen. Devuelve la config ya guardada."""
+    cfg: dict = {}
+    config_store._atomic_update(cfg, mutate)
+    return cfg
+
+
 @app.post("/api/config")
 def api_save_config():
-    cfg = request.get_json(force=True)
-    config_store.save_config(cfg)
-    return jsonify(cfg)
+    """BUG REAL: la pagina manda la configuracion ENTERA que cargo al abrirse
+    y aqui se guardaba tal cual. Todo lo que el backend hubiera escrito desde
+    entonces se perdia: una carga diferible puntual ya ejecutada volvia a
+    `done: false` (y se ejecutaba otra vez), la direccion Bluetooth / el numero
+    de serie vinculados automaticamente desaparecian, igual que la fecha de la
+    ultima sincronizacion de Grafana o las zonas de Climate descubiertas. Con
+    cambiar el idioma bastaba.
+
+    Ahora lo recibido se aplica sobre lo que hay en disco en ese momento, y lo
+    que el formulario no edita (listas con endpoint propio, campos del
+    backend) se conserva."""
+    incoming = request.get_json(force=True)
+    if not isinstance(incoming, dict):
+        return jsonify({"error": "Se esperaba un objeto de configuración."}), 400
+    return jsonify(_update_config(lambda fresh: _merge_form_config(fresh, incoming)))
 
 
 # Nota: /api/core/plugins* y /api/core/backup* YA NO viven aqui -- se
@@ -2065,6 +2137,14 @@ def _force_hybrid_if_ecoflow(array: dict) -> dict:
     return array
 
 
+def _note_grafana_sync(fresh: dict, result: dict) -> None:
+    if result["ok"]:
+        fresh["grafana_last_sync"] = datetime.now().isoformat()
+        fresh["grafana_last_sync_error"] = None
+    else:
+        fresh["grafana_last_sync_error"] = result["error"]
+
+
 def _grafana_sync_best_effort(cfg: dict) -> None:
     """Sincronizacion AUTOMATICA tras un cambio en los arrays solares (ver
     grafana_sync.py: el panel de generación por array queda desfasado si no
@@ -2081,14 +2161,9 @@ def _grafana_sync_best_effort(cfg: dict) -> None:
     except Exception as e:  # nunca dejar que esto tumbe el guardado del array
         log.exception("Fallo inesperado sincronizando el dashboard de Grafana")
         result = {"ok": False, "error": str(e)}
-    fresh_cfg = config_store.load_config()
-    if result["ok"]:
-        fresh_cfg["grafana_last_sync"] = datetime.now().isoformat()
-        fresh_cfg["grafana_last_sync_error"] = None
-    else:
-        fresh_cfg["grafana_last_sync_error"] = result["error"]
+    if not result["ok"]:
         log.warning("Sincronización automática de Grafana fallida: %s", result["error"])
-    config_store.save_config(fresh_cfg)
+    _update_config(lambda fresh: _note_grafana_sync(fresh, result))
 
 
 @app.post("/api/pv_arrays")
@@ -2125,12 +2200,9 @@ def api_grafana_sync():
     devuelve el resultado/error tal cual a quien pulso el boton."""
     cfg = config_store.load_config()
     result = grafana_sync.sync(cfg.get("grafana_url", ""), cfg.get("grafana_token", ""), cfg.get("pv_arrays", []))
-    if result["ok"]:
-        cfg["grafana_last_sync"] = datetime.now().isoformat()
-        cfg["grafana_last_sync_error"] = None
-    else:
-        cfg["grafana_last_sync_error"] = result["error"]
-    config_store.save_config(cfg)
+    # La sincronizacion tarda (llamadas a Grafana): se anota sobre la config
+    # de AHORA, no sobre la leida antes de empezar.
+    _update_config(lambda fresh: _note_grafana_sync(fresh, result))
     return jsonify(result), (200 if result["ok"] else 502)
 
 
@@ -2863,8 +2935,9 @@ def api_energy_backfill_history():
             log.exception("Fallo reescalando los acumulados de bateria tras la reconstruccion")
             aligned["battery"] = False
 
-        cfg["_energy_history_backfilled_at"] = now_iso
-        config_store.save_config(cfg)
+        # La reconstruccion tarda minutos: guardar el `cfg` leido al empezar
+        # pisaria cualquier cambio hecho mientras tanto.
+        _update_config(lambda fresh: fresh.__setitem__("_energy_history_backfilled_at", now_iso))
 
     return jsonify({
         "ok": all_ok,
@@ -2921,10 +2994,11 @@ def api_climate_discover():
     except Exception:
         log.exception("Fallo al buscar zonas de Climate Orchestrator")
         return jsonify({"error": "No se pudo buscar zonas, revisa el log del addon"}), 500
-    cfg = config_store.load_config()
-    cfg["climate_orchestrator_zones"] = zone_ids
-    cfg["climate_orchestrator_zones_discovered_at"] = datetime.now().isoformat()
-    config_store.save_config(cfg)
+    def mutate(fresh):
+        fresh["climate_orchestrator_zones"] = zone_ids
+        fresh["climate_orchestrator_zones_discovered_at"] = datetime.now().isoformat()
+
+    _update_config(mutate)
     return jsonify({"zones": zone_ids, "count": len(zone_ids)})
 
 
@@ -3231,9 +3305,7 @@ def api_ecoflow_resolve_user_id():
     except ecoflow_login.EcoFlowLoginError as e:
         return jsonify({"error": str(e)}), 400
 
-    cfg = config_store.load_config()
-    cfg["ecoflow_user_id"] = user_id
-    config_store.save_config(cfg)
+    _update_config(lambda fresh: fresh.__setitem__("ecoflow_user_id", user_id))
     return jsonify({"user_id": user_id})
 
 

@@ -35,7 +35,7 @@ from datetime import datetime, timedelta
 
 from scheduler import HourPlan
 
-K_LEVELS = 64                # niveles de SOC de la malla
+K_LEVELS = 256               # niveles de SOC de la malla (~36 Wh por nivel con 9,6 kWh)
 MIN_FIRST_STAGE_H = 0.1      # la primera etapa (resto de la hora actual) no baja de 6 min
 
 
@@ -85,7 +85,11 @@ def build_plan_dp(
 
     eta_c = min(1.0, max(0.5, eta_charge))
     eta_d = min(1.0, max(0.5, eta_discharge))
-    wear = max(0.0, wear_eur_per_kwh) / 1000.0            # EUR/Wh almacenado descargado
+    # BUG REAL: el desgaste se pasaba a EUR/Wh (/1000) mientras los precios se
+    # quedan en EUR/kWh multiplicados por Wh -- mil veces menor que el precio,
+    # o sea que no pesaba nada. Todo el coste va en las mismas unidades
+    # (EUR/kWh x Wh); el desgaste tambien.
+    wear = max(0.0, wear_eur_per_kwh)                      # EUR/kWh almacenado descargado
     spread = 0.012 if paced_charging else 0.0
 
     s_now = min(hi, max(lo, current_soc_wh))
@@ -116,6 +120,11 @@ def build_plan_dp(
         e = min(exp_p, p)                                   # vender nunca rinde mas que ahorrar comprar (ni con precio negativo)
         i0 = (load_eff[i] - pv_eff[i]) * dt                 # Wh de red sin bateria (<0 = excedente)
         d_min = -min(max_discharge_w * dt, max(0.0, i0)) / eta_d   # Wh almacenados que pueden salir (no vierte)
+        if p < 0:
+            # Con precio negativo descargar nunca compensa (se cobra por
+            # consumir) y ademas rompe la convexidad del coste en delta=0, que
+            # es lo que hace exacto el retroceso de mas abajo.
+            d_min = 0.0
         e_max_ac = max_charge_w * dt
         e_solar = min(max(0.0, -i0), e_max_ac)              # carga gratis con el excedente
         if allow_grid_charging:
@@ -131,7 +140,12 @@ def build_plan_dp(
         if delta < d_min - 1e-6 or delta > d_max + 1e-6:
             return None
         if delta <= 0.0:
-            return p * (i0 + delta * eta_d) + wear * (-delta)       # delta<0: sale energia (ahorra red)
+            # BUG REAL: con excedente (i0 < 0) y sin tocar la bateria esto valoraba
+            # el vertido al precio de COMPRA (p * i0) en vez de al de venta, asi
+            # que "no hacer nada" en una hora de sol parecia mucho mas rentable
+            # que cargar con ese mismo sol (y el coste dejaba de ser convexo).
+            g = i0 + delta * eta_d                                  # delta<0: sale energia (ahorra red)
+            return (p * g if g > 0 else e * g) + wear * (-delta)
         ec = delta / eta_c                                          # energia AC que entra
         g = i0 + ec
         base = p * g if g > 0 else e * g
@@ -139,9 +153,15 @@ def build_plan_dp(
         pen = spread * max(p, 1e-3) * ec * (ec / e_max_ac if e_max_ac > 0 else 0.0)
         return base + pen
 
-    # unidades enteras por etapa
+    # Unidades ENTERAS de malla que caben en el margen de la etapa (hacia abajo).
+    # BUG REAL, encontrado comparando contra fuerza bruta: se redondeaba al mas
+    # cercano y el ultimo escalon se recortaba al limite real -- ese escalon
+    # "valia" un nivel entero de SOC pero costaba solo la fraccion recortada, el
+    # coste dejaba de ser convexo y la mezcla de incrementos ordenados (que solo
+    # es exacta con secuencias convexas) lo colocaba el primero. El plan dejaba
+    # de cargar en horas baratas (hasta 7 centimos por plan en las pruebas).
     def units(x):
-        return int(round(x / h))
+        return int(x / h + 1e-9)
 
     # ---- retroceso: V[i][k] (k = 0..K) valor de llegar a la etapa i con SOC = lo + k*h
     # terminal: valor lineal de la energia que sobra (evita vaciar la bateria en el ultimo tramo)
@@ -151,7 +171,9 @@ def build_plan_dp(
         v_term = eta_d * sum(prices[i] * weights[i] for i in range(horizon)) / wsum
     else:
         v_term = eta_d * (sum(prices) / len(prices))
-    vt_per_wh = v_term
+    # La energia que sobra tambien pagara desgaste cuando se descargue: sin
+    # restarlo aqui, guardarla siempre parecia mejor que usarla hoy al mismo precio.
+    vt_per_wh = max(0.0, v_term - wear)
     V = [None] * (horizon + 1)
     V[horizon] = [-vt_per_wh * (k * h) for k in range(K + 1)]
     for i in range(horizon - 1, -1, -1):

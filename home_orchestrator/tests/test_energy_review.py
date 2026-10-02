@@ -465,5 +465,264 @@ class EcoFlowStartBackoff(unittest.TestCase):
             ecoflow_cloud._clients.pop(key, None)
 
 
+class _FakeEcoFlow(battery_exec.Battery):
+    """Bateria EcoFlow que apunta lo que se le manda a un "equipo" compartido
+    por grupo: interruptores de tarea y limite de descarga comunes, limite de
+    carga por unidad -- igual que las STREAM enlazadas de verdad."""
+    device: dict = None
+
+    def ecoflow_set_charging_task(self, enable=None, power_limit_w=None, target_soc=None):
+        if enable is not None:
+            self.device["charge_enabled"] = enable
+        if power_limit_w is not None:
+            self.device["charge_limit"][self.id] = power_limit_w
+        return True
+
+    def ecoflow_set_discharging_task(self, enable=None, power_limit_w=None):
+        if enable is not None:
+            self.device["discharge_enabled"] = enable
+        if power_limit_w is not None:
+            self.device["discharge_limit"] = power_limit_w
+        return True
+
+
+class EcoFlowGroupCommands(unittest.TestCase):
+    """Las unidades de un grupo EcoFlow comparten la tarea de carga y el limite
+    de descarga: una unidad sin nada que hacer no puede apagar a las demas, sea
+    cual sea su posicion en la lista."""
+
+    def _run(self, action, entries, order):
+        device = {"charge_enabled": None, "discharge_enabled": None, "discharge_limit": None, "charge_limit": {}}
+        bats = []
+        for bid in order:
+            b = _FakeEcoFlow(id=bid, name=bid.upper(), capacity_wh=2400, source="ecoflow",
+                             ecoflow_mode="hybrid", ecoflow_sn=bid, ecoflow_main_sn="MAIN")
+            b.device = device
+            bats.append(b)
+        dist = {"action": action, "per_battery": [dict(e) for bid in order for e in entries if e["id"] == bid]}
+        battery_exec._last_command.clear()
+        battery_exec._soc_unavailable_since.clear()
+        lines = battery_exec.execute(bats, dist, dry_run=False)
+        return device, lines
+
+    def test_full_unit_does_not_stop_the_group_from_charging(self):
+        entries = [
+            {"id": "a", "name": "A", "soc_pct": 90.0, "power_w": 600, "enabled": True, "note": "reparto por capacidad"},
+            {"id": "b", "name": "B", "soc_pct": 100.0, "power_w": 0, "enabled": False, "note": "reparto por capacidad"},
+            {"id": "c", "name": "C", "soc_pct": 95.0, "power_w": 300, "enabled": True, "note": "reparto por capacidad"},
+        ]
+        for order in (["a", "b", "c"], ["a", "c", "b"], ["b", "a", "c"]):   # la llena en medio, al final, al principio
+            device, _ = self._run("charge", entries, order)
+            self.assertTrue(device["charge_enabled"], order)
+            self.assertFalse(device["discharge_enabled"], order)
+            self.assertEqual(device["charge_limit"], {"a": 600, "b": 0, "c": 300}, order)
+
+    def test_unit_at_minimum_does_not_zero_the_group_discharge(self):
+        entries = [
+            {"id": "a", "name": "A", "soc_pct": 40.0, "power_w": 1200, "enabled": True, "note": "limite al maximo declarado"},
+            {"id": "b", "name": "B", "soc_pct": 3.0, "power_w": 0, "enabled": False, "note": "sin margen (al minimo)"},
+        ]
+        for order in (["a", "b"], ["b", "a"]):
+            device, lines = self._run("discharge", entries, order)
+            self.assertTrue(device["discharge_enabled"], order)
+            self.assertEqual(device["discharge_limit"], 1200, order)
+            self.assertFalse(device["charge_enabled"], order)
+            self.assertTrue(any("limite comun 1200 W" in ln for ln in lines))
+
+    def test_nobody_can_discharge_blocks_the_group(self):
+        entries = [
+            {"id": "a", "name": "A", "soc_pct": 3.0, "power_w": 0, "enabled": False, "note": "sin margen (al minimo)"},
+            {"id": "b", "name": "B", "soc_pct": 3.0, "power_w": 0, "enabled": False, "note": "sin margen (al minimo)"},
+        ]
+        device, _ = self._run("discharge", entries, ["a", "b"])
+        self.assertEqual(device["discharge_limit"], 0)
+        self.assertFalse(device["charge_enabled"])
+
+    def test_idle_is_unchanged(self):
+        entries = [{"id": x, "name": x, "soc_pct": 50.0, "power_w": 0, "enabled": False, "note": "sin accion"} for x in "ab"]
+        device, _ = self._run("idle", entries, ["a", "b"])
+        self.assertFalse(device["charge_enabled"])
+        self.assertTrue(device["discharge_enabled"])
+        self.assertEqual(device["discharge_limit"], 0)
+
+    def test_unit_without_soc_is_left_out_of_the_group_decision(self):
+        entries = [
+            {"id": "a", "name": "A", "soc_pct": None, "power_w": 0, "enabled": False, "note": "sin SOC"},
+            {"id": "b", "name": "B", "soc_pct": 50.0, "power_w": 500, "enabled": True, "note": "reparto por capacidad"},
+        ]
+        device, _ = self._run("charge", entries, ["a", "b"])
+        self.assertTrue(device["charge_enabled"])
+        self.assertEqual(device["charge_limit"], {"b": 500})      # a "a" no se le manda nada
+
+    def test_batteries_without_group_keep_their_own_commands(self):
+        calls = []
+        ha = battery_exec.ha_client
+        orig = (ha.turn_on, ha.turn_off, ha.set_number)
+        ha.turn_on = lambda e: calls.append(("on", e))
+        ha.turn_off = lambda e: calls.append(("off", e))
+        ha.set_number = lambda e, v: calls.append(("num", e, v))
+        try:
+            bats = [battery_exec.Battery(id=x, name=x, capacity_wh=2400, soc_sensor="s", charge_switch=f"switch.c{x}",
+                                         discharge_switch=f"switch.d{x}") for x in "ab"]
+            dist = {"action": "charge", "per_battery": [
+                {"id": "a", "name": "a", "soc_pct": 50.0, "power_w": 600, "enabled": True, "note": "n"},
+                {"id": "b", "name": "b", "soc_pct": 100.0, "power_w": 0, "enabled": False, "note": "n"}]}
+            battery_exec._last_command.clear()
+            battery_exec.execute(bats, dist, dry_run=False)
+        finally:
+            ha.turn_on, ha.turn_off, ha.set_number = orig
+        self.assertIn(("on", "switch.ca"), calls)
+        self.assertIn(("off", "switch.cb"), calls)                # la llena apaga SU switch, como siempre
+
+
+class ConfigSaveKeepsServerSideFields(unittest.TestCase):
+    """Guardar el formulario no puede pisar lo que el backend escribio despues
+    de que la pagina cargase su copia de la configuracion."""
+
+    def setUp(self):
+        import config_store
+        self.config_store = config_store
+        self._orig_path = config_store.CONFIG_PATH
+        config_store.CONFIG_PATH = os.path.join(tempfile.mkdtemp(prefix="ho_cfg_"), "config.json")
+        import main
+        self.main = main
+
+    def tearDown(self):
+        self.config_store.CONFIG_PATH = self._orig_path
+
+    def test_stale_page_copy_does_not_undo_backend_changes(self):
+        cs = self.config_store
+        cfg = cs.load_config()
+        load = cs.add_deferrable_load(cfg, {"name": "Lavavajillas", "switch": "switch.x", "frequency": "once"})
+        bat = cs.add_battery(cfg, {"name": "B1", "capacity_wh": 2400, "source": "ecoflow"})
+        page_copy = json.loads(json.dumps(cs.load_config()))          # lo que cargo la pagina
+
+        # el backend trabaja mientras la pagina sigue abierta
+        cs.update_deferrable_load(cfg, load["id"], {"done": True})
+        cs.update_battery(cfg, bat["id"], {"ecoflow_ble_address": "AA:BB"})
+        self.main._update_config(lambda fresh: fresh.__setitem__("grafana_last_sync", "2026-10-02T10:00:00"))
+
+        # el usuario cambia el idioma y la tarifa y guarda
+        page_copy["general"]["language"] = "en"
+        page_copy["tariff"]["valle_price"] = 0.05
+        with self.main.app.test_request_context("/api/config", method="POST", json=page_copy):
+            r = self.main.api_save_config()
+        self.assertEqual(r.status_code, 200)
+
+        saved = cs.load_config()
+        self.assertEqual(saved["general"]["language"], "en")
+        self.assertEqual(saved["tariff"]["valle_price"], 0.05)
+        self.assertTrue(saved["deferrable_loads"][0]["done"])
+        self.assertEqual(saved["batteries"][0]["ecoflow_ble_address"], "AA:BB")
+        self.assertEqual(saved["grafana_last_sync"], "2026-10-02T10:00:00")
+        self.assertEqual(r.get_json()["batteries"][0]["ecoflow_ble_address"], "AA:BB")
+
+    def test_rejects_something_that_is_not_a_config(self):
+        with self.main.app.test_request_context("/api/config", method="POST", json=["no", "es", "config"]):
+            _, status = self.main.api_save_config()
+        self.assertEqual(status, 400)
+
+
+class PluginFlushesOnShutdown(unittest.TestCase):
+    def test_pending_data_reaches_disk(self):
+        import battery_plugin
+        path = os.path.join(tempfile.mkdtemp(prefix="ho_flush_"), "x.json")
+        json_store.save(path, {"v": 1})          # primera escritura: va a disco
+        json_store.save(path, {"v": 2})          # segunda: se queda en memoria
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"v": 1})
+        battery_plugin.BatteryPlugin().shutdown()
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"v": 2})
+
+
+class DpPlannerIsOptimal(unittest.TestCase):
+    """El motor "dp" contra una busqueda exhaustiva sobre una malla fina."""
+
+    ETA = 0.94
+
+    def _stages(self, now, pv, load, prices, mc, md, contracted):
+        frac = 1 - (now.minute * 60) / 3600
+        out = []
+        for i in range(len(pv)):
+            dt = frac if i == 0 else 1.0
+            p = prices[i][0]
+            e = min(0.04, p)
+            i0 = (load[i] - pv[i]) * dt
+            d_min = 0.0 if p < 0 else -min(md * dt, max(0, i0)) / self.ETA
+            emax = mc * dt
+            es = min(max(0, -i0), emax)
+            gc = max(0, contracted - load[i]) if contracted > 0 else mc
+            eg = max(0, min(emax - es, gc * dt))
+            out.append((i0, p, e, d_min, (es + eg) * self.ETA))
+        return out
+
+    def _cost(self, st, delta):
+        i0, p, e, d_min, d_max = st
+        if delta < d_min - 1e-6 or delta > d_max + 1e-6:
+            return None
+        if delta <= 0:
+            g = i0 + delta * self.ETA
+            return (p * g if g > 0 else e * g) + 0.01 * (-delta)
+        g = i0 + delta / self.ETA
+        return p * g if g > 0 else e * g
+
+    def test_matches_exhaustive_search(self):
+        import random
+        import scheduler_dp
+        lo, hi = 288.0, 9600.0
+        for seed in (9, 17, 29, 47):                 # 29 y 47: los que fallaban antes del arreglo
+            r = random.Random(seed)
+            n = r.choice([6, 12, 24])
+            mc, md = r.choice([1200, 4800]), r.choice([1200, 4800])
+            pv = [max(0.0, r.gauss(300, 500)) for _ in range(n)]
+            load = [max(0.0, r.gauss(700, 500)) for _ in range(n)]
+            prices = [(round(r.uniform(0.03, 0.30), 3), "llano") for _ in range(n)]
+            contracted = r.choice([0, 5000])
+            soc0 = r.uniform(lo, hi)
+            now = datetime(2026, 9, 22, 10, r.choice([0, 0, 20, 45]))
+            plan, _ = scheduler_dp.build_plan_dp(now, pv, load, soc0, hi, mc, md, lo, prices, contracted_power_w=contracted)
+            st = self._stages(now, pv, load, prices, mc, md, contracted)
+            wts = [max(0, load[i] - pv[i]) for i in range(n)]
+            vt = max(0.0, self.ETA * sum(prices[i][0] * wts[i] for i in range(n)) / sum(wts) - 0.01)
+
+            s, plan_cost = soc0, 0.0
+            for i, hp in enumerate(plan):
+                c = self._cost(st[i], hp.soc_wh - s)
+                self.assertIsNotNone(c, f"paso inviable (semilla {seed}, hora {i})")
+                self.assertTrue(lo - 1e-6 <= hp.soc_wh <= hi + 1e-6)
+                plan_cost += c
+                s = hp.soc_wh
+            plan_cost -= vt * (s - lo)
+
+            levels = 240
+            step = (hi - lo) / levels
+            value = [-vt * (k * step) for k in range(levels + 1)]
+            for i in range(n - 1, -1, -1):
+                down, up = int(-st[i][3] / step), int(st[i][4] / step)
+                value = [min(self._cost(st[i], m * step) + value[k + m]
+                             for m in range(max(-down, -k), min(up, levels - k) + 1))
+                         for k in range(levels + 1)]
+            x = (soc0 - lo) / step
+            k = min(levels - 1, int(x))
+            best = value[k] * (1 - (x - k)) + value[k + 1] * (x - k)
+            # precios en EUR/kWh x Wh => milesimas de euro; se tolera 1 centimo
+            self.assertLessEqual(plan_cost, best + 10.0, f"semilla {seed}: {plan_cost:.1f} frente a {best:.1f}")
+
+    def test_solar_surplus_is_stored_when_it_pays_off(self):
+        """Antes el excedente sin tocar la bateria se valoraba a precio de compra
+        y el motor preferia verterlo."""
+        import scheduler_dp
+        now = datetime(2026, 9, 22, 12, 0)
+        # comprar a 0,29 para gastar a 0,30 no compensa (perdidas): solo sol
+        prices = [(0.29, "llano")] * 3 + [(0.30, "punta")] * 3 + [(0.08, "valle")] * 3
+        pv = [1500.0] * 3 + [0.0] * 6
+        load = [300.0] * 3 + [900.0] * 6
+        plan, _ = scheduler_dp.build_plan_dp(now, pv, load, 1000, 9600, 4800, 4800, 288, prices)
+        self.assertGreater(plan[0].charge_w, 1000)
+        self.assertEqual(plan[0].charge_source, "solar")
+        self.assertGreater(plan[3].discharge_w, 800)
+
+
 if __name__ == "__main__":
     unittest.main()

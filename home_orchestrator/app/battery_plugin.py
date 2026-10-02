@@ -13,6 +13,7 @@ fachada sobre codigo que ya esta en produccion, no una reescritura.
 
 from __future__ import annotations
 
+import json_store
 import main as battery_main
 from plugin_base import Plugin
 
@@ -20,7 +21,7 @@ from plugin_base import Plugin
 class BatteryPlugin(Plugin):
     slug = "battery"
     name = "Energy Orchestrator"
-    version = "0.14.12"
+    version = "0.14.13"
     serves_root = True
 
     def flask_app(self):
@@ -28,3 +29,10 @@ class BatteryPlugin(Plugin):
 
     def start_background_threads(self) -> None:
         battery_main.start_background_threads()
+
+    def shutdown(self) -> None:
+        # Los acumulados (energia, ahorro, historico...) viven en memoria y se
+        # vuelcan a disco cada pocos segundos (ver json_store.py). El nucleo
+        # termina con `os._exit`, que NO ejecuta los `atexit`: sin esto cada
+        # reinicio del add-on perdia lo acumulado desde el ultimo volcado.
+        json_store.flush_all()

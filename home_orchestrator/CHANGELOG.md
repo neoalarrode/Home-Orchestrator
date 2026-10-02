@@ -1,5 +1,17 @@
 # Changelog
 
+## battery 0.14.13
+
+Tercera tanda de la revision de Energy: lo que salio al leer entero el nucleo, el puente Bluetooth y el protocolo de las STREAM.
+
+- Grupos EcoFlow: las unidades enlazadas comparten UNA tarea de carga y UNA de descarga (comprobado contra el equipo: las cuatro devuelven el mismo limite de descarga y el mismo estado de la tarea de carga); solo el limite de potencia de carga es de cada unidad. Energy mandaba cada orden como si fuera individual: una unidad que se llenaba antes recibia "sin accion" y eso apagaba la carga de todo el grupo, y una al minimo ponia a 0 el limite de descarga de todas. Quien ganaba dependia del orden de la lista. Ahora lo comun se decide una vez por grupo y cada unidad solo ajusta su propio limite de carga.
+- Unidad principal del grupo: una bateria EcoFlow cloud/hibrida dada de alta sin `ecoflow_main_sn` no podia recibir ordenes por Cloud (se quedaba sin control si fallaba Bluetooth) y no se sabia a que grupo pertenecia. Solo se avisaba en el log; ahora se le pregunta a la API de EcoFlow y se guarda.
+- Guardar la configuracion: la pagina manda la configuracion entera que cargo al abrirse y se guardaba tal cual, pisando lo que el backend hubiera escrito despues (una carga diferible puntual ya ejecutada volvia a quedar pendiente, se perdian la direccion Bluetooth o el numero de serie vinculados solos, la fecha de sincronizacion de Grafana, las zonas de Climate). Bastaba con cambiar el idioma. Ahora lo recibido se aplica sobre lo que hay en disco y lo que el formulario no edita se conserva. Los guardados del propio backend (vinculaciones automaticas, Grafana, reconstruccion del historial, zonas de Climate, userId) escriben solo su campo sobre la configuracion recien leida.
+- Parada ordenada: los acumulados se vuelcan a disco al parar el add-on. El nucleo termina con `os._exit`, que no ejecuta los `atexit`, asi que cada reinicio perdia lo acumulado desde el ultimo volcado (hasta 10 s).
+- Motor `dp` (opcional), comparado contra una busqueda exhaustiva: (1) el excedente solar sin tocar la bateria se valoraba al precio de compra, asi que verterlo parecia mejor que guardarlo; (2) el ultimo escalon de cada hora se redondeaba hacia arriba y se recortaba, lo que rompia la convexidad que hace exacto el calculo y dejaba de cargar en horas baratas; (3) el desgaste estaba en unidades mil veces menores que el precio y no pesaba; (4) con precio negativo ya no se plantea descargar. La malla pasa de 64 a 256 niveles. Ahora iguala al optimo exhaustivo en los escenarios de prueba.
+- Interfaz: la clave de traduccion `kv_power_sensor` estaba repetida y el sensor de potencia de una bateria salia rotulado como "Sensor de consumo". En ingles, las lineas del registro con la coletilla de orden repetida y las del corte de carga por falta de SOC se quedaban en español.
+- Pruebas: una prueba dejaba puesto un parche sobre `tariff_source` y hacia fallar a otra segun el orden de ejecucion.
+
 ## battery 0.14.12
 
 Segunda tanda de la revision completa de Energy: lo que en la 0.14.11 quedo localizado sin corregir.
