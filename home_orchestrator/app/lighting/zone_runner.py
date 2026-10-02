@@ -74,6 +74,10 @@ COLOR_TEMP_TOLERANCE_KELVIN = 150
 # se respeta (ver `_verify_and_detect_overrides`).
 APPLY_MAX_RETRIES = 3
 APPLY_SETTLE_SECONDS = 8.0
+# Un reintento solo tiene sentido justo despues de la orden original. Pasado
+# este tiempo ya no se reenvia nada: lo que la luz tenga entonces es su estado
+# de verdad (la apago alguien, cambio la regla...), no un envio perdido.
+APPLY_RETRY_WINDOW_SECONDS = 60.0
 
 # Segundo escudo contra el parpadeo por lux (ver ZoneRunner._lux_dark_enough_debounced):
 # ademas de la histeresis de schedule.lux_dark_enough, un cambio de estado
@@ -360,6 +364,12 @@ class ZoneRunner:
             self.ws.call_service("light", "turn_off", target={"entity_id": entity_id})
         except Exception:
             log.exception("Zona lighting %s: fallo apagando %s", self.zone_id, entity_id)
+        finally:
+            # La apagamos nosotros: la ultima orden de encendido/ajuste deja de
+            # estar "pendiente de verificar". Sin esto, la verificacion la veia
+            # apagada y sin confirmar y la volvia a ENCENDER como si el
+            # encendido hubiera fallado.
+            (self._state.get("commanded") or {}).pop(entity_id, None)
 
     def _apply_values(self, entity_id: str, values: dict | None, turning_on: bool, brightness_only: bool = False,
                        hs: tuple[float, float] | None = None, on_off_only: bool = False) -> None:
@@ -401,6 +411,7 @@ class ZoneRunner:
             "brightness_pct": brightness_pct,
             "color_temp_kelvin": color_temp_kelvin,
             "ts": time.time(),
+            "first_ts": time.time(),   # el de la orden original; `ts` avanza con cada reintento
             # Intento fresco: 0 reintentos consumidos. La verificacion decide,
             # mirando el estado REAL, si hace falta reintentar (hasta
             # APPLY_MAX_RETRIES) -- tanto si el envio lanzo como si el equipo
@@ -526,7 +537,8 @@ class ZoneRunner:
             return True
         return False
 
-    def _verify_and_detect_overrides(self, states: dict[str, dict], entity_ids: set[str]) -> None:
+    def _verify_and_detect_overrides(self, states: dict[str, dict], entity_ids: set[str],
+                                     retry_ids: set[str] = frozenset()) -> None:
         """Comprueba, para cada luz que gestionamos, si el ULTIMO cambio que le
         mandamos se aplico de verdad -- y actua segun el caso. Resuelve dos
         bugs reales confirmados en produccion:
@@ -545,7 +557,17 @@ class ZoneRunner:
         tocado alguien -> respetar (marcar override). Una luz APAGADA que YA
         habiamos confirmado encendida se trata como apagado manual (no se
         reintenta encenderla); si nunca llego a confirmarse, es un encendido
-        fallido y SI se reintenta."""
+        fallido y SI se reintenta.
+
+        `retry_ids`: las luces que la zona QUIERE encendidas ahora mismo (las de
+        la regla activa, y solo si no hay luz natural de sobra). Fuera de ese
+        conjunto no se reenvia nada. BUG REAL de la primera version, visto en
+        produccion nada mas desplegarla: se reintentaba sobre TODAS las luces de
+        la zona, y una luz apagada con una orden antigua guardada (de antes de
+        actualizar, o de una regla que ya no aplica) contaba como "encendido
+        fallido" -- se encendia sola a plena luz del dia y la zona la volvia a
+        apagar. Ademas un reintento solo se hace dentro de
+        `APPLY_RETRY_WINDOW_SECONDS` desde la orden original."""
         respect_manual = self.zone.get("respect_manual_changes", True)
         commanded = self._state.get("commanded") or {}
         overrides = self._state.setdefault("manual_override", {})
@@ -571,17 +593,33 @@ class ZoneRunner:
                 # encendido fallo -> cae al reintento de abajo.
                 if cmd.get("confirmed"):
                     continue
-            elif respect_manual and cmd.get("pre_on") and self._moved_from_pre(cmd, vals):
-                # Encendida pero en otro valor distinto del previo: cambio
-                # manual -> respetar hasta "salir y volver" (ver bucle de
-                # presencia en _decide_and_act_locked, que limpia overrides al
-                # quedarse la zona vacia).
-                overrides[entity_id] = True
-                cmd["attempts"] = 0
-                continue
+            elif respect_manual:
+                # Encendida y no coincide con lo mandado. Solo hay UN caso en el
+                # que se puede afirmar que es un envio nuestro que no se aplico:
+                # la luz ya estaba encendida cuando lo mandamos y sigue
+                # exactamente en el valor que tenia entonces. Cualquier otro
+                # (se ha movido a otro valor, la encendimos nosotros y no hay
+                # valor previo con el que comparar, o la orden guardada es de
+                # una version anterior) se trata como siempre se trato: la han
+                # tocado a mano -> se respeta hasta "salir y volver" (ver bucle
+                # de presencia en _decide_and_act_locked, que limpia overrides
+                # al quedarse la zona vacia).
+                still_at_pre = (bool(cmd.get("pre_on")) and cmd.get("first_ts") is not None
+                                and not self._moved_from_pre(cmd, vals))
+                if not still_at_pre:
+                    if now - cmd.get("ts", 0) < APPLY_SETTLE_SECONDS:
+                        continue  # recien mandado: puede estar a media transicion
+                    overrides[entity_id] = True
+                    cmd["attempts"] = 0
+                    continue
 
             # Fallo de aplicacion (sigue en su valor previo, el envio fallo, o
             # sigue apagada sin haberse confirmado nunca): reintento acotado.
+            if entity_id not in retry_ids:
+                continue  # la zona no la quiere encendida ahora: nada que reenviar
+            first_ts = cmd.get("first_ts")
+            if first_ts is None or now - first_ts > APPLY_RETRY_WINDOW_SECONDS:
+                continue  # orden antigua (o de una version anterior): ya no es un envio perdido
             if now - cmd.get("ts", 0) < APPLY_SETTLE_SECONDS:
                 continue  # dar tiempo a que la transicion/nube reflejen el cambio
             attempts = cmd.get("attempts", 0)
@@ -862,12 +900,6 @@ class ZoneRunner:
             self._apply_plant_mode(cfg, states, plant_mode_active, plant_lights)
             return
 
-        # Verificacion + reintento del ultimo cambio, y deteccion de cambios
-        # manuales -- solo con la zona OCUPADA: cuando esta vacia las luces se
-        # apagan (arriba) y los overrides ya se han olvidado en el flanco
-        # ocupada->vacia, asi que no hay nada que verificar ni reintentar.
-        self._verify_and_detect_overrides(states, all_zone_lights)
-
         selected = rules.select_rule(self._rules, states)
         selected_name = selected.get("name") if selected else None
         selected_lights = set(selected.get("lights") or []) if selected else set()
@@ -905,6 +937,12 @@ class ZoneRunner:
         # se re-enciende sola una luz que alguien apago a mano.
         just_got_dark_enough = dark_enough and self._state.get("lux_dark_enough") is False
         self._state["lux_dark_enough"] = dark_enough
+
+        # Verificacion del ultimo cambio y deteccion de cambios manuales, ANTES
+        # de apagar/aplicar nada este ciclo. Se miran todas las luces de la
+        # zona, pero solo se REENVIA a las que la zona quiere encendidas ahora.
+        self._verify_and_detect_overrides(
+            states, all_zone_lights, retry_ids=selected_lights if dark_enough else set())
 
         transitioned = (not was_occupied) or (selected_name != self.active_rule) or just_got_dark_enough
         self.active_rule = selected_name

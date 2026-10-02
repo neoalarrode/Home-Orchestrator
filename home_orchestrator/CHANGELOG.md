@@ -1,5 +1,11 @@
 # Changelog
 
+## lighting 0.7.24
+
+- La 0.7.23 se retiro a los pocos minutos de desplegarla: su verificacion reintentaba sobre TODAS las luces de la zona, y una luz apagada con una orden antigua guardada (de antes de actualizar, o de una regla que ya no aplicaba) contaba como "encendido fallido" y se reencendia sola; la zona la volvia a apagar al momento. Ahora solo se reenvia a las luces que la zona quiere encendidas en ese instante (las de la regla activa, y solo si no hay luz natural de sobra), solo durante el primer minuto tras la orden original, y nunca a partir de una orden guardada por una version anterior. Cuando es la propia zona la que apaga una luz, su orden pendiente se olvida.
+- Un cambio manual se sigue detectando como antes (la luz no coincide con lo ultimo mandado); lo unico que cambia es que, si la luz ya estaba encendida y sigue exactamente en el valor que tenia, se trata como envio no aplicado y se reintenta.
+- Comprobado antes de publicar con el motor real de zonas contra el estado guardado de produccion: mismas ordenes que la 0.7.22 en el arranque, y la 0.7.23 reproduce el fallo en esa misma simulacion.
+
 ## climate 0.7.8 + lighting 0.7.23
 
 Climate

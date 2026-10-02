@@ -87,12 +87,12 @@ class LightingVerifyRetry(unittest.TestCase):
         self.assertEqual(s.device["brightness_pct"], 50)
         # antes de la ventana de asentamiento: no reintenta
         self.clock.advance(zr.APPLY_SETTLE_SECONDS - 1)
-        s._verify_and_detect_overrides({}, {"L"})
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
         self.assertEqual(len(s.sends), 1)
         # pasada la ventana: reintenta, y esta vez el envio va bien
         s.send_fails = False
         self.clock.advance(2)
-        s._verify_and_detect_overrides({}, {"L"})
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
         self.assertEqual(len(s.sends), 2)
         self.assertTrue(s._apply_confirmed(s._state["commanded"]["L"], s.device))
 
@@ -102,7 +102,7 @@ class LightingVerifyRetry(unittest.TestCase):
         self._command(s, 80, pre={"on": True, "brightness_pct": 50, "color_temp_kelvin": 3000})
         s.device = {"on": True, "brightness_pct": 50, "color_temp_kelvin": 3000}  # no aplico
         self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
-        s._verify_and_detect_overrides({}, {"L"})
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
         self.assertEqual(len(s.sends), 2)  # 1 original + 1 reintento
 
     def test_manual_change_marked_override_not_retried(self):
@@ -112,7 +112,7 @@ class LightingVerifyRetry(unittest.TestCase):
         s.device = {"on": True, "brightness_pct": 100, "color_temp_kelvin": 3000}
         self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
         before = len(s.sends)
-        s._verify_and_detect_overrides({}, {"L"})
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
         self.assertTrue(s._state["manual_override"].get("L"))
         self.assertEqual(len(s.sends), before, "un cambio manual NO debe reintentarse (seria pelearse)")
 
@@ -120,13 +120,13 @@ class LightingVerifyRetry(unittest.TestCase):
         s = _Stub()
         self._command(s, 80, pre={"on": True, "brightness_pct": 50})
         # confirmar aplicado
-        s._verify_and_detect_overrides({}, {"L"})
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
         self.assertTrue(s._state["commanded"]["L"].get("confirmed"))
         # el usuario la apaga a mano
         s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
         self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
         before = len(s.sends)
-        s._verify_and_detect_overrides({}, {"L"})
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
         self.assertEqual(len(s.sends), before, "un apagado manual tras confirmar NO debe reintentar encender")
 
     def test_failed_turn_on_never_confirmed_is_retried(self):
@@ -137,7 +137,7 @@ class LightingVerifyRetry(unittest.TestCase):
         s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
         self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
         s.send_fails = False
-        s._verify_and_detect_overrides({}, {"L"})
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
         self.assertEqual(len(s.sends), 2)  # reintenta el encendido fallido
 
     def test_retries_bounded_then_gives_up(self):
@@ -147,7 +147,7 @@ class LightingVerifyRetry(unittest.TestCase):
         s.device = {"on": True, "brightness_pct": 50, "color_temp_kelvin": None}
         for _ in range(10):
             self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
-            s._verify_and_detect_overrides({}, {"L"})
+            s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
         # 1 original + exactamente APPLY_MAX_RETRIES reintentos, luego se rinde
         self.assertEqual(len(s.sends), 1 + zr.APPLY_MAX_RETRIES)
         self.assertTrue(s._state["commanded"]["L"].get("gave_up"))
@@ -157,9 +157,77 @@ class LightingVerifyRetry(unittest.TestCase):
         self._command(s, 80, pre={"on": True, "brightness_pct": 50})
         s.device = {"on": True, "brightness_pct": 100, "color_temp_kelvin": None}  # alguien subio a 100
         self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
-        s._verify_and_detect_overrides({}, {"L"})
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
         self.assertFalse(s._state.get("manual_override", {}).get("L"))
         self.assertEqual(len(s.sends), 2, "sin respetar manual, reafirma el valor de la zona")
+
+
+class NeverTurnsOnALightTheZoneDoesNotWant(unittest.TestCase):
+    """Lo que paso al desplegar la primera version: luces apagadas con una
+    orden antigua guardada se reencendian solas."""
+
+    def setUp(self):
+        self.clock = _Clock()
+        self._orig = zr.time.time
+        zr.time.time = self.clock
+
+    def tearDown(self):
+        zr.time.time = self._orig
+
+    def test_record_from_previous_version_is_never_retried(self):
+        s = _Stub()
+        s._state["commanded"] = {"L": {"brightness_pct": 80, "color_temp_kelvin": 3000, "ts": 10.0}}   # formato antiguo
+        s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
+        for _ in range(5):
+            self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
+            s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
+        self.assertEqual(s.sends, [])
+        self.assertFalse(s.device["on"])
+
+    def test_light_outside_the_wanted_set_is_never_retried(self):
+        s = _Stub()
+        s.send_fails = True
+        s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
+        s._apply_values("L", {"brightness_pct": 80, "color_temp_kelvin": None}, turning_on=True)
+        s.send_fails = False
+        for retry_ids in (set(), {"OTRA"}):        # luz natural de sobra / la regla activa ya no la incluye
+            self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
+            s._verify_and_detect_overrides({}, {"L"}, retry_ids=retry_ids)
+        self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
+        s._verify_and_detect_overrides({}, {"L"})                 # sin conjunto: tampoco
+        self.assertEqual(len(s.sends), 1)                         # solo el envio original
+        self.assertFalse(s.device["on"])
+
+    def test_no_retry_once_the_window_has_passed(self):
+        s = _Stub()
+        s.send_fails = True
+        s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
+        s._apply_values("L", {"brightness_pct": 80, "color_temp_kelvin": None}, turning_on=True)
+        s.send_fails = False
+        self.clock.advance(zr.APPLY_RETRY_WINDOW_SECONDS + 1)
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
+        self.assertEqual(len(s.sends), 1)
+        self.assertFalse(s.device["on"])
+
+    def test_zone_turning_a_light_off_forgets_its_pending_command(self):
+        s = _Stub()
+        s.send_fails = True
+        s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
+        s._apply_values("L", {"brightness_pct": 80, "color_temp_kelvin": None}, turning_on=True)
+        s.send_fails = False
+        calls = []
+
+        class _WS:
+            def call_service(self, domain, service, target=None):
+                calls.append((domain, service, target))
+
+        s.ws = _WS()
+        zr.ZoneRunner._turn_off(s, "L")
+        self.assertEqual(calls, [("light", "turn_off", {"entity_id": "L"})])
+        self.assertNotIn("L", s._state["commanded"])
+        self.clock.advance(zr.APPLY_SETTLE_SECONDS + 1)
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
+        self.assertEqual(len(s.sends), 1)                         # no se reenciende
 
 
 if __name__ == "__main__":
