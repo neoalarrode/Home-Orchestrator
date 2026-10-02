@@ -746,6 +746,54 @@ def _ecoflow_pv_live_overrides(cfg: dict) -> dict[str, float]:
     return overrides
 
 
+def _live_total_and_surplus(
+    combined_mode: bool, base_load_w: float | None, pv_now_w: float | None,
+    live_charge_w: float, live_discharge_w: float, battery_ok: bool, export_w: float | None,
+) -> tuple[float | None, float | None]:
+    """(consumo TOTAL de la casa, excedente solar) AHORA MISMO, o `None` en lo
+    que no se pueda saber con medidas.
+
+    En modo "un sensor unificado", `base_load_w` ya ES el consumo total
+    reconstruido (sol + red neta + descarga - carga) y el excedente es
+    sencillamente sol - consumo.
+
+    En modo "dos sensores", `base_load_w` es SOLO la parte del consumo que
+    viene de la red. Dos fallos reales salian de usarlo como si fuera el total:
+
+    - Consumo: hay que sumarle lo que cubren el sol y la descarga de baterias
+      (misma cuenta que `/api/live` y que la prevision historica).
+    - Excedente: `sol - consumo_de_red` daba TODO el sol como "excedente" en
+      cuanto no se importaba nada (600 W de sol con la casa gastando 500 W ->
+      "600 W de excedente"). Ese numero es la señal que usa Climate para su
+      confort oportunista y la que decide cortar una carga diferible
+      interrumpible. Con este sensor el excedente no se puede deducir del
+      consumo; lo que SI se mide es a donde va: lo que se vierte (si hay sensor
+      de vertido) mas lo que las baterias estan absorbiendo mientras no se
+      importa nada. Si se esta importando de red, no hay excedente.
+    """
+    if base_load_w is None:
+        return None, None
+    if combined_mode:
+        surplus = max(0.0, pv_now_w - base_load_w) if pv_now_w is not None else None
+        return base_load_w, surplus
+
+    importing = base_load_w > _IMPORTING_THRESHOLD_W
+    # Sol que NO esta alimentando la casa: lo que se vierte y, si no se importa
+    # nada, lo que las baterias absorben (cargan con sol, no con red).
+    solar_to_batt = min(pv_now_w or 0.0, live_charge_w) if (battery_ok and not importing) else 0.0
+    solar_exported = min(max(0.0, (pv_now_w or 0.0) - solar_to_batt), export_w or 0.0)
+    total = base_load_w + (pv_now_w or 0.0) - solar_to_batt - solar_exported + (live_discharge_w if battery_ok else 0.0)
+    if pv_now_w is None:
+        return max(0.0, total), None
+    surplus = 0.0 if importing else solar_to_batt + solar_exported
+    return max(0.0, total), max(0.0, min(pv_now_w, surplus))
+
+
+# Por debajo de esto el sensor de consumo de red se considera "sin importar"
+# (ruido del medidor alrededor de cero).
+_IMPORTING_THRESHOLD_W = 50.0
+
+
 def _solar_history_sensors(cfg: dict) -> list[str]:
     """Sensores de HA con el HISTORICO de generacion de cada array, para
     reconstruir el consumo de la casa (ver `ha_client.true_load_forecast`).
@@ -911,6 +959,16 @@ def run_cycle():
         load_forecast = [300.0] * horizon
         live_base_load_w = None
 
+    # Dos cosas que varias partes del ciclo necesitan y que antes cada una
+    # calculaba a su manera (y mal, ver `_live_total_and_surplus`): el consumo
+    # TOTAL de la casa ahora mismo y el excedente solar real.
+    combined_mode = load_sensor_mode == "combined" and bool(net_grid_sensor)
+    vertido_now_w = _live_export_w(cfg, known_net_grid_w=net_grid_now_w)
+    live_total_load_w, live_surplus_now_w = _live_total_and_surplus(
+        combined_mode, live_base_load_w, pv_now_actual,
+        live_charge_w, live_discharge_w, live_battery_data_ok, vertido_now_w,
+    )
+
     # Climate Orchestrator, si esta instalado: la lista de zonas NUNCA se
     # descubre sola aqui (ver climate_link.py) — se guarda en config.json
     # cuando el usuario pulsa "Buscar zonas" en la configuracion
@@ -944,9 +1002,11 @@ def run_cycle():
         # usado en el resto de este fichero (`live_pv_for_deferrable`,
         # `flow_pv_w`): en vivo si hay dato, la media prevista de la hora
         # como fallback si no.
-        pv_now_for_signal = pv_now_actual if pv_now_actual is not None else pv_forecast[0]
         load_now_for_signal = live_base_load_w if live_base_load_w is not None else load_forecast[0]
-        solar_surplus_now = max(0.0, pv_now_for_signal - load_now_for_signal)
+        solar_surplus_now = (
+            live_surplus_now_w if live_surplus_now_w is not None
+            else max(0.0, pv_forecast[0] - load_forecast[0])
+        )
         headroom_w = max(0.0, contracted_power_w - load_now_for_signal) if contracted_power_w else None
         forecast = [
             {
@@ -1094,9 +1154,8 @@ def run_cycle():
             if schedule:
                 deferrable_schedules[load["id"]] = schedule
 
-        live_pv_for_deferrable = pv_now_actual if pv_now_actual is not None else pv_forecast[0]
         live_surplus_w = (
-            max(0.0, live_pv_for_deferrable - live_base_load_w) if live_base_load_w is not None
+            live_surplus_now_w if live_surplus_now_w is not None
             else max(0.0, plan[0].pv_w - plan[0].load_w)
         )
 
@@ -1226,7 +1285,12 @@ def run_cycle():
     # (los necesitaba el modo "combined" del consumo), se reutilizan tal
     # cual en vez de volver a pedirlos a HA.
     flow_pv_w = pv_now_actual if pv_now_actual is not None else now_hp.pv_w
-    flow_load_w = live_base_load_w if live_base_load_w is not None else now_hp.load_w
+    # Consumo TOTAL de la casa (ver `_live_total_and_surplus`), no el sensor de
+    # consumo de red a secas: en modo "dos sensores" ese sensor es solo la parte
+    # que viene de red. Con la bateria cubriendo 450 W de la casa marcaba 0 W --
+    # y ese 0 era el que iba al historico horario, a la comparativa de consumo y
+    # al flujo de `/api/status` (`/api/live` ya lo reconstruia bien).
+    flow_load_w = live_total_load_w if live_total_load_w is not None else now_hp.load_w
     flow_charge_w = live_charge_w if live_battery_data_ok else now_hp.charge_w
     flow_discharge_w = live_discharge_w if live_battery_data_ok else now_hp.discharge_w
     # BUG REAL de sobrecontabilizacion en el Panel de Energia: la atribucion
@@ -1246,8 +1310,7 @@ def run_cycle():
     # lectura tal cual -- no se reconstruye a partir de consumo/solar/bateria.
     _fl = grid_flow.flows(flow_load_w, flow_pv_w, flow_charge_w, flow_discharge_w, net_grid_now_w)
     solar_to_casa_w, solar_to_batt_w = _fl["solar_to_casa_w"], _fl["solar_to_batt_w"]
-    batt_to_casa_w, grid_to_batt_w = _fl["batt_to_casa_w"], _fl["grid_to_batt_w"]
-    grid_to_casa_w, grid_total_w = _fl["grid_to_casa_w"], _fl["grid_total_w"]
+    batt_to_casa_w, grid_total_w = _fl["batt_to_casa_w"], _fl["grid_total_w"]
     # Lo que puede ENTRAR en el contador acumulado: solo con datos medidos.
     # Los valores de arriba pueden ser la PREVISION del planificador (sirven
     # para pintar el diagrama, no para acumular energia).
@@ -1261,10 +1324,8 @@ def run_cycle():
     autoconsumo_pct = 100.0
     if energy_needed_now_w > 0:
         autoconsumo_pct = max(0.0, min(100.0, 100.0 * (1 - grid_total_w / energy_needed_now_w)))
-    # Vertido a red — misma llamada que el campo homologo del dict de mas
-    # abajo, extraida aqui para poder integrarla en el acumulado (ver
-    # grid_energy_store.py) sin llamar a `_live_export_w` dos veces.
-    vertido_now_w = _live_export_w(cfg, known_net_grid_w=net_grid_now_w)
+    # Vertido a red: `vertido_now_w` ya se leyo mas arriba (una sola lectura por
+    # ciclo), se integra en el acumulado mas abajo (ver grid_energy_store.py).
     # Estimacion del excedente para el DIAGRAMA de flujo, cuando no hay sensor
     # de vertido. Sirve para pintar "esto se esta yendo a la red" en una
     # instalacion de autoconsumo compartido, donde el excedente ni pasa por tu
@@ -1496,14 +1557,18 @@ def run_cycle():
     # diagrama de "Estado actual"), que solo cae a la prevision cuando de
     # verdad no hay lectura en vivo disponible.
     try:
+        # Con lectura en vivo de baterias, carga/descarga son lo MEDIDO (la
+        # descarga del plan es el deficit previsto, no lo que la bateria
+        # entrega). Las cuatro potencias se guardan como MEDIA de la hora, no
+        # como la ultima lectura (ver history_store.record).
         history_store.record(now, {
             "dt": now.replace(minute=0, second=0, microsecond=0).isoformat(),
             "price": now_hp.price, "tier": now_hp.tier,
             "pv_w": round(flow_pv_w), "load_w": round(flow_load_w),
-            "charge_w": round(now_hp.charge_w), "discharge_w": round(now_hp.discharge_w),
+            "charge_w": round(flow_charge_w), "discharge_w": round(flow_discharge_w),
             "soc_pct": current_soc_pct,
             "reason": now_hp.reason,
-        })
+        }, averaged_fields=("pv_w", "load_w", "charge_w", "discharge_w"))
     except Exception as e:
         log.warning(f"No se pudo guardar el historico: {e}")
 
@@ -1519,10 +1584,24 @@ def run_cycle():
     # que el solar no cubra). Mismos numeros que usa el planificador, sin
     # inventar nada nuevo.
     try:
-        grid_bought_w = max(0.0, now_hp.load_w - now_hp.pv_w - now_hp.discharge_w)
-        if now_hp.charge_source == "grid":
-            grid_bought_w += now_hp.charge_w
-        baseline_deficit_w = max(0.0, now_hp.load_w - now_hp.pv_w)
+        # Con medidas de este instante, el ahorro sale de lo MEDIDO: lo que se
+        # esta importando de verdad frente a lo que se importaria sin bateria
+        # (consumo menos sol). Antes salia siempre de la PREVISION del plan --
+        # la descarga "planificada" es el deficit previsto, no lo que la bateria
+        # entrega--, asi que el ahorro acumulado era una estimacion presentada
+        # como dato. Sin medidas completas se cae a la prevision, como antes.
+        measured = (
+            live_total_load_w is not None and live_battery_data_ok
+            and (pv_now_actual is not None or not cfg["pv_arrays"])
+        )
+        if measured:
+            grid_bought_w = max(0.0, grid_total_w)
+            baseline_deficit_w = max(0.0, flow_load_w - flow_pv_w)
+        else:
+            grid_bought_w = max(0.0, now_hp.load_w - now_hp.pv_w - now_hp.discharge_w)
+            if now_hp.charge_source == "grid":
+                grid_bought_w += now_hp.charge_w
+            baseline_deficit_w = max(0.0, now_hp.load_w - now_hp.pv_w)
         # Se pasan POTENCIAS (W) y precio, no costes ya multiplicados por
         # `cycle_hours`: ese `cycle_seconds` es el intervalo NOMINAL, pero
         # `run_cycle` tambien lo dispara el ciclo reactivo, asi que multiplicar
@@ -1560,21 +1639,11 @@ def run_cycle():
             # falsos negativos, en silencio. Repetir aqui la MISMA
             # condicion que decidio la formula evita que las dos ramas se
             # desincronicen.
-            if load_sensor_mode == "combined" and net_grid_sensor:
-                # live_base_load_w ya es el consumo TOTAL reconstruido
-                # (sol + red neta + descarga − carga, ver mas arriba) — a
-                # diferencia del modo "separate", donde el sensor de
-                # consumo excluye sol/descarga y hay que sumarlos aqui.
-                live_load_w = live_base_load_w
-            else:
-                live_pv = pv_now_actual if pv_now_actual is not None else pv_forecast[0]
-                # `live_discharge_w` ya viene calculado mas arriba para
-                # TODAS las baterias (HA + EcoFlow, ver
-                # `_live_battery_charge_discharge_w`) -- se reusa aqui en
-                # vez de volver a sumarlo solo por bateria HA, que dejaba
-                # fuera cualquier descarga EcoFlow y subestimaba el
-                # consumo en vivo para la deteccion de anomalias.
-                live_load_w = live_base_load_w + live_pv + live_discharge_w
+            # El consumo TOTAL ya viene reconstruido (ver
+            # `_live_total_and_surplus`), la misma cifra que el flujo en vivo y
+            # el sensor publicado -- antes esta rama tenia su propia copia de
+            # la cuenta.
+            live_load_w = live_total_load_w if live_total_load_w is not None else live_base_load_w
             expected_load_w = load_forecast[0] + deferrable_expected_now_w + climate_live["total_w"]
             anomaly = anomaly_store.update(now, live_load_w, expected_load_w)
             if anomaly["changed"]:
@@ -2213,14 +2282,11 @@ def _live_total_load_w(cfg: dict, pv_now_w: float | None, live_charge_w: float,
 
     load_sensor = cfg.get("load_sensor")
     base_load_now_w = ha_client.get_numeric_state(load_sensor, default=None) if load_sensor else None
-    if base_load_now_w is None:
-        return None
-    load_now_w = base_load_now_w
-    if pv_now_w is not None:
-        load_now_w += pv_now_w
-    if live_battery_data_ok:
-        load_now_w += live_discharge_w
-    return max(0.0, load_now_w)
+    total, _surplus = _live_total_and_surplus(
+        False, base_load_now_w, pv_now_w, live_charge_w, live_discharge_w, live_battery_data_ok,
+        _live_export_w(cfg),
+    )
+    return total
 
 
 def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
@@ -2486,13 +2552,12 @@ def api_live():
         # bateria descarga cientos de W).
         load_sensor = cfg.get("load_sensor")
         base_load_now_w = ha_client.get_numeric_state(load_sensor, default=None) if load_sensor else None
-        load_now_w = base_load_now_w
-        if load_now_w is not None:
-            if pv_now_w is not None:
-                load_now_w += pv_now_w
-            if live_battery_data_ok:
-                load_now_w += live_discharge_w
-            load_now_w = max(0.0, load_now_w)
+        # Misma cuenta que `run_cycle` y que el sensor publicado
+        # (`_live_total_and_surplus`): antes habia tres copias y discrepaban.
+        load_now_w, _surplus = _live_total_and_surplus(
+            False, base_load_now_w, pv_now_w, live_charge_w, live_discharge_w, live_battery_data_ok,
+            _live_export_w(cfg),
+        )
 
     # Flujo de energia y margen de potencia contratada, calculados AQUI
     # (no en run_cycle) para que se refresquen cada vez que se pide
@@ -2508,15 +2573,13 @@ def api_live():
     if load_now_w is not None:
         solar_w = pv_now_w or 0.0
         solar_to_casa_w = min(solar_w, load_now_w)
-        solar_surplus_w = max(0.0, solar_w - load_now_w)
         charge_w = live_charge_w if live_battery_data_ok else 0.0
         discharge_w = live_discharge_w if live_battery_data_ok else 0.0
         # Misma funcion que `run_cycle` (grid_flow.py): antes esta formula
         # estaba copiada aqui y NO aplicaba el medidor de red real del modo
         # "combined", asi que el dashboard y el contador podian discrepar.
         _fl = grid_flow.flows(load_now_w, solar_w, charge_w, discharge_w, net_grid_now_w)
-        solar_to_batt_w, grid_to_batt_w = _fl["solar_to_batt_w"], _fl["grid_to_batt_w"]
-        batt_to_casa_w, grid_to_casa_w = _fl["batt_to_casa_w"], _fl["grid_to_casa_w"]
+        solar_to_batt_w, batt_to_casa_w = _fl["solar_to_batt_w"], _fl["batt_to_casa_w"]
         grid_total_w = _fl["grid_total_w"]
         energy_needed_w = load_now_w + charge_w
         autoconsumo_pct = 100.0

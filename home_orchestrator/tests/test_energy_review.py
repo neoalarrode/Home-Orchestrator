@@ -96,7 +96,7 @@ class StoresStillWork(unittest.TestCase):
         history_store.record(now - timedelta(hours=1), {"dt": "2026-10-02T08:00:00", "load_w": 500})
         history_store.record(now, {"dt": "2026-10-02T09:00:00", "load_w": 700})
         self.assertEqual([e["load_w"] for e in history_store.get_today(now)], [500])
-        self.assertEqual(len(history_store.get_all()), 2)
+        self.assertEqual(len([e for e in history_store.get_all() if e["dt"].startswith("2026-10-02T0")]), 2)
 
     def test_savings_integrates_real_elapsed_time(self):
         t0 = datetime(2026, 10, 2, 10, 0, 0)
@@ -326,6 +326,143 @@ class MixedChargeWithHybridPv(unittest.TestCase):
         pure = scheduler.HourPlan(dt=datetime(2026, 10, 2, 3), price=0.075, tier="valle", pv_w=0, load_w=100,
                                   charge_w=1200, charge_source="grid")
         self.assertEqual(cycle_planner.ac_charge_for_now(pure, 300), 1200)
+
+
+class LlanoEmergencyChargeCountsSolar(unittest.TestCase):
+    """La carga de emergencia en llano no puede ignorar el sol previsto antes de la punta."""
+
+    def _plan(self, pv):
+        now = datetime(2026, 9, 22, 14, 0)          # martes: llano 14-18, punta 18-22
+        prices = tariff_source.fixed_tariff_prices(now, 8, tariff_source.FixedTariffConfig())
+        load = [300.0] * 4 + [1000.0] * 4
+        return scheduler.build_plan(now, pv, load, 1500, 9600, 4800, 4800, 288, prices)[0]
+
+    def test_without_solar_it_charges_exactly_the_shortfall(self):
+        plan = self._plan([0.0] * 8)
+        # punta: 4 kWh; disponible 1500-288 = 1212 -> faltan 2788 Wh
+        self.assertEqual(plan[0].charge_source, "grid")
+        self.assertAlmostEqual(plan[0].charge_w, 2788.0, delta=1.0)
+
+    def test_expected_solar_reduces_the_grid_charge(self):
+        sin_sol = self._plan([0.0] * 8)
+        con_sol = self._plan([300.0, 1800.0, 1800.0, 300.0, 0, 0, 0, 0])   # 3000 Wh de excedente a las 15-17
+        esperado = 2788.0 - 3000.0 * scheduler.SOLAR_CONFIDENCE
+        self.assertAlmostEqual(con_sol[0].charge_w, esperado, delta=1.0)
+        self.assertLess(con_sol[0].charge_w, sin_sol[0].charge_w)
+
+    def test_enough_solar_means_no_grid_charge_and_punta_still_covered(self):
+        plan = self._plan([300.0, 3300.0, 3300.0, 300.0, 0, 0, 0, 0])
+        self.assertEqual(plan[0].charge_w, 0.0)
+        self.assertTrue(all(hp.discharge_w >= 999.0 for hp in plan[4:]))   # la punta se cubre entera
+
+
+class LiveTotalLoadAndSurplus(unittest.TestCase):
+    def setUp(self):
+        import main
+        self.f = main._live_total_and_surplus
+
+    def test_two_sensor_mode(self):
+        f = self.f
+        self.assertEqual(f(False, 0.0, 0.0, 0.0, 450.0, True, None), (450.0, 0.0))      # la bateria cubre la casa
+        self.assertEqual(f(False, 0.0, 600.0, 100.0, 0.0, True, None), (500.0, 100.0))  # sol 600, casa 500
+        self.assertEqual(f(False, 800.0, 200.0, 1000.0, 0.0, True, None), (1000.0, 0.0))  # importando: sin excedente
+        self.assertEqual(f(False, 0.0, 900.0, 200.0, 0.0, True, 300.0), (400.0, 500.0))  # vierte 300 y carga 200
+        self.assertEqual(f(False, 300.0, None, 0.0, 100.0, True, None), (400.0, None))
+        self.assertEqual(f(False, None, 500.0, 0.0, 0.0, True, None), (None, None))
+
+    def test_unified_mode(self):
+        self.assertEqual(self.f(True, 500.0, 900.0, 0.0, 0.0, True, None), (500.0, 400.0))
+
+
+class HistoryIsHourlyAverage(unittest.TestCase):
+    def test_last_reading_does_not_become_the_hour(self):
+        t0 = datetime(2026, 10, 5, 13, 0, 0)
+        fields = ("load_w",)
+        # 59 minutos a 400 W y el ultimo minuto a 3000 W (horno a las 13:59),
+        # con un ciclo cada 15 s como en produccion
+        for k in range(0, 59 * 4):
+            history_store.record(t0 + timedelta(seconds=15 * k), {"dt": t0.isoformat(), "load_w": 400}, averaged_fields=fields)
+        for k in range(59 * 4, 60 * 4):
+            history_store.record(t0 + timedelta(seconds=15 * k), {"dt": t0.isoformat(), "load_w": 3000}, averaged_fields=fields)
+        history_store.record(t0 + timedelta(minutes=59, seconds=59), {"dt": t0.isoformat(), "load_w": 3000}, averaged_fields=fields)
+        entry = [e for e in history_store.get_all() if e["dt"] == t0.isoformat()][0]
+        self.assertAlmostEqual(entry["load_w"], (59 * 60 * 400 + 60 * 3000) / 3600, delta=2)
+        self.assertNotIn("_avg", entry)                                # lo interno no sale
+
+    def test_gap_is_not_filled(self):
+        t0 = datetime(2026, 10, 6, 9, 0, 0)
+        history_store.record(t0, {"dt": t0.isoformat(), "load_w": 5000}, averaged_fields=("load_w",))
+        # addon parado 40 min: ese rato no se integra con los 5000 W de antes
+        t1 = t0 + timedelta(minutes=40)
+        history_store.record(t1, {"dt": t0.isoformat(), "load_w": 200}, averaged_fields=("load_w",))
+        history_store.record(t1 + timedelta(minutes=5), {"dt": t0.isoformat(), "load_w": 200}, averaged_fields=("load_w",))
+        entry = [e for e in history_store.get_all() if e["dt"] == t0.isoformat()][0]
+        self.assertEqual(entry["load_w"], 200)
+
+
+class EntityForecastAlignment(unittest.TestCase):
+    def _with_state(self, attrs, fn):
+        import ha_client
+        orig = ha_client.get_state
+        ha_client.get_state = lambda e: {"state": "0", "attributes": attrs}
+        try:
+            return fn(ha_client)
+        finally:
+            ha_client.get_state = orig
+
+    def test_dict_keyed_by_time_is_aligned_to_now(self):
+        now = datetime.now().replace(minute=0, second=0, microsecond=0)
+        day_start = now.replace(hour=0)
+        series = {(day_start + timedelta(hours=h)).isoformat(): float(h * 10) for h in range(48)}
+        out = self._with_state({"watts": series}, lambda c: c.pv_forecast_from_entity("sensor.f", 4))
+        self.assertEqual(out, [float((now.hour + i) * 10) for i in range(4)])   # no el valor de las 00:00
+
+    def test_list_with_utc_timestamps(self):
+        now_local = datetime.now().astimezone().replace(minute=0, second=0, microsecond=0)
+        items = [{"datetime": (now_local + timedelta(hours=h)).astimezone(timezone.utc).isoformat(), "power": 100.0 + h}
+                 for h in range(-3, 6)]
+        out = self._with_state({"forecasts": items}, lambda c: c.pv_forecast_from_entity("sensor.f", 3))
+        self.assertEqual(out, [100.0, 101.0, 102.0])
+
+    def test_list_without_timestamps_stays_positional(self):
+        items = [{"p_pv_forecast": v} for v in (0, 0, 50, 0)]            # ceros de noche incluidos
+        out = self._with_state({"forecasts": items}, lambda c: c.pv_forecast_from_entity("sensor.f", 6))
+        self.assertEqual(out, [0.0, 0.0, 50.0, 0.0, 0.0, 0.0])
+
+
+class DeferrableWindowNotAtEndOfHour(unittest.TestCase):
+    def test_current_hour_is_skipped_when_almost_over(self):
+        import deferrable_scheduler as ds
+        self.assertEqual(ds._first_usable_hour(datetime(2026, 10, 2, 7, 5)), 0)
+        self.assertEqual(ds._first_usable_hour(datetime(2026, 10, 2, 7, 58)), 1)
+        now = datetime(2026, 10, 2, 7, 58)
+        hours = [now.replace(minute=0) + timedelta(hours=i) for i in range(24)]
+        load = {"id": f"W{time.time_ns()}", "name": "Lavadora", "duration_hours": 1, "frequency": "daily",
+                "estimated_energy_wh": 800}
+        sched = ds.plan_for_load(load, now, hours, [0.0] * 24, [300.0] * 24, [0.0] * 24, [None] * 24, [0.1] * 24)
+        self.assertEqual(sched["occurrences"][0]["start"], hours[1].isoformat())   # 08:00, no 07:00
+
+
+class EcoFlowStartBackoff(unittest.TestCase):
+    def test_failed_start_is_not_retried_on_every_read(self):
+        calls = []
+
+        class _C:
+            _started = False
+            _last_start_failure = 0.0
+
+            def start(self):
+                calls.append(1)
+                return False
+
+        key = ("k-test", f"s-{time.time_ns()}")
+        ecoflow_cloud._clients[key] = _C()
+        try:
+            for _ in range(50):
+                ecoflow_cloud.get_client(*key)
+            self.assertEqual(len(calls), 1)
+        finally:
+            ecoflow_cloud._clients.pop(key, None)
 
 
 if __name__ == "__main__":

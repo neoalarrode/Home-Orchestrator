@@ -111,6 +111,21 @@ def _occurrence(plan_hours: list[datetime], idx: int, duration: int, mode: str, 
     }
 
 
+# Una ventana se mide en horas de reloj enteras. Si de la hora en curso ya ha
+# pasado mas que esto, no se elige para EMPEZAR una ventana nueva.
+MAX_MINUTES_INTO_HOUR_TO_START = 10
+
+
+def _first_usable_hour(now: datetime) -> int:
+    """0 si la hora en curso todavia sirve para empezar una ventana, 1 si no.
+
+    BUG REAL (visto en simulacion a las 07:58): la hora en curso entraba siempre
+    como candidata, y al ser la mas barata de las que quedaban se elegia. La
+    ventana "07:00-08:00" duraba dos minutos: el enchufe se encendia y se
+    apagaba casi a la vez, y la carga se daba por hecha ese dia."""
+    return 0 if now.minute <= MAX_MINUTES_INTO_HOUR_TO_START else 1
+
+
 def _hours_left_today(now: datetime, plan_hours: list[datetime]) -> int:
     today = now.date()
     for i, h in enumerate(plan_hours):
@@ -185,7 +200,7 @@ def plan_for_load(load: dict, now: datetime, plan_hours: list[datetime],
             # nunca se marcaria "done" y la carga se re-programaria sin fin
             # en vez de ejecutarse una sola vez.
             return existing
-        picks = _pick_blocks(surplus_w, prices_by_hour, 0, horizon, duration, min_power_w, count=1)
+        picks = _pick_blocks(surplus_w, prices_by_hour, _first_usable_hour(now), horizon, duration, min_power_w, count=1)
         if not picks:
             return None
         occ = _occurrence(plan_hours, picks[0][0], duration, picks[0][1], energy_wh)
@@ -242,8 +257,8 @@ def plan_for_load(load: dict, now: datetime, plan_hours: list[datetime],
     pending_count = count - len(started)
     new_picks = []
     if pending_count > 0 and hours_left_today > 0:
-        new_picks = _pick_blocks(surplus_w, prices_by_hour, 0, hours_left_today, duration, min_power_w,
-                                  pending_count, blocked=blocked)
+        new_picks = _pick_blocks(surplus_w, prices_by_hour, _first_usable_hour(now), hours_left_today, duration,
+                                  min_power_w, pending_count, blocked=blocked)
 
     occurrences = started + [_occurrence(plan_hours, idx, duration, mode, energy_wh) for idx, mode in new_picks]
     if not occurrences:

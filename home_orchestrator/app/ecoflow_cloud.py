@@ -59,6 +59,8 @@ LIVE_STATE_STALE_SECONDS = 120
 # por dispositivo -- arranque en frio o corte largo de MQTT, no cada vez
 # que alguien llama a get_live_state (que puede ser cada pocos segundos).
 REST_FALLBACK_COOLDOWN_SECONDS = 20
+# Espera antes de volver a intentar conectar el MQTT tras un fallo.
+START_RETRY_SECONDS = 60
 
 
 class EcoFlowError(Exception):
@@ -246,6 +248,7 @@ class EcoFlowCloudClient:
         self._started = False
         self._rest_fallback_last_call: dict[str, float] = {}  # sn -> ultima vez que se pregunto por REST
         self._trigger_marks: dict[str, dict] = {}  # sn -> valores que dispararon el ultimo ciclo reactivo
+        self._last_start_failure = 0.0  # epoch del ultimo intento de conexion fallido (ver get_client)
 
     # -- ciclo de vida ----------------------------------------------------
 
@@ -604,5 +607,14 @@ def get_client(access_key: str, secret_key: str) -> EcoFlowCloudClient | None:
             client = EcoFlowCloudClient(access_key, secret_key)
             _clients[key] = client
         if not client._started:
-            client.start()
+            # BUG REAL: `start()` pide las credenciales MQTT por REST (hasta 15 s
+            # de espera) y se llamaba en CADA lectura mientras no conectase.
+            # Sin internet, o con la API de EcoFlow caida, cada ciclo se quedaba
+            # esperando ese timeout una vez por bateria. Tras un fallo se espera
+            # antes de reintentar; mientras tanto se devuelve el cliente sin
+            # conectar (sus lecturas dan "sin dato", igual que antes).
+            now = time.time()
+            if now - client._last_start_failure >= START_RETRY_SECONDS:
+                if not client.start():
+                    client._last_start_failure = now
         return client

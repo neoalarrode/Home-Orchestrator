@@ -29,7 +29,7 @@ se dice en el log, que es mejor que un numero que nadie puede verificar.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 log = logging.getLogger("energy_recovery")
 

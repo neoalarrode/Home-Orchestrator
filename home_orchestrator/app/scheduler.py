@@ -34,6 +34,10 @@ PACED_CHARGE_SAFETY_MARGIN = 1.2
 # "descarga para cubrir consumo" con 0 W.
 MIN_DISCHARGE_W = 1.0
 
+# Cuanto del excedente solar PREVISTO se da por seguro al decidir si hace falta
+# cargar de red en llano para la punta (ver `_llano_emergency_target`).
+SOLAR_CONFIDENCE = 0.7
+
 
 @dataclass
 class HourPlan:
@@ -220,6 +224,39 @@ def build_plan(
         # cae por debajo del suelo fisico, pase lo que pase con la config.
         return max(min_soc_wh, min(ceiling_wh, min_soc_wh + energy_needed + reserve_safety_margin_wh))
 
+    def _llano_emergency_target(i: int, soc_now: float) -> float:
+        """SOC que hace falta tener AHORA (hora de llano `i`) para que la punta
+        que queda antes del proximo valle quede cubierta.
+
+        BUG REAL de la version anterior: el objetivo era
+        `min_soc + toda la punta que queda`, sin mirar el excedente solar
+        previsto ENTRE ahora y esa punta. Un llano de las 14:00 con sol sobrante
+        a las 15-17 h y punta a las 18 h cargaba de red (a precio de llano) una
+        energia que el sol iba a meter gratis, y luego ese sol se quedaba sin
+        hueco. Se simula hacia delante lo que pasaria SIN cargar ahora: el sol
+        sobrante carga, la punta descarga, y lo que la punta no llegue a cubrir
+        es lo unico que hay que cargar.
+
+        El sol previsto se cuenta con descuento (`SOLAR_CONFIDENCE`): fiarse del
+        todo de la prevision y quedarse corto cuesta precio de punta; el
+        descuento cuesta, como mucho, precio de llano. Sin excedente previsto
+        el resultado es exactamente el de antes.
+        """
+        s_sim = soc_now
+        shortfall = 0.0
+        for j in range(i + 1, horizon):
+            tier_j = prices_tiers[j][1]
+            if tier_j == "valle":
+                break
+            if surplus_w[j] > 0:
+                s_sim += min(surplus_w[j] * SOLAR_CONFIDENCE, max_charge_w, max(0.0, ceiling_wh - s_sim))
+            elif tier_j == "punta" and deficit_w[j] > 0:
+                wanted = min(deficit_w[j], max_discharge_w)
+                given = min(wanted, max(0.0, s_sim - min_soc_wh))
+                s_sim -= given
+                shortfall += wanted - given
+        return min(ceiling_wh, soc_now + shortfall)
+
     # reserve_wh (para mostrar "cuanto hace falta ahora mismo"): si la
     # hora actual es valle, usa el objetivo propagado del bloque de valle
     # (lo de arriba); si no, el corte normal hasta el proximo valle.
@@ -310,8 +347,7 @@ def build_plan(
             # aprovechando primero; lo que falte hasta el objetivo se completa
             # desde red con la potencia que quede libre.
             if allow_grid_charging and tier in ("valle", "llano"):
-                target = (_reserve_target(i) if tier == "valle"
-                          else min(ceiling_wh, min_soc_wh + future_punta_after[i]))
+                target = _reserve_target(i) if tier == "valle" else _llano_emergency_target(i, soc)
                 if soc < target:
                     solar_w = max(0.0, hp.charge_w)
                     headroom = min(ceiling_wh - soc, target - soc)
@@ -374,8 +410,8 @@ def build_plan(
         # `elif` sin poder cargar nada, la rama 4 (descarga en llano) NUNCA
         # se evaluaba para esa hora, dejando un deficit real de llano sin
         # cubrir con bateria disponible, comprado a red sin necesidad.
-        elif allow_grid_charging and tier == "llano" and soc < min(ceiling_wh, min_soc_wh + future_punta_after[i]):
-            target = min(ceiling_wh, min_soc_wh + future_punta_after[i])
+        elif allow_grid_charging and tier == "llano" and soc < _llano_emergency_target(i, soc) - MIN_DISCHARGE_W:
+            target = _llano_emergency_target(i, soc)
             headroom = min(ceiling_wh - soc, target - soc)
             charge_limit = _paced_charge_limit(i, soc, target) if paced_charging else max_charge_w
             if contracted_power_w > 0:

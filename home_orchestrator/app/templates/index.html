@@ -951,6 +951,12 @@ es: {
   help_net_power_sensor: 'Un único sensor con signo — positivo mientras carga, negativo mientras descarga (p.ej. el típico "battery power" de muchos inversores). Con este basta, no hace falta declarar los otros dos.',
   help_discharge_sensor: 'Potencia que la batería aporta a la casa ahora mismo (siempre positiva o cero, p.ej. <code>..._load_from_battery</code>). No hace falta el de carga — solo se usa para completar el cálculo de consumo real en la tarjeta "Consumo de la casa".',
   btn_save_battery: "Guardar batería", btn_cancel: "Cancelar", btn_edit: "Editar", btn_delete_battery: "Eliminar esta batería",
+  ef_reserve_title: "Reserva de emergencia (%)", ef_set_reserve: "Fijar reserva",
+  ef_feed_on: "Vertido ON", ef_feed_off: "Vertido OFF", ef_outlet_on: "Salida {n} ON", ef_outlet_off: "Salida {n} OFF",
+  ef_reserve_invalid: "Introduce un % de reserva entre 0 y 100",
+  ef_reserve_ok: "Reserva de emergencia actualizada", ef_reserve_fail: "Fallo al fijar la reserva de emergencia",
+  ef_feed_ok_on: "Vertido a red activado", ef_feed_ok_off: "Vertido a red desactivado", ef_feed_fail: "Fallo al cambiar el vertido a red",
+  ef_outlet_ok_on: "Salida {n} encendida", ef_outlet_ok_off: "Salida {n} apagada", ef_outlet_fail: "Fallo al cambiar la salida {n}",
   btn_delete: "Eliminar", confirm_delete: '¿Eliminar "{name}"? No se puede deshacer.',
   error_number_fields: "Revisa estos campos, tienen que ser números válidos: {fields}.",
   error_periods_invalid: 'Las horas tienen que ir como "inicio-fin" entre 0 y 24, separadas por comas (p.ej. 10-14,18-22).',
@@ -958,6 +964,7 @@ es: {
   count_declared_one: "1 declarada", count_declared_n: "{n} declaradas",
   empty_no_batteries: "Todavía no has añadido ninguna batería.",
   error_battery_required: "Nombre, sensor de SOC y los dos switches son obligatorios.",
+  error_name_required: "Ponle un nombre a la batería.",
   error_capacity_positive: "La capacidad (Wh) tiene que ser un número mayor que 0.",
   error_server: "Error del servidor ({status}): {detail}", error_no_detail: "sin detalle",
   error_connect: "No se pudo conectar con el servicio: {msg}",
@@ -1293,6 +1300,12 @@ en: {
   help_net_power_sensor: 'A single signed sensor — positive while charging, negative while discharging (e.g. the typical "battery power" many inverters expose). This one is enough on its own, no need to declare the other two.',
   help_discharge_sensor: 'Power the battery is currently delivering to the house (always positive or zero, e.g. <code>..._load_from_battery</code>). No need for the charge one — this is only used to complete the real-consumption calculation in the "Home consumption" card.',
   btn_save_battery: "Save battery", btn_cancel: "Cancel", btn_edit: "Edit", btn_delete_battery: "Delete this battery",
+  ef_reserve_title: "Emergency reserve (%)", ef_set_reserve: "Set reserve",
+  ef_feed_on: "Feed-in ON", ef_feed_off: "Feed-in OFF", ef_outlet_on: "Outlet {n} ON", ef_outlet_off: "Outlet {n} OFF",
+  ef_reserve_invalid: "Enter a reserve % between 0 and 100",
+  ef_reserve_ok: "Emergency reserve updated", ef_reserve_fail: "Couldn't set the emergency reserve",
+  ef_feed_ok_on: "Grid feed-in enabled", ef_feed_ok_off: "Grid feed-in disabled", ef_feed_fail: "Couldn't change grid feed-in",
+  ef_outlet_ok_on: "Outlet {n} turned on", ef_outlet_ok_off: "Outlet {n} turned off", ef_outlet_fail: "Couldn't change outlet {n}",
   btn_delete: "Delete", confirm_delete: 'Delete "{name}"? This can\'t be undone.',
   error_number_fields: "Check these fields, they must be valid numbers: {fields}.",
   error_periods_invalid: 'Hours must be "start-end" between 0 and 24, comma separated (e.g. 10-14,18-22).',
@@ -1300,6 +1313,7 @@ en: {
   count_declared_one: "1 declared", count_declared_n: "{n} declared",
   empty_no_batteries: "You haven't added any battery yet.",
   error_battery_required: "Name, SOC sensor and both switches are required.",
+  error_name_required: "Give the battery a name.",
   error_capacity_positive: "Capacity (Wh) has to be a number greater than 0.",
   error_server: "Server error ({status}): {detail}", error_no_detail: "no detail",
   error_connect: "Could not connect to the service: {msg}",
@@ -2075,14 +2089,14 @@ function renderBatteries() {
         ${b.source !== 'ecoflow' ? (batteryPowerSensorSummary(b) ? `<div class="kv"><span>${t('kv_power_sensor')}</span><code>${escapeHtml(batteryPowerSensorSummary(b))}</code></div>` : `<p class="help">${t('no_discharge_sensor_note')}</p>`) : ''}
         ${b.source === 'ecoflow' && b.ecoflow_allow_manual_controls ? `
         <div class="actions" style="margin-top:10px;flex-wrap:wrap">
-          <input type="number" id="ecoflow-reserve-${b.id}" min="0" max="100" placeholder="%" style="width:64px" title="Reserva de emergencia (%)">
-          <button class="secondary" type="button" onclick="ecoflowSetBackupReserve('${b.id}')">Fijar reserva</button>
-          <button class="secondary" type="button" onclick="ecoflowSetFeedGrid('${b.id}', true)">Vertido ON</button>
-          <button class="secondary" type="button" onclick="ecoflowSetFeedGrid('${b.id}', false)">Vertido OFF</button>
-          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 1, true)">Salida 1 ON</button>
-          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 1, false)">Salida 1 OFF</button>
-          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 2, true)">Salida 2 ON</button>
-          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 2, false)">Salida 2 OFF</button>
+          <input type="number" id="ecoflow-reserve-${b.id}" min="0" max="100" placeholder="%" style="width:64px" title="${t('ef_reserve_title')}">
+          <button class="secondary" type="button" onclick="ecoflowSetBackupReserve('${b.id}')">${t('ef_set_reserve')}</button>
+          <button class="secondary" type="button" onclick="ecoflowSetFeedGrid('${b.id}', true)">${t('ef_feed_on')}</button>
+          <button class="secondary" type="button" onclick="ecoflowSetFeedGrid('${b.id}', false)">${t('ef_feed_off')}</button>
+          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 1, true)">${t('ef_outlet_on', { n: 1 })}</button>
+          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 1, false)">${t('ef_outlet_off', { n: 1 })}</button>
+          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 2, true)">${t('ef_outlet_on', { n: 2 })}</button>
+          <button class="secondary" type="button" onclick="ecoflowSetOutlet('${b.id}', 2, false)">${t('ef_outlet_off', { n: 2 })}</button>
         </div>` : ''}
         <div class="actions">
           <button class="secondary" onclick="editBattery('${b.id}')" type="button">${t('btn_edit')}</button>
@@ -2101,23 +2115,23 @@ function renderBatteries() {
 async function ecoflowSetBackupReserve(id) {
   const input = document.getElementById(`ecoflow-reserve-${id}`);
   const pct = parseFloat(input.value);
-  if (Number.isNaN(pct) || pct < 0 || pct > 100) { toast('Introduce un % de reserva entre 0 y 100'); return; }
+  if (Number.isNaN(pct) || pct < 0 || pct > 100) { toast(t('ef_reserve_invalid')); return; }
   const r = await fetch(`api/batteries/${id}/ecoflow/backup_reserve`, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({pct}),
   });
-  toast(r.ok ? 'Reserva de emergencia actualizada' : 'Fallo al fijar la reserva de emergencia');
+  toast(r.ok ? t('ef_reserve_ok') : t('ef_reserve_fail'));
 }
 async function ecoflowSetFeedGrid(id, enable) {
   const r = await fetch(`api/batteries/${id}/ecoflow/feed_grid`, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enable}),
   });
-  toast(r.ok ? `Vertido a red ${enable ? 'activado' : 'desactivado'}` : 'Fallo al cambiar el vertido a red');
+  toast(r.ok ? t(enable ? 'ef_feed_ok_on' : 'ef_feed_ok_off') : t('ef_feed_fail'));
 }
 async function ecoflowSetOutlet(id, outlet, enable) {
   const r = await fetch(`api/batteries/${id}/ecoflow/outlet`, {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({outlet, enable}),
   });
-  toast(r.ok ? `Salida ${outlet} ${enable ? 'encendida' : 'apagada'}` : `Fallo al cambiar la salida ${outlet}`);
+  toast(r.ok ? t(enable ? 'ef_outlet_ok_on' : 'ef_outlet_ok_off', { n: outlet }) : t('ef_outlet_fail', { n: outlet }));
 }
 
 function renderPvArrays() {
@@ -2348,7 +2362,7 @@ async function addBattery() {
     battery.net_power_sensor = powerMode === 'combined' ? (document.getElementById('b-net-power-sensor').value.trim() || null) : null;
   }
   if (!battery.name) {
-    showBatteryFormError(t('error_battery_required')); return;
+    showBatteryFormError(t(source === 'ecoflow' ? 'error_name_required' : 'error_battery_required')); return;
   }
   if (source === 'ecoflow') {
     // Cloud/Bluetooth a secas necesitan su identificador si o si. Hibrido

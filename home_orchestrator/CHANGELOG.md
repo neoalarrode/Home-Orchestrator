@@ -1,5 +1,20 @@
 # Changelog
 
+## battery 0.14.12
+
+Segunda tanda de la revision completa de Energy: lo que en la 0.14.11 quedo localizado sin corregir.
+
+- Consumo total en vivo: en modo "dos sensores" el ciclo usaba el sensor de consumo de red como si fuera el consumo total de la casa. Con la bateria cubriendo 450 W, `/api/status`, el historico horario y la comparativa de consumo marcaban 0 W (`/api/live` ya lo reconstruia). Ahora hay UNA cuenta (`_live_total_and_surplus`) para el ciclo, `/api/live` y el sensor publicado; antes eran tres copias que discrepaban.
+- Excedente solar en vivo: con ese mismo sensor, "sol - consumo de red" daba todo el sol como excedente en cuanto no se importaba nada. Es la señal que usa Climate y la que corta una carga diferible interrumpible. Ahora el excedente es lo que se mide que NO va a la casa: lo vertido mas lo que absorben las baterias mientras no se importa.
+- Ahorro acumulado: con medidas de este instante sale de lo medido (importacion real frente a consumo menos sol); antes siempre de la prevision del plan.
+- Historico horario: cada ciclo sobreescribia la hora con la ultima lectura instantanea (un horno a las 13:59 convertia las 13:00 en una hora de 3 kW). Ahora sol, consumo, carga y descarga se guardan como media de la hora, y carga/descarga son las medidas cuando hay lectura de baterias.
+- Carga de emergencia en llano: no descontaba el excedente solar previsto antes de la punta, asi que compraba en llano energia que el sol iba a meter gratis. Se simula lo que cubriria la bateria sin cargar y solo se carga lo que falte (sol previsto contado al 70 %).
+- Prevision solar por entidad de HA: la serie se tomaba por posicion ("el primer valor es la hora actual"). Con integraciones que publican el dia entero quedaba desplazada. Si los puntos traen marca de tiempo se alinean por ella.
+- Cargas diferibles: la hora en curso se elegia para empezar una ventana aunque le quedasen dos minutos.
+- EcoFlow Cloud: si no se puede conectar el MQTT se espera 60 s antes de reintentar (antes en cada lectura, con hasta 15 s de espera por bateria y ciclo).
+- Motor `dp`: el colchon de reserva no se aplicaba (`* 0.0`); queda dicho en el codigo en vez de aparentarlo.
+- Interfaz: botones manuales de EcoFlow traducibles; mensaje correcto al dar de alta una bateria EcoFlow sin nombre.
+
 ## battery 0.14.11
 
 Revision completa del plugin (planificador, ejecucion, almacenes, EcoFlow e interfaz), contrastada contra una instalacion en produccion.

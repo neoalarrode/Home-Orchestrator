@@ -253,5 +253,10 @@ def build_plan_dp(
         reserve = plan[first_dis - 1].soc_wh if first_dis > 0 else s_now
     else:
         reserve = max(hp.soc_wh for hp in plan)
-    reserve = min(ceiling_wh, max(min_soc_wh, reserve + reserve_safety_margin_wh * 0.0))
+    # `reserve_safety_margin_wh` NO se aplica en este motor (antes habia aqui un
+    # `+ reserve_safety_margin_wh * 0.0` que aparentaba usarlo). El colchon del
+    # motor clasico es un apaño para una reserva calculada por reglas; aqui la
+    # holgura frente a una prevision que falle se pide con `load_margin_frac` /
+    # `pv_margin_frac`, que entran en la optimizacion de verdad.
+    reserve = min(ceiling_wh, max(min_soc_wh, reserve))
     return plan, reserve

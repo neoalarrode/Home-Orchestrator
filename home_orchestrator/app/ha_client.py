@@ -688,12 +688,53 @@ def true_load_forecast_from_grid(net_grid_sensor: str, solar_sensors: list[str],
     return [max(0.0, v) for v in total]
 
 
+_FORECAST_TIME_KEYS = ("datetime", "date", "period_start", "start", "time")
+# Solo claves en VATIOS (Solcast da `pv_estimate` en kW: no entra aqui).
+_FORECAST_VALUE_KEYS = ("p_pv_forecast", "value", "power", "watts")
+
+
+def _forecast_local_hour(raw) -> datetime | None:
+    """Marca de tiempo de un punto de prevision, como hora local naive
+    truncada a la hora (la convencion del planificador), o None."""
+    if raw is None:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00").replace(" ", "T", 1))
+    except ValueError:
+        return None
+    if ts.tzinfo is not None:
+        ts = ts.astimezone()
+    return ts.replace(tzinfo=None, minute=0, second=0, microsecond=0)
+
+
+def _align_forecast_by_time(points: list[tuple[datetime, float]], horizon_hours: int) -> list[float]:
+    """Serie horaria desde la hora ACTUAL a partir de puntos con marca de
+    tiempo: media de los puntos de cada hora, 0 W donde no hay dato."""
+    by_hour: dict[datetime, list[float]] = {}
+    for ts, val in points:
+        by_hour.setdefault(ts, []).append(val)
+    start = datetime.now().replace(minute=0, second=0, microsecond=0)
+    out = []
+    for i in range(horizon_hours):
+        vals = by_hour.get(start + timedelta(hours=i))
+        out.append(sum(vals) / len(vals) if vals else 0.0)
+    return out
+
+
 def pv_forecast_from_entity(entity_id: str, horizon_hours: int) -> list[float]:
     """
     Lee la previsión solar desde un sensor de HA que exponga un atributo de
     tipo lista de pronosticos (forecast_solar, EMHASS p_pv_forecast, etc.)
     Se buscan claves de atributo habituales; si no se encuentra nada
     utilizable, se devuelve una lista de ceros (seguro, nunca inventa sol).
+
+    BUG REAL: la serie se tomaba POR POSICION -- el primer elemento se daba por
+    "la hora actual". Eso solo es cierto en las integraciones que publican
+    desde ahora (EMHASS). Las que publican el dia entero (un diccionario
+    `{"2026-10-02T06:00:00": 120, ...}` desde el amanecer, o una lista con
+    `period_start`) quedaban desplazadas: a las 15:00 el planificador leia como
+    "ahora" el valor de las 06:00. Si los puntos traen marca de tiempo, se
+    alinean por ella; solo sin marca se sigue tomando por posicion.
     """
     try:
         state = get_state(entity_id)
@@ -702,56 +743,67 @@ def pv_forecast_from_entity(entity_id: str, horizon_hours: int) -> list[float]:
 
     attrs = state.get("attributes", {})
     for key in ("forecasts", "wh_hours", "watts", "forecast"):
-        if key in attrs and isinstance(attrs[key], (list, dict)):
-            series = attrs[key]
-            if isinstance(series, dict):
-                values = list(series.values())[:horizon_hours]
-            else:
-                # BUG REAL: antes era `item.get("p_pv_forecast") or
-                # item.get("value") or item.get("power")` -- un 0 (toda hora
-                # de NOCHE, y cualquier hora totalmente nublada) es falsy, asi
-                # que la cadena `or` caia a las claves siguientes (ausentes) y
-                # daba None. El filtro de la linea de abajo BORRABA entonces
-                # esas horas, con lo que las horas de sol restantes se
-                # compactaban hacia el indice 0 y el relleno de ceros se iba
-                # al final: el planificador recibia "sol a medianoche y noche
-                # a mediodia". Ahora se coge la primera clave que NO sea None
-                # (un 0 es un dato valido, no una ausencia) y se conserva la
-                # POSICION de cada hora.
-                values = [
-                    next(
-                        (item[k] for k in ("p_pv_forecast", "value", "power")
-                         if item.get(k) is not None),
-                        None,
-                    )
-                    for item in series[:horizon_hours]
-                ]
-            # Una hora sin dato utilizable cuenta como 0 W, nunca se elimina:
-            # borrarla desplazaria todas las horas siguientes. `any_real`
-            # distingue "serie con ceros de verdad" (valida, se usa) de "serie
-            # con un formato que no reconocemos" (ningun valor utilizable: se
-            # sigue probando con la clave siguiente y, si ninguna sirve, con
-            # la estimacion plana de mas abajo, igual que antes).
-            coerced, any_real = [], False
-            for v in values:
-                if v is None:
-                    coerced.append(0.0)
-                    continue
+        series = attrs.get(key)
+        if not isinstance(series, (list, dict)):
+            continue
+
+        # --- con marca de tiempo: alineado por hora real -------------------
+        timed: list[tuple[datetime, float]] = []
+        if isinstance(series, dict):
+            for k, v in series.items():
+                ts = _forecast_local_hour(k)
                 try:
-                    coerced.append(float(v))
-                    any_real = True
+                    if ts is not None and v is not None:
+                        timed.append((ts, float(v)))
                 except (TypeError, ValueError):
-                    coerced.append(0.0)
-            values = coerced if any_real else []
-            if values:
-                values += [0.0] * (horizon_hours - len(values))
-                return values[:horizon_hours]
+                    continue
+        else:
+            for item in series:
+                if not isinstance(item, dict):
+                    continue
+                ts = next((t for t in (_forecast_local_hour(item.get(k)) for k in _FORECAST_TIME_KEYS) if t), None)
+                val = next((item[k] for k in _FORECAST_VALUE_KEYS if item.get(k) is not None), None)
+                try:
+                    if ts is not None and val is not None:
+                        timed.append((ts, float(val)))
+                except (TypeError, ValueError):
+                    continue
+        if timed:
+            return _align_forecast_by_time(timed, horizon_hours)
+
+        # --- sin marca de tiempo: por posicion, desde la hora actual -------
+        if isinstance(series, dict):
+            values = list(series.values())[:horizon_hours]
+        else:
+            # Se coge la primera clave que NO sea None (un 0 -toda hora de
+            # noche- es un dato valido, no una ausencia) y se conserva la
+            # POSICION de cada hora: borrar las horas sin dato desplazaria
+            # todas las siguientes.
+            values = [
+                next((item[k] for k in _FORECAST_VALUE_KEYS if isinstance(item, dict) and item.get(k) is not None), None)
+                for item in series[:horizon_hours]
+            ]
+        # `any_real` distingue "serie con ceros de verdad" (valida) de "serie
+        # con un formato que no reconocemos" (se prueba la clave siguiente).
+        coerced, any_real = [], False
+        for v in values:
+            if v is None:
+                coerced.append(0.0)
+                continue
+            try:
+                coerced.append(float(v))
+                any_real = True
+            except (TypeError, ValueError):
+                coerced.append(0.0)
+        if any_real:
+            coerced += [0.0] * (horizon_hours - len(coerced))
+            return coerced[:horizon_hours]
 
     # sin atributo de previsión util: usar el valor actual como estimacion
     # plana solo para la proxima hora, y 0 despues (mejor infravalorar que
     # inventar produccion que no va a existir)
     try:
         current = float(state["state"])
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, TypeError):
         current = 0.0
     return [current] + [0.0] * (horizon_hours - 1)
