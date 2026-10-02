@@ -284,7 +284,7 @@
 
 <div class="card">
   <h2><span data-i18n="card_flow_title">Flujo de energía ahora mismo</span> <span class="hint" id="autoconsumo-hint"></span></h2>
-  <p class="help" data-i18n="card_flow_sub">De dónde sale la potencia solar y a dónde va, de un vistazo — sin sumar los números sueltos de las otras tarjetas.</p>
+  <p class="help" data-i18n="card_flow_sub">De dónde sale la energía que estás consumiendo ahora mismo, de un vistazo — sin sumar los números sueltos de las otras tarjetas.</p>
   <div id="energy-flow"></div>
 </div>
 
@@ -951,6 +951,9 @@ es: {
   help_net_power_sensor: 'Un único sensor con signo — positivo mientras carga, negativo mientras descarga (p.ej. el típico "battery power" de muchos inversores). Con este basta, no hace falta declarar los otros dos.',
   help_discharge_sensor: 'Potencia que la batería aporta a la casa ahora mismo (siempre positiva o cero, p.ej. <code>..._load_from_battery</code>). No hace falta el de carga — solo se usa para completar el cálculo de consumo real en la tarjeta "Consumo de la casa".',
   btn_save_battery: "Guardar batería", btn_cancel: "Cancelar", btn_edit: "Editar", btn_delete_battery: "Eliminar esta batería",
+  btn_delete: "Eliminar", confirm_delete: '¿Eliminar "{name}"? No se puede deshacer.',
+  error_number_fields: "Revisa estos campos, tienen que ser números válidos: {fields}.",
+  error_periods_invalid: 'Las horas tienen que ir como "inicio-fin" entre 0 y 24, separadas por comas (p.ej. 10-14,18-22).',
   btn_save_changes: "Guardar cambios", editing_battery: 'Editando "{name}"',
   count_declared_one: "1 declarada", count_declared_n: "{n} declaradas",
   empty_no_batteries: "Todavía no has añadido ninguna batería.",
@@ -1103,7 +1106,7 @@ es: {
 
   anomaly_title: "Consumo anómalo detectado", anomaly_since: "Desde", anomaly_live_now: "Consumo real ahora",
   anomaly_expected: "Esperado para esta hora", anomaly_diff: "Diferencia",
-  anomaly_explain: 'Se avisa cuando el consumo real supera la previsión histórica en más de un 60% Y al menos 400W de diferencia, sostenido varios ciclos seguidos (para no disparar con un pico de un instante). Revisa si se ha quedado algo encendido. La alerta se retira sola cuando el consumo vuelve a lo esperado.',
+  anomaly_explain: 'Se avisa cuando el consumo real supera la previsión histórica en más de un 60% Y al menos 400W de diferencia, sostenido unos minutos seguidos (para no disparar con un pico de un instante). Revisa si se ha quedado algo encendido. La alerta se retira sola cuando el consumo vuelve a lo esperado.',
 
   battery_status_charging: "cargando {w}W", battery_status_discharge: "descarga ≤{w}W",
   battery_status_idle: "sin acción", battery_status_no_data: "sin datos",
@@ -1290,6 +1293,9 @@ en: {
   help_net_power_sensor: 'A single signed sensor — positive while charging, negative while discharging (e.g. the typical "battery power" many inverters expose). This one is enough on its own, no need to declare the other two.',
   help_discharge_sensor: 'Power the battery is currently delivering to the house (always positive or zero, e.g. <code>..._load_from_battery</code>). No need for the charge one — this is only used to complete the real-consumption calculation in the "Home consumption" card.',
   btn_save_battery: "Save battery", btn_cancel: "Cancel", btn_edit: "Edit", btn_delete_battery: "Delete this battery",
+  btn_delete: "Delete", confirm_delete: 'Delete "{name}"? This can\'t be undone.',
+  error_number_fields: "Check these fields, they must be valid numbers: {fields}.",
+  error_periods_invalid: 'Hours must be "start-end" between 0 and 24, comma separated (e.g. 10-14,18-22).',
   btn_save_changes: "Save changes", editing_battery: 'Editing "{name}"',
   count_declared_one: "1 declared", count_declared_n: "{n} declared",
   empty_no_batteries: "You haven't added any battery yet.",
@@ -1442,7 +1448,7 @@ en: {
 
   anomaly_title: "Anomalous consumption detected", anomaly_since: "Since", anomaly_live_now: "Real consumption now",
   anomaly_expected: "Expected for this hour", anomaly_diff: "Difference",
-  anomaly_explain: "This warns when real consumption exceeds the historical forecast by more than 60% AND at least 400W of difference, sustained for several cycles in a row (so a one-off spike doesn't trigger it). Check if something was left on. The alert clears itself once consumption returns to what's expected.",
+  anomaly_explain: "This warns when real consumption exceeds the historical forecast by more than 60% AND at least 400W of difference, sustained for a few minutes in a row (so a one-off spike doesn't trigger it). Check if something was left on. The alert clears itself once consumption returns to what's expected.",
 
   battery_status_charging: "charging {w}W", battery_status_discharge: "discharge ≤{w}W",
   battery_status_idle: "no action", battery_status_no_data: "no data",
@@ -1538,6 +1544,8 @@ const REASON_PATTERNS_EN = [
   [/^carga en valle \(objetivo reserva ([\d.,]+) kWh\)$/, (m) => `charging off-peak (reserve target ${m[1]} kWh)`],
   [/^carga sostenida en llano \(no llegaba a cubrir la punta que queda\)$/, () => "sustained mid-peak charging (wasn't going to cover the remaining peak period)"],
   [/^carga en llano \(no llegaba a cubrir la punta que queda\)$/, () => "mid-peak charging (wasn't going to cover the remaining peak period)"],
+  [/^carga en valle con excedente solar y red \(objetivo reserva ([\d.,]+) kWh\)$/, (m) => `charging off-peak with solar surplus and grid (reserve target ${m[1]} kWh)`],
+  [/^carga en llano con excedente solar y red \(no llegaba a cubrir la punta que queda\)$/, () => "mid-peak charging with solar surplus and grid (wasn't going to cover the remaining peak period)"],
   [/^sin carga: al limite de potencia contratada$/, () => 'no charging: at the contracted power limit'],
   [/^descarga para cubrir consumo en punta$/, () => 'discharging to cover peak-hour consumption'],
   [/^descarga para cubrir consumo en llano$/, () => 'discharging to cover mid-peak consumption'],
@@ -1741,6 +1749,13 @@ async function togglePluginInstall(slug, install) {
     const body = await r.json().catch(() => ({}));
     toast(body.error || t('store_error'));
   }
+}
+
+// Numero del campo, o `fallback` SOLO si esta vacio o no es un numero (un 0
+// escrito a proposito se respeta).
+function numOr(raw, fallback) {
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : fallback;
 }
 
 function escapeHtml(s) {
@@ -2027,7 +2042,7 @@ function populateEcoflowPvBatterySelect() {
   const sel = document.getElementById('pv-ecoflow-battery');
   const candidates = cfg.batteries.filter(b => b.source === 'ecoflow');
   sel.innerHTML = candidates.length
-    ? candidates.map(b => `<option value="${b.id}">${b.name}</option>`).join('')
+    ? candidates.map(b => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)}</option>`).join('')
     : `<option value="">${t('opt_no_ecoflow_ble_batteries')}</option>`;
 }
 
@@ -2039,25 +2054,25 @@ function renderBatteries() {
   el.innerHTML = cfg.batteries.map(b => `
     <details class="item-card item-details">
       <summary>
-        <span class="item-name">${b.name}</span>
-        <span class="meta">${b.capacity_wh} Wh</span>
+        <span class="item-name">${escapeHtml(b.name)}</span>
+        <span class="meta">${escapeHtml(b.capacity_wh)} Wh</span>
       </summary>
       <div class="item-body">
         ${b.source === 'ecoflow' ? `
         <div class="kv"><span>${t('kv_source')}</span><code>EcoFlow — ${t('opt_ecoflow_mode_' + (b.ecoflow_mode || 'cloud'))}</code></div>
-        ${b.ecoflow_sn ? `<div class="kv"><span>${t('kv_ecoflow_sn')}</span><code>${b.ecoflow_sn}</code></div>` : ''}
-        ${b.ecoflow_ble_address ? `<div class="kv"><span>${t('kv_ecoflow_address')}</span><code>${b.ecoflow_ble_address}</code></div>` : ''}
+        ${b.ecoflow_sn ? `<div class="kv"><span>${t('kv_ecoflow_sn')}</span><code>${escapeHtml(b.ecoflow_sn)}</code></div>` : ''}
+        ${b.ecoflow_ble_address ? `<div class="kv"><span>${t('kv_ecoflow_address')}</span><code>${escapeHtml(b.ecoflow_ble_address)}</code></div>` : ''}
         ` : `
-        <div class="kv"><span>${t('kv_soc')}</span><code>${b.soc_sensor}</code></div>
-        <div class="kv"><span>${t('kv_charge_switch')}</span><code>${b.charge_switch}</code></div>
-        <div class="kv"><span>${t('kv_discharge_switch')}</span><code>${b.discharge_switch}</code></div>
+        <div class="kv"><span>${t('kv_soc')}</span><code>${escapeHtml(b.soc_sensor)}</code></div>
+        <div class="kv"><span>${t('kv_charge_switch')}</span><code>${escapeHtml(b.charge_switch)}</code></div>
+        <div class="kv"><span>${t('kv_discharge_switch')}</span><code>${escapeHtml(b.discharge_switch)}</code></div>
         `}
         <div class="kv"><span>${t('kv_max_charge')}</span><code>${b.max_charge_w} W</code></div>
         <div class="kv"><span>${t('kv_max_discharge')}</span><code>${b.max_discharge_w} W</code></div>
         <div class="kv"><span>${t('kv_min_max_soc')}</span><code>${b.min_soc_pct}% / ${b.max_soc_pct}%</code></div>
-        ${b.charge_power_limit_entity ? `<div class="kv"><span>${t('kv_charge_limit')}</span><code>${b.charge_power_limit_entity}</code></div>` : ''}
-        ${b.discharge_power_limit_entity ? `<div class="kv"><span>${t('kv_discharge_limit')}</span><code>${b.discharge_power_limit_entity}</code></div>` : ''}
-        ${b.source !== 'ecoflow' ? (batteryPowerSensorSummary(b) ? `<div class="kv"><span>${t('kv_power_sensor')}</span><code>${batteryPowerSensorSummary(b)}</code></div>` : `<p class="help">${t('no_discharge_sensor_note')}</p>`) : ''}
+        ${b.charge_power_limit_entity ? `<div class="kv"><span>${t('kv_charge_limit')}</span><code>${escapeHtml(b.charge_power_limit_entity)}</code></div>` : ''}
+        ${b.discharge_power_limit_entity ? `<div class="kv"><span>${t('kv_discharge_limit')}</span><code>${escapeHtml(b.discharge_power_limit_entity)}</code></div>` : ''}
+        ${b.source !== 'ecoflow' ? (batteryPowerSensorSummary(b) ? `<div class="kv"><span>${t('kv_power_sensor')}</span><code>${escapeHtml(batteryPowerSensorSummary(b))}</code></div>` : `<p class="help">${t('no_discharge_sensor_note')}</p>`) : ''}
         ${b.source === 'ecoflow' && b.ecoflow_allow_manual_controls ? `
         <div class="actions" style="margin-top:10px;flex-wrap:wrap">
           <input type="number" id="ecoflow-reserve-${b.id}" min="0" max="100" placeholder="%" style="width:64px" title="Reserva de emergencia (%)">
@@ -2111,7 +2126,7 @@ function renderPvArrays() {
   el.innerHTML = cfg.pv_arrays.map(a => `
     <div class="item-card">
       <div>
-        <div class="item-name">${a.name || '(?)'}</div>
+        <div class="item-name">${escapeHtml(a.name || '(?)')}</div>
         ${a.ecoflow_battery_id ? `
         <div class="meta">${t('pv_meta_ecoflow', { battery: (cfg.batteries.find(b => b.id === a.ecoflow_battery_id) || {}).name || '?', ports: (a.ecoflow_pv_channels || []).join(', ') })}</div>
         ${a.mode === 'forecast_solar_api' ? `<div class="meta">${t('pv_meta_api', { kwp: a.kwp })}</div>` : ''}
@@ -2123,7 +2138,7 @@ function renderPvArrays() {
       </div>
       <div class="actions" style="margin-top:0">
         <button class="secondary" onclick="editPvArray('${a.id}')" type="button">${t('btn_edit')}</button>
-        <button class="danger" onclick="deletePvArray('${a.id}')" type="button">${t('btn_delete_battery').split(' ').slice(0,1).join(' ') === 'Delete' ? 'Delete' : 'Eliminar'}</button>
+        <button class="danger" onclick="deletePvArray('${a.id}')" type="button">${t('btn_delete')}</button>
       </div>
     </div>`).join('');
 }
@@ -2304,8 +2319,10 @@ async function addBattery() {
     capacity_wh: parseFloat(document.getElementById('b-capacity').value),
     max_charge_w: parseFloat(document.getElementById('b-maxcharge').value) || 1200,
     max_discharge_w: parseFloat(document.getElementById('b-maxdischarge').value) || 1200,
-    min_soc_pct: parseFloat(document.getElementById('b-minsoc').value) || 3,
-    max_soc_pct: parseFloat(document.getElementById('b-maxsoc').value) || 100,
+    // `numOr`, no `|| 3`: un SOC minimo del 0 % es un valor valido, y con
+    // `||` (0 es falsy) se guardaba como 3 sin avisar.
+    min_soc_pct: numOr(document.getElementById('b-minsoc').value, 3),
+    max_soc_pct: numOr(document.getElementById('b-maxsoc').value, 100),
     source: source,
   };
   if (source === 'ecoflow') {
@@ -2374,7 +2391,14 @@ async function addBattery() {
   toast(isEdit ? t('toast_battery_updated') : t('toast_battery_added'));
 }
 
+// Borrar es de un solo clic y no tiene vuelta atras: se pide confirmacion,
+// con el nombre de lo que se va a borrar.
+function confirmDelete(name) {
+  return window.confirm(t('confirm_delete', { name: name || '?' }));
+}
+
 async function deleteBattery(id) {
+  if (!confirmDelete(((cfg.batteries || []).find(x => x.id === id) || {}).name)) return;
   try {
     const res = await fetch('api/batteries/' + id, { method: 'DELETE' });
     if (!res.ok) { toast(t('toast_could_not_delete', { status: res.status })); return; }
@@ -2468,7 +2492,7 @@ async function addPvArray() {
     api_key: document.getElementById('pv-apikey').value.trim(),
     lat: parseFloat(document.getElementById('pv-lat').value) || 0,
     lon: parseFloat(document.getElementById('pv-lon').value) || 0,
-    declination: parseFloat(document.getElementById('pv-decl').value) || 30,
+    declination: numOr(document.getElementById('pv-decl').value, 30),  // 0 = panel horizontal, valido
     azimuth: parseFloat(document.getElementById('pv-az').value) || 0,
     kwp: parseFloat(document.getElementById('pv-kwp').value) || 1,
     current_sensor: mode === 'ecoflow_battery' ? null : (document.getElementById('pv-current-sensor').value.trim() || null),
@@ -2506,6 +2530,7 @@ async function addPvArray() {
 }
 
 async function deletePvArray(id) {
+  if (!confirmDelete(((cfg.pv_arrays || []).find(x => x.id === id) || {}).name)) return;
   try {
     const res = await fetch('api/pv_arrays/' + id, { method: 'DELETE' });
     if (!res.ok) { toast(t('toast_could_not_delete_panel', { status: res.status })); return; }
@@ -2531,12 +2556,12 @@ function renderDeferrableLoads() {
   el.innerHTML = loads.map(load => `
     <details class="item-card item-details">
       <summary>
-        <span class="item-name">${load.name}${!load.enabled ? ` <span class="meta">(${t('deferrable_disabled')})</span>` : ''}</span>
+        <span class="item-name">${escapeHtml(load.name)}${!load.enabled ? ` <span class="meta">(${t('deferrable_disabled')})</span>` : ''}</span>
         <span class="meta">${deferrableFrequencyLabel(load)}</span>
       </summary>
       <div class="item-body">
-        <div class="kv"><span>${t('kv_switch')}</span><code>${load.switch_entity}</code></div>
-        ${load.power_sensor ? `<div class="kv"><span>${t('kv_power_sensor')}</span><code>${load.power_sensor}</code></div>` : ''}
+        <div class="kv"><span>${t('kv_switch')}</span><code>${escapeHtml(load.switch_entity)}</code></div>
+        ${load.power_sensor ? `<div class="kv"><span>${t('kv_power_sensor')}</span><code>${escapeHtml(load.power_sensor)}</code></div>` : ''}
         <div class="kv"><span>${t('kv_duration')}</span><code>${load.duration_hours}h</code></div>
         <div class="kv"><span>${t('kv_frequency')}</span><code>${deferrableFrequencyLabel(load)}</code></div>
         ${(load.days_of_week && load.days_of_week.length) ? `<div class="kv"><span>${t('kv_days')}</span><code>${load.days_of_week.map(d => t(DAY_KEYS[d])).join(', ')}</code></div>` : ''}
@@ -2546,7 +2571,7 @@ function renderDeferrableLoads() {
         <div class="actions">
           <button class="secondary" onclick="editDeferrableLoad('${load.id}')" type="button">${t('btn_edit')}</button>
           ${(load.frequency === 'once' && load.done) ? `<button class="secondary" onclick="rescheduleDeferrableLoad('${load.id}')" type="button">${t('btn_reschedule')}</button>` : ''}
-          <button class="danger" onclick="deleteDeferrableLoad('${load.id}')" type="button">${t('btn_delete_battery')}</button>
+          <button class="danger" onclick="deleteDeferrableLoad('${load.id}')" type="button">${t('btn_delete')}</button>
         </div>
       </div>
     </details>`).join('');
@@ -2650,6 +2675,7 @@ async function addDeferrableLoad() {
 }
 
 async function deleteDeferrableLoad(id) {
+  if (!confirmDelete(((cfg.deferrable_loads || []).find(x => x.id === id) || {}).name)) return;
   try {
     const res = await fetch('api/deferrable_loads/' + id, { method: 'DELETE' });
     if (!res.ok) { toast(t('toast_could_not_delete_deferrable', { status: res.status })); return; }
@@ -2694,11 +2720,11 @@ function renderTrackedEntities() {
   if (!entities.length) { el.innerHTML = `<p class="empty">${t('empty_no_tracked_entities')}</p>`; return; }
   el.innerHTML = entities.map(e => `
     <div class="item-card">
-      <div class="kv"><span>${e.label || e.entity_id}</span><code>${e.entity_id}</code></div>
+      <div class="kv"><span>${escapeHtml(e.label || e.entity_id)}</span><code>${escapeHtml(e.entity_id)}</code></div>
       <div class="kv"><span>${t('label_entity_type')}</span><code>${trackedEntityTypeLabel(e.type)}</code></div>
       <div class="actions">
         <button class="secondary" onclick="editTrackedEntity('${e.id}')" type="button">${t('btn_edit')}</button>
-        <button class="danger" onclick="deleteTrackedEntity('${e.id}')" type="button">${t('btn_delete_battery')}</button>
+        <button class="danger" onclick="deleteTrackedEntity('${e.id}')" type="button">${t('btn_delete')}</button>
       </div>
     </div>`).join('');
 }
@@ -2767,6 +2793,8 @@ async function addTrackedEntity() {
 }
 
 async function deleteTrackedEntity(id) {
+  const tracked = (cfg.tracked_entities || []).find(x => x.id === id) || {};
+  if (!confirmDelete(tracked.label || tracked.entity_id)) return;
   try {
     const res = await fetch('api/tracked_entities/' + id, { method: 'DELETE' });
     if (!res.ok) { toast(t('toast_could_not_delete_deferrable', { status: res.status })); return; }
@@ -2777,23 +2805,49 @@ async function deleteTrackedEntity(id) {
   toast(t('toast_tracked_entity_deleted'));
 }
 
-function parsePeriods(str) {
-  return str.split(',').map(s => s.trim()).filter(Boolean).map(s => s.split('-').map(n => parseInt(n, 10)));
+// Periodos "10-14,18-22" -> [[10,14],[18,22]], o null si alguno no es valido.
+function parsePeriodsStrict(str) {
+  const out = [];
+  for (const chunk of str.split(',').map(x => x.trim()).filter(Boolean)) {
+    const m = chunk.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+    if (!m) return null;
+    const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+    if (!(a >= 0 && a < b && b <= 24)) return null;
+    out.push([a, b]);
+  }
+  return out;
 }
 
 async function saveConfig() {
+  // Todo se valida ANTES de tocar `cfg`: un campo numerico en blanco daba NaN,
+  // que viaja al backend como `null` y dejaba el planificador fallando en
+  // cada ciclo hasta que alguien lo corrigiera.
+  const numericFields = [
+    ['t-punta', 'label_price_punta'], ['t-llano', 'label_price_llano'], ['t-valle', 'label_price_valle'],
+    ['g-horizon', 'label_horizon'], ['g-cycle', 'label_cycle'], ['g-pvrefresh', 'label_pv_refresh'],
+    ['g-histdays', 'label_history_days'],
+  ];
+  const bad = numericFields.filter(([id]) => !Number.isFinite(parseFloat(document.getElementById(id).value)));
+  if (bad.length) {
+    toast(t('error_number_fields', { fields: bad.map(([, key]) => t(key)).join(', ') }));
+    return;
+  }
+  const puntaPeriods = parsePeriodsStrict(document.getElementById('t-punta-periods').value);
+  const llanoPeriods = parsePeriodsStrict(document.getElementById('t-llano-periods').value);
+  if (puntaPeriods === null || llanoPeriods === null) { toast(t('error_periods_invalid')); return; }
+
   cfg.tariff.mode = document.getElementById('t-mode').value;
   cfg.tariff.punta_price = parseFloat(document.getElementById('t-punta').value);
   cfg.tariff.llano_price = parseFloat(document.getElementById('t-llano').value);
   cfg.tariff.valle_price = parseFloat(document.getElementById('t-valle').value);
-  cfg.tariff.punta_periods = parsePeriods(document.getElementById('t-punta-periods').value);
-  cfg.tariff.llano_periods = parsePeriods(document.getElementById('t-llano-periods').value);
+  cfg.tariff.punta_periods = puntaPeriods;
+  cfg.tariff.llano_periods = llanoPeriods;
   cfg.tariff.weekend_is_valle = document.getElementById('t-weekend').checked;
-  cfg.tariff.pvpc_sensor = document.getElementById('t-pvpc-sensor').value;
+  cfg.tariff.pvpc_sensor = document.getElementById('t-pvpc-sensor').value.trim();
 
   const loadMode = document.getElementById('load-sensor-mode').value;
   cfg.load_sensor_mode = loadMode;
-  cfg.load_sensor = document.getElementById('load-sensor').value;
+  cfg.load_sensor = document.getElementById('load-sensor').value.trim();
   cfg.export_sensor = loadMode === 'separate' ? (document.getElementById('export-sensor').value.trim() || null) : null;
   cfg.net_grid_sensor = loadMode === 'combined' ? (document.getElementById('net-grid-sensor').value.trim() || null) : null;
   cfg.grid_import_energy_sensor = document.getElementById('grid-import-energy-sensor').value.trim();
@@ -2875,7 +2929,7 @@ function renderStatus(status) {
   const el = document.getElementById('status');
   const statGrid = document.getElementById('stat-grid');
   if (status.error) {
-    el.innerHTML = `<p style="color:var(--red)">${status.error}</p>`;
+    el.innerHTML = `<p style="color:var(--red)">${escapeHtml(status.error)}</p>`;
     statGrid.innerHTML = '';
   } else if (!status.last_run) {
     el.innerHTML = `<p class="empty">${t('status_never_run')}</p>`;
@@ -2888,7 +2942,7 @@ function renderStatus(status) {
     if (status.pv_now_actual !== null && status.pv_now_actual !== undefined) {
       extra += `<p class="help">${t('status_generation_now', { w: Math.round(status.pv_now_actual) })}</p>`;
     }
-    const logLines = (status.log_lines || []).map(translateLogLine).join('\n');
+    const logLines = (status.log_lines || []).map(translateLogLine).map(escapeHtml).join('\n');
     el.innerHTML = extra + `<div class="status-line">${logLines}</div>`;
     statGrid.innerHTML = renderStatTiles(status, lastSavings);
   }
@@ -2915,7 +2969,7 @@ function renderStatus(status) {
       <td>${hp.charge_w > 0 ? hp.charge_w + ' W' : '–'}</td>
       <td>${hp.discharge_w > 0 ? hp.discharge_w + ' W' : '–'}</td>
       <td>${hp.soc_pct}%</td>
-      <td class="meta">${translateReason(hp.reason)}</td>
+      <td class="meta">${escapeHtml(translateReason(hp.reason))}</td>
     </tr>`).join('');
 
   const socChartPanel = document.querySelector('.tab-panel[data-tab="prevision"]');
@@ -3264,7 +3318,7 @@ function renderBatteryBreakdown(distribution) {
 
   const rows = entries.map(e => {
     if (e.soc_pct === null || e.soc_pct === undefined) {
-      return `<div class="battery-mini"><div class="bm-name">${e.name}${ecoflowSourceIcon(e.ecoflow_source)}</div><span class="bm-status idle">${t('battery_status_no_data')}</span></div>`;
+      return `<div class="battery-mini"><div class="bm-name">${escapeHtml(e.name)}${ecoflowSourceIcon(e.ecoflow_source)}</div><span class="bm-status idle">${t('battery_status_no_data')}</span></div>`;
     }
     const statusClass = action === 'charge' && e.enabled ? 'charge' : action === 'discharge' && e.enabled ? 'discharge' : 'idle';
     const statusText = statusClass === 'charge' ? t('battery_status_charging', { w: e.power_w }) : statusClass === 'discharge' ? t('battery_status_discharge', { w: e.power_w }) : t('battery_status_idle');
@@ -3278,7 +3332,7 @@ function renderBatteryBreakdown(distribution) {
 
     return `
     <div class="battery-mini">
-      <div class="bm-name">${e.name}${ecoflowSourceIcon(e.ecoflow_source)}</div>
+      <div class="bm-name">${escapeHtml(e.name)}${ecoflowSourceIcon(e.ecoflow_source)}</div>
       <div class="bm-bar-track"><div class="bm-bar-fill" style="width:${e.soc_pct}%; background:${barColor}"></div></div>
       <div class="bm-pct">${e.soc_pct.toFixed ? e.soc_pct.toFixed(1) : e.soc_pct}%</div>
       <span class="bm-status ${statusClass}">${statusText}</span>
@@ -3317,7 +3371,7 @@ function renderDeferrableStatus() {
 
     return `
     <div class="battery-mini" style="flex-wrap:wrap">
-      <div class="bm-name">${load.name}${!load.enabled ? ` <span class="meta">(${t('deferrable_disabled')})</span>` : ''}${load.interruptible ? ` <span class="meta">· ${t('deferrable_interruptible_badge')}</span>` : ''}</div>
+      <div class="bm-name">${escapeHtml(load.name)}${!load.enabled ? ` <span class="meta">(${t('deferrable_disabled')})</span>` : ''}${load.interruptible ? ` <span class="meta">· ${t('deferrable_interruptible_badge')}</span>` : ''}</div>
       <span class="bm-status ${statusClass}">${statusTxt}</span>
       <div class="meta" style="flex-basis:100%">${t('deferrable_scheduled')}: ${schedTxt}</div>
     </div>`;
@@ -3344,7 +3398,7 @@ function renderClimateOrchestratorStatus(climateData) {
 
   const rows = zones.map(z => `
     <div class="battery-mini">
-      <div class="bm-name">${z.name}</div>
+      <div class="bm-name">${escapeHtml(z.name)}</div>
       <span class="bm-status ${z.unknown ? 'idle' : (z.power_w > 0 ? 'charge' : 'idle')}">${z.unknown ? t('climate_power_unknown') : Math.round(z.power_w) + ' W'}</span>
     </div>`).join('');
 
@@ -3372,7 +3426,7 @@ function renderClimateOrchestratorStatus(climateData) {
 function renderClimateDiscoveryState(zoneIds, discoveredAt) {
   const host = document.getElementById('climate-discovery-zones');
   if (!zoneIds.length) { host.innerHTML = ''; return; }
-  const rows = zoneIds.map(id => `<div class="battery-mini"><div class="bm-name">${id}</div></div>`).join('');
+  const rows = zoneIds.map(id => `<div class="battery-mini"><div class="bm-name">${escapeHtml(id)}</div></div>`).join('');
   const lastLine = discoveredAt
     ? `<p class="help">${t('climate_discovery_last', { date: new Date(discoveredAt).toLocaleString() })}</p>` : '';
   host.innerHTML = `
@@ -3457,6 +3511,8 @@ async function saveEcoflowCredentials() {
 // Cloud y Bluetooth por SN cuando el modo es Hibrido — una fila por
 // bateria fisica, con lo que se haya encontrado de cada lado, en vez de
 // dos listas sueltas que habia que enlazar a mano.
+let lastEcoflowDiscovery = [];
+
 async function discoverEcoflowDevices() {
   const btn = document.getElementById('ecoflow-discover-btn');
   const result = document.getElementById('ecoflow-discover-result');
@@ -3490,7 +3546,11 @@ async function discoverEcoflowDevices() {
     : devices.length === 1 ? t('ecoflow_discovery_found_one', { n: devices.length })
     : t('ecoflow_discovery_found_n', { n: devices.length });
 
-  list.innerHTML = devices.map(d => {
+  // Los dispositivos se guardan aparte y el boton los referencia por indice:
+  // antes el objeto entero iba como JSON DENTRO del atributo onclick, y un
+  // nombre de dispositivo con un apostrofo rompia el HTML del boton.
+  lastEcoflowDiscovery = devices;
+  list.innerHTML = devices.map((d, i) => {
     const badges = [];
     if (d.cloud_found) badges.push(`<span class="pill pill-ok">Cloud${d.online === false ? ' (' + t('ecoflow_offline') + ')' : ''}</span>`);
     if (d.ble_found) badges.push(`<span class="pill pill-ok">Bluetooth</span>`);
@@ -3498,14 +3558,14 @@ async function discoverEcoflowDevices() {
     return `
       <div class="item-card">
         <div>
-          <div class="item-name">${d.name}</div>
-          <div class="meta">${d.sn}</div>
+          <div class="item-name">${escapeHtml(d.name)}</div>
+          <div class="meta">${escapeHtml(d.sn)}</div>
           <div class="actions" style="margin-top:6px">${badges.join('')}</div>
         </div>
         <div class="actions" style="margin-top:0">
           ${d.already_added
             ? `<span class="pill pill-ok">${t('ecoflow_already_added')}</span>`
-            : `<button class="secondary" type="button" onclick='addEcoflowBatteryFromDiscovery(${JSON.stringify(d)})'>${t('btn_add_as_battery')}</button>`}
+            : `<button class="secondary" type="button" onclick="addEcoflowBatteryFromDiscovery(lastEcoflowDiscovery[${i}])">${t('btn_add_as_battery')}</button>`}
         </div>
       </div>`;
   }).join('');
@@ -3639,18 +3699,17 @@ async function refreshLive() {
   renderPowerMeter();
 }
 
-// El sensor de consumo declarado ("Sensor de consumo de red") es la base
-// YA SIN la carga de baterías (ver "Consumo de la casa" en Configuración)
-// — para reconstruir el consumo real total hay que sumarle la producción
-// solar y la descarga de baterías, exactamente igual que hace
-// ha_client.true_load_forecast() con el histórico. Sin esto, en cuanto
-// las baterías (o el sol) cubren casi todo el consumo, el sensor base
-// lee casi 0 y parecía que "no había consumo" aunque las baterías
-// estuvieran descargando a tope.
+// Consumo total de la casa AHORA MISMO.
+//
+// BUG REAL: esta funcion sumaba el sol y la descarga de baterias a
+// `lastLive.load_now_w`... pero `/api/live` ya devuelve ese campo
+// RECONSTRUIDO (consumo de red + sol + descarga, ver main.py). El sol y la
+// descarga se sumaban DOS veces: con la bateria cubriendo 600 W de consumo,
+// la tarjeta "Consumo" marcaba 1200 W. El comentario de aqui describia el
+// campo como era antes de que el backend hiciera la reconstruccion.
 function liveReconstructedLoadW() {
   if (!lastLive || lastLive.load_now_w === null || lastLive.load_now_w === undefined) return null;
-  const solar = lastLive.pv_now_w || 0;
-  return lastLive.load_now_w + solar + batteryLiveSplit().dischargeW;
+  return lastLive.load_now_w;
 }
 
 // Reparte la lectura en vivo del CONJUNTO de baterias en carga/descarga.
@@ -3817,7 +3876,7 @@ async function loadBatteryHealth() {
     if (h.health_pct === null || h.health_pct === undefined) {
       return `
       <div class="health-card">
-        <span class="item-name">${h.name}</span>
+        <span class="item-name">${escapeHtml(h.name)}</span>
         <p class="help">${t('salud_no_data')}</p>
         <p class="help">${cyclesLine}</p>
       </div>`;
@@ -3826,7 +3885,7 @@ async function loadBatteryHealth() {
     const colorVar = h.health_pct >= 90 ? '--green' : h.health_pct >= 75 ? '--amber' : '--red';
     return `
     <div class="health-card">
-      <span class="item-name">${h.name}</span>
+      <span class="item-name">${escapeHtml(h.name)}</span>
       <div class="stat-grid">
         <div class="stat-tile"><div class="stat-label">${t('salud_estimada')}</div><div class="stat-value" style="color:var(${colorVar})">${h.health_pct}%</div></div>
         <div class="stat-tile"><div class="stat-label">${t('salud_declarada')}</div><div class="stat-value">${(h.declared_capacity_wh/1000).toFixed(1)} kWh</div></div>
@@ -3895,12 +3954,18 @@ async function renderPluginSwitch() {
     // atrapar — setInterval no tiene quien la capture. Se ignora y se
     // reintenta solo en el siguiente poll, 15s despues (igual que ya hace
     // refreshLive() con su propio try/catch interno).
-    setInterval(() => { refreshStatus().catch(() => {}); }, 15000);
+    // Con la pestaña oculta (otra pestaña delante, movil bloqueado, panel de
+    // HA en otra vista) no se pide nada: antes seguia sondeando cada 5 s para
+    // pintar algo que nadie mira. Al volver se refresca al momento.
+    setInterval(() => { if (!document.hidden) refreshStatus().catch(() => {}); }, 15000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) { refreshStatus().catch(() => {}); refreshLive(); }
+    });
     // "en vivo" aparte del ciclo completo de optimizacion: lecturas
     // directas a Home Assistant, mucho mas rapidas de refrescar (5s) que
     // esperar a que se relance el ciclo entero (cycle_seconds, tipicamente 60s).
     await refreshLive();
-    setInterval(refreshLive, 5000);
+    setInterval(() => { if (!document.hidden) refreshLive(); }, 5000);
   } catch (err) {
     document.body.insertAdjacentHTML('afterbegin',
       `<div class="card" style="border-color:var(--red)"><p style="color:var(--red)">

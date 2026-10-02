@@ -16,10 +16,11 @@ que la app va decidiendo y midiendo sola:
 
 from __future__ import annotations
 
-import json
 import os
 import statistics
 import threading
+
+import json_store
 from datetime import datetime
 
 DEFERRABLE_PATH = os.environ.get("DEFERRABLE_PATH", "/data/deferrable.json")
@@ -77,29 +78,18 @@ def _default() -> dict:
 
 
 def _load() -> dict:
-    with _lock:
-        if not os.path.exists(DEFERRABLE_PATH):
-            return _default()
-        try:
-            with open(DEFERRABLE_PATH) as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return _default()
-        data.setdefault("schedules", {})
-        data.setdefault("sessions", {})
-        return data
+    data = json_store.load(DEFERRABLE_PATH)
+    if not isinstance(data, dict):
+        return _default()
+    data.setdefault("schedules", {})
+    data.setdefault("sessions", {})
+    return data
 
 
 def _save(data: dict) -> None:
-    os.makedirs(os.path.dirname(DEFERRABLE_PATH), exist_ok=True)
-    with _lock:
-        # Escritura ATOMICA (.tmp + os.replace) -- ver config_store._write_raw:
-        # un corte a mitad de un `open(..., "w")` directo dejaba el fichero
-        # truncado o con dos objetos JSON concatenados.
-        tmp = DEFERRABLE_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, DEFERRABLE_PATH)
+    # Copia en memoria + volcado a disco diferido y atomico: ver json_store.py
+    # (este fichero se reescribia entero en cada ciclo de planificacion).
+    json_store.save(DEFERRABLE_PATH, data)
 
 
 def get_schedule(load_id: str) -> dict | None:
@@ -111,6 +101,8 @@ def save_schedule(load_id: str, schedule: dict) -> None:
     # ver el mismo arreglo en lifetime_store.accumulate.
     with _lock:
         data = _load()
+        if data["schedules"].get(load_id) == schedule:
+            return  # misma ventana que ya estaba guardada: nada que escribir
         data["schedules"][load_id] = schedule
         _save(data)
 
@@ -145,13 +137,35 @@ def truncate_occurrence_now(load_id: str, now: datetime) -> None:
         _save(data)
 
 
-def record_no_surplus_streak(load_id: str, has_surplus: bool) -> int:
+def seconds_without_surplus(load_id: str, has_surplus: bool, now: datetime) -> float:
+    """Segundos SEGUIDOS que esta carga lleva sin el excedente solar que
+    justificaba su ventana (0 si ahora mismo lo hay).
+
+    Antes se contaba en CICLOS (`record_no_surplus_streak`, 2 seguidos), pensado
+    para un ciclo por minuto: con el ciclo reactivo (~2 por segundo) una nube de
+    un segundo cortaba la carga. El tiempo real no depende del ritmo del ciclo.
+    """
     with _lock:
         data = _load()
         sess = data["sessions"].setdefault(load_id, _default_session())
-        sess["no_surplus_streak"] = 0 if has_surplus else sess.get("no_surplus_streak", 0) + 1
-        _save(data)
-        return sess["no_surplus_streak"]
+        since = sess.get("no_surplus_since")
+        if has_surplus:
+            if since is None and not sess.get("no_surplus_streak"):
+                return 0.0  # nada que cambiar: no se reescribe el fichero
+            sess["no_surplus_since"] = None
+            sess["no_surplus_streak"] = 0
+            _save(data)
+            return 0.0
+        if since is None:
+            sess["no_surplus_since"] = now.isoformat()
+            _save(data)
+            return 0.0
+        try:
+            return max(0.0, (now - datetime.fromisoformat(since)).total_seconds())
+        except (TypeError, ValueError):
+            sess["no_surplus_since"] = now.isoformat()
+            _save(data)
+            return 0.0
 
 
 def record_session_start(load_id: str, now: datetime) -> None:
@@ -162,7 +176,7 @@ def record_session_start(load_id: str, now: datetime) -> None:
             sess["active_since"] = now.isoformat()
             sess["active_energy_wh"] = 0.0
             sess["last_accumulate_ts"] = now.isoformat()
-        _save(data)
+            _save(data)  # solo al EMPEZAR la sesion, no en cada ciclo que sigue activa
 
 
 def accumulate_session_energy(load_id: str, power_w: float, now: datetime) -> None:
@@ -204,6 +218,7 @@ def end_session(load_id: str, now: datetime) -> float | None:
         sess["active_since"] = None
         sess["active_energy_wh"] = 0.0
         sess["no_surplus_streak"] = 0
+        sess["no_surplus_since"] = None
         sess["last_accumulate_ts"] = None
         # `energy > 1` ignora sesiones vacias/ruido de sensor; el tope de
         # duracion ignora una ventana que nunca se cerro a tiempo -- ver

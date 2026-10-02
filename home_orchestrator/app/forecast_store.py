@@ -15,9 +15,10 @@ y la comparacion perderia todo el sentido.
 
 from __future__ import annotations
 
-import json
 import os
 import threading
+
+import json_store
 from datetime import datetime
 
 FORECAST_PATH = os.environ.get("FORECAST_PATH", "/data/forecast_accuracy.json")
@@ -30,26 +31,14 @@ def _hour_key(dt: datetime) -> str:
 
 
 def _load() -> dict:
-    with _lock:
-        if not os.path.exists(FORECAST_PATH):
-            return {}
-        try:
-            with open(FORECAST_PATH) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return {}
+    data = json_store.load(FORECAST_PATH)
+    return data if isinstance(data, dict) else {}
 
 
 def _save(data: dict) -> None:
-    os.makedirs(os.path.dirname(FORECAST_PATH), exist_ok=True)
-    with _lock:
-        # Escritura ATOMICA (.tmp + os.replace) -- ver config_store._write_raw:
-        # un corte a mitad de un `open(..., "w")` directo dejaba el fichero
-        # truncado o con dos objetos JSON concatenados.
-        tmp = FORECAST_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, FORECAST_PATH)
+    # Copia en memoria + volcado a disco diferido y atomico: ver json_store.py
+    # (este fichero se reescribia entero en cada ciclo de planificacion).
+    json_store.save(FORECAST_PATH, data)
 
 
 def record_and_compare(now: datetime, predicted_end_of_hour_soc_pct: float, actual_soc_pct_now: float) -> dict | None:

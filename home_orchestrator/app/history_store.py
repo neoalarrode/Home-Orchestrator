@@ -10,9 +10,10 @@ que al cerrar la hora queda registrado lo que de verdad se aplico.
 
 from __future__ import annotations
 
-import json
 import os
 import threading
+
+import json_store
 from datetime import datetime, timedelta
 
 HISTORY_PATH = os.environ.get("HISTORY_PATH", "/data/history.json")
@@ -26,26 +27,14 @@ def _hour_key(dt: datetime) -> str:
 
 
 def _load() -> dict:
-    with _lock:
-        if not os.path.exists(HISTORY_PATH):
-            return {}
-        try:
-            with open(HISTORY_PATH) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return {}
+    data = json_store.load(HISTORY_PATH)
+    return data if isinstance(data, dict) else {}
 
 
 def _save(data: dict) -> None:
-    os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
-    with _lock:
-        # Escritura ATOMICA (.tmp + os.replace) -- ver config_store._write_raw:
-        # un corte a mitad de un `open(..., "w")` directo dejaba el fichero
-        # truncado o con dos objetos JSON concatenados.
-        tmp = HISTORY_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, HISTORY_PATH)
+    # Copia en memoria + volcado a disco diferido y atomico: ver json_store.py
+    # (este fichero se reescribia entero en cada ciclo de planificacion).
+    json_store.save(HISTORY_PATH, data)
 
 
 def record(now: datetime, entry: dict) -> None:

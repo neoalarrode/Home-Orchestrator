@@ -99,8 +99,8 @@ def decide(
                 **common, eta_charge=eta, eta_discharge=eta,
                 export_price=float(general_cfg.get("export_price_eur_kwh", 0.04) or 0),
                 wear_eur_per_kwh=float(general_cfg.get("battery_wear_eur_kwh", 0.01) or 0),
-                load_margin_frac=float(general_cfg.get("dp_load_margin_frac", 0.0)),
-                pv_margin_frac=float(general_cfg.get("dp_pv_margin_frac", 0.0)),
+                load_margin_frac=float(general_cfg.get("dp_load_margin_frac") or 0.0),
+                pv_margin_frac=float(general_cfg.get("dp_pv_margin_frac") or 0.0),
             )
         except Exception:
             log.warning("El motor 'dp' fallo; se usa el planificador 'classic' en este ciclo", exc_info=True)
@@ -120,6 +120,13 @@ def ac_charge_for_now(now_hp, hybrid_pv_now_w: float) -> float:
     ac_charge_w = now_hp.charge_w
     if now_hp.charge_source == "solar":
         ac_charge_w = max(0.0, now_hp.charge_w - hybrid_pv_now_w)
+    else:
+        # Hora mixta (excedente solar + red): solo la parte SOLAR puede estar
+        # ya entrando directa por los paneles "hybrid"; la de red hay que
+        # ordenarla entera.
+        solar_part = max(0.0, getattr(now_hp, "solar_charge_w", 0.0) or 0.0)
+        if solar_part > 0:
+            ac_charge_w = max(0.0, now_hp.charge_w - min(hybrid_pv_now_w, solar_part))
     return ac_charge_w
 
 

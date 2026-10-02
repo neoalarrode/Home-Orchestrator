@@ -208,6 +208,18 @@ def pv_channels_from_state(state: dict) -> dict:
     return channels
 
 
+# Campos del feed MQTT cuyo cambio dispara una replanificacion inmediata (ver
+# `EcoFlowCloudClient._is_relevant_change`). SOC y tareas: cualquier cambio.
+# Potencias: solo si se mueven mas que la banda muerta.
+_TRIGGER_EXACT_FIELDS = frozenset({"bmsBattSoc", "cmsBattSoc", "soc", "f32ShowSoc", "allTimerTask"})
+_TRIGGER_POWER_FIELDS = frozenset({
+    "powGetBpCms", "gridConnectionPower", "powGetPvSum",
+    "powGetPv", "powGetPv2", "powGetPv3", "powGetPv4",
+})
+TRIGGER_POWER_DEADBAND_W = 25.0
+_UNSET = object()
+
+
 class EcoFlowCloudClient:
     """
     Una conexion MQTT persistente para una cuenta EcoFlow — mantiene en
@@ -233,6 +245,7 @@ class EcoFlowCloudClient:
         self._username = None
         self._started = False
         self._rest_fallback_last_call: dict[str, float] = {}  # sn -> ultima vez que se pregunto por REST
+        self._trigger_marks: dict[str, dict] = {}  # sn -> valores que dispararon el ultimo ciclo reactivo
 
     # -- ciclo de vida ----------------------------------------------------
 
@@ -348,17 +361,49 @@ class EcoFlowCloudClient:
         # cambio desde el anterior).
         with self._lock:
             state = self._live_state.setdefault(sn, {})
+            relevant = self._is_relevant_change(sn, payload)
             state.update(payload)
             self._live_state_ts[sn] = time.time()
             if "allTimerTask" in payload:
                 self._all_timer_task[sn] = payload["allTimerTask"]
                 self._all_timer_task_ts[sn] = time.time()
 
-        if _live_update_callback is not None:
+        # El feed manda mensajes continuamente (temperaturas, tensiones,
+        # contadores internos...). Antes CADA mensaje relanzaba el ciclo de
+        # planificacion entero; ahora solo los que cambian algo que el
+        # planificador usa (SOC, potencias, tareas) y en una cantidad que
+        # importe -- ver `_is_relevant_change`.
+        if relevant and _live_update_callback is not None:
             try:
                 _live_update_callback()
             except Exception:
                 log.exception("Fallo en el callback de actualizacion en vivo de EcoFlow")
+
+    def _is_relevant_change(self, sn: str, payload: dict) -> bool:
+        """True si este mensaje trae un cambio que merece replanificar. Llamar
+        con `self._lock` cogido y ANTES de fusionar `payload` en el estado.
+
+        Se compara contra el valor que disparo la ULTIMA vez (no contra el
+        mensaje anterior): asi una deriva lenta de 1 W por mensaje acaba
+        disparando al acumular el umbral, en vez de pasar siempre por debajo.
+        """
+        marks = self._trigger_marks.setdefault(sn, {})
+        relevant = False
+        for key, value in payload.items():
+            if key in _TRIGGER_EXACT_FIELDS:
+                if marks.get(key, _UNSET) != value:
+                    marks[key] = copy.deepcopy(value) if isinstance(value, (dict, list)) else value
+                    relevant = True
+            elif key in _TRIGGER_POWER_FIELDS:
+                try:
+                    new_val = float(value)
+                except (TypeError, ValueError):
+                    continue
+                old_val = marks.get(key)
+                if old_val is None or abs(new_val - old_val) >= TRIGGER_POWER_DEADBAND_W:
+                    marks[key] = new_val
+                    relevant = True
+        return relevant
 
     # -- lectura ------------------------------------------------------------
 

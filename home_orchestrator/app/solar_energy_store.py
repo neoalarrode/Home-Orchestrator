@@ -18,9 +18,10 @@ tiempo real, no para el acumulado).
 
 from __future__ import annotations
 
-import json
 import os
 import threading
+
+import json_store
 from datetime import datetime
 
 SOLAR_ENERGY_PATH = os.environ.get("SOLAR_ENERGY_PATH", "/data/solar_energy.json")
@@ -29,29 +30,18 @@ _lock = threading.RLock()
 
 
 def _load() -> dict:
-    with _lock:
-        if not os.path.exists(SOLAR_ENERGY_PATH):
-            return {"since": None, "wh": 0.0}
-        try:
-            with open(SOLAR_ENERGY_PATH) as f:
-                data = json.load(f)
-                data.setdefault("since", None)
-                data.setdefault("wh", 0.0)
-                return data
-        except (json.JSONDecodeError, OSError):
-            return {"since": None, "wh": 0.0}
+    data = json_store.load(SOLAR_ENERGY_PATH)
+    if not isinstance(data, dict):
+        return {"since": None, "wh": 0.0}
+    data.setdefault("since", None)
+    data.setdefault("wh", 0.0)
+    return data
 
 
 def _save(data: dict) -> None:
-    os.makedirs(os.path.dirname(SOLAR_ENERGY_PATH), exist_ok=True)
-    with _lock:
-        # Escritura ATOMICA (.tmp + os.replace) -- ver config_store._write_raw:
-        # un corte a mitad de un `open(..., "w")` directo dejaba el fichero
-        # truncado o con dos objetos JSON concatenados.
-        tmp = SOLAR_ENERGY_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, SOLAR_ENERGY_PATH)
+    # Copia en memoria + volcado a disco diferido y atomico: ver json_store.py
+    # (este fichero se reescribia entero en cada ciclo de planificacion).
+    json_store.save(SOLAR_ENERGY_PATH, data)
 
 
 def set_total_wh(wh: float, since: str | None = None) -> dict:
@@ -62,12 +52,13 @@ def set_total_wh(wh: float, since: str | None = None) -> dict:
     su valor viejo deja los dos numeros peleados: el sensor seguiria contando
     desde el total inflado y la grafica daria un salto en la siguiente
     publicacion."""
-    data = _load()
-    data["wh"] = max(0.0, float(wh))
-    if since is not None:
-        data["since"] = since
-    _save(data)
-    return data
+    with _lock:
+        data = _load()
+        data["wh"] = max(0.0, float(wh))
+        if since is not None:
+            data["since"] = since
+        _save(data)
+        return data
 
 
 def accumulate(wh: float) -> None:
@@ -75,11 +66,14 @@ def accumulate(wh: float) -> None:
     lectura) al total de por vida."""
     if wh <= 0:
         return
-    data = _load()
-    if data["since"] is None:
-        data["since"] = datetime.now().isoformat()
-    data["wh"] += wh
-    _save(data)
+    # Ciclo completo bajo el mismo lock: sin el, la reconstruccion del historico
+    # (`set_total_wh`) y el bucle en vivo podian pisarse el uno al otro.
+    with _lock:
+        data = _load()
+        if data["since"] is None:
+            data["since"] = datetime.now().isoformat()
+        data["wh"] += wh
+        _save(data)
 
 
 def get_total_wh() -> dict:

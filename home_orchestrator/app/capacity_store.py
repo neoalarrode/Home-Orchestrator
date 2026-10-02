@@ -14,11 +14,12 @@ robusta que la media frente a una lectura rara), no un dato del BMS.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import statistics
 import threading
+
+import json_store
 
 log = logging.getLogger("capacity_store")
 
@@ -52,26 +53,14 @@ _lock = threading.RLock()
 
 
 def _load() -> dict:
-    with _lock:
-        if not os.path.exists(CAPACITY_PATH):
-            return {}
-        try:
-            with open(CAPACITY_PATH) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return {}
+    data = json_store.load(CAPACITY_PATH)
+    return data if isinstance(data, dict) else {}
 
 
 def _save(data: dict) -> None:
-    os.makedirs(os.path.dirname(CAPACITY_PATH), exist_ok=True)
-    with _lock:
-        # Escritura ATOMICA (.tmp + os.replace) -- ver config_store._write_raw:
-        # un corte a mitad de un `open(..., "w")` directo dejaba el fichero
-        # truncado o con dos objetos JSON concatenados.
-        tmp = CAPACITY_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, CAPACITY_PATH)
+    # Copia en memoria + volcado a disco diferido y atomico: ver json_store.py
+    # (este fichero se reescribia entero en cada ciclo de planificacion).
+    json_store.save(CAPACITY_PATH, data)
 
 
 def _default_entry(name: str) -> dict:

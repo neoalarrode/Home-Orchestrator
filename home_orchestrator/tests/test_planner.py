@@ -101,17 +101,98 @@ class PvpcFallback(unittest.TestCase):
 
 class SignFilteredAverage(unittest.TestCase):
     def test_expectation_not_conditional_mean(self):
-        """Carga de 1000 W en 1 de 10 muestras de la misma hora -> esperanza 100 W (no 1000 W)."""
+        """Carga de 1000 W durante 6 min de una hora (0 W el resto) -> esperanza
+        100 W (no 1000 W). La media es ponderada por TIEMPO: cada lectura vale
+        hasta la siguiente."""
         from datetime import timezone
-        pts = []
-        for k in range(10):
-            ts = datetime(2026, 9, 14 + (k % 3), 3, k, tzinfo=timezone.utc)   # mismo cubo (lunes-miercoles, 05:xx local)
-            pts.append({"state": "-1000" if k == 0 else "0", "last_changed": ts.isoformat()})
+        base = datetime(2026, 9, 14, 3, 0, tzinfo=timezone.utc)
+        pts = [
+            {"state": "-1000", "last_changed": base.isoformat()},
+            {"state": "0", "last_changed": (base + timedelta(minutes=6)).isoformat()},
+            {"state": "unavailable", "last_changed": (base + timedelta(hours=1)).isoformat()},
+        ]
         ha_client._safe_get_history = lambda e, d: pts
         ha_client._hourly_avg_cache.clear()
-        avg, _ = ha_client._hourly_avg_by_hour_of_day("sensor.p", 10, 0.0, False, sign_filter="negative")
-        vals = [v for v in avg.values() if v]
-        self.assertTrue(any(abs(v - 100.0) < 1e-6 for v in vals), vals[:3])
+        avg, reliable = ha_client._hourly_avg_by_hour_of_day("sensor.p", 10, 0.0, False, sign_filter="negative")
+        key = ha_client._bucket_key(base)
+        self.assertTrue(reliable[key])
+        self.assertAlmostEqual(avg[key], 100.0, places=6)
+        # la mitad contraria (descarga) de ese mismo sensor: 0 W
+        avg_pos, _ = ha_client._hourly_avg_by_hour_of_day("sensor.p", 10, 0.0, False, sign_filter="positive")
+        self.assertAlmostEqual(avg_pos[key], 0.0, places=6)
+
+
+class HistoryWindow(unittest.TestCase):
+    """`/api/history/period/<inicio>` sin `end_time` devuelve UN dia, no "desde
+    <inicio> hasta ahora": hay que pedir cada dia con su `end_time`."""
+
+    def test_asks_every_day_with_end_time(self):
+        calls = []
+
+        class _R:
+            def raise_for_status(self): pass
+            def json(self): return [[{"state": "1", "last_changed": "2026-09-01T00:00:00+00:00"}]]
+
+        class _S:
+            def get(self, url, headers=None, params=None, timeout=None):
+                calls.append((url, dict(params or {})))
+                return _R()
+
+        orig = ha_client._http
+        ha_client._http = lambda: _S()
+        try:
+            out = ha_client.get_history("sensor.x", 10)
+        finally:
+            ha_client._http = orig
+        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(out), 10)
+        self.assertTrue(all("end_time" in p for _, p in calls))
+        starts = [u.rsplit("/", 1)[1] for u, _ in calls]
+        ends = [p["end_time"] for _, p in calls]
+        self.assertEqual(starts[1:], ends[:-1])          # trozos contiguos, sin huecos ni solapes
+        self.assertTrue(all("+" not in st for st in starts))  # marca limpia en la ruta
+
+    def test_time_weighted_not_sample_count(self):
+        """Muchas muestras en un rato corto no pesan mas que una sola lectura
+        larga: 50 min a 200 W + 10 min a 2000 W (con 100 muestras) = 500 W."""
+        from datetime import timezone
+        base = datetime(2026, 9, 15, 10, 0, tzinfo=timezone.utc)
+        pts = [{"state": "200", "last_changed": base.isoformat()}]
+        for i in range(100):
+            pts.append({"state": "2000" if i % 2 == 0 else "2000.5",
+                        "last_changed": (base + timedelta(minutes=50, seconds=6 * i)).isoformat()})
+        pts.append({"state": "unknown", "last_changed": (base + timedelta(hours=1)).isoformat()})
+        buckets = ha_client._weighted_buckets(pts, base + timedelta(hours=2))
+        avg, reliable = buckets["raw"]
+        key = ha_client._bucket_key(base)
+        self.assertTrue(reliable[key])
+        self.assertAlmostEqual(avg[key], 500.0, delta=1.0)
+
+    def test_weekend_and_weekday_buckets_are_separate(self):
+        from datetime import timezone
+        wd = datetime(2026, 9, 15, 10, 0, tzinfo=timezone.utc)   # martes
+        we = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)   # sabado
+        pts = [
+            {"state": "300", "last_changed": wd.isoformat()},
+            {"state": "unknown", "last_changed": (wd + timedelta(hours=1)).isoformat()},
+            {"state": "900", "last_changed": we.isoformat()},
+            {"state": "unknown", "last_changed": (we + timedelta(hours=1)).isoformat()},
+        ]
+        avg, _ = ha_client._weighted_buckets(pts, we + timedelta(hours=2))["raw"]
+        self.assertAlmostEqual(avg[ha_client._bucket_key(wd)], 300.0)
+        self.assertAlmostEqual(avg[ha_client._bucket_key(we)], 900.0)
+
+    def test_glitch_is_dropped_and_cuts_the_hold(self):
+        from datetime import timezone
+        base = datetime(2026, 9, 15, 10, 0, tzinfo=timezone.utc)
+        pts = [
+            {"state": "400", "last_changed": base.isoformat()},
+            {"state": "55000", "last_changed": (base + timedelta(minutes=30)).isoformat()},   # glitch
+            {"state": "400", "last_changed": (base + timedelta(minutes=31)).isoformat()},
+            {"state": "unknown", "last_changed": (base + timedelta(hours=1)).isoformat()},
+        ]
+        avg, _ = ha_client._weighted_buckets(pts, base + timedelta(hours=2))["raw"]
+        self.assertAlmostEqual(avg[ha_client._bucket_key(base)], 400.0)
 
 
 class DpPlanner(unittest.TestCase):
@@ -137,6 +218,47 @@ class DpPlanner(unittest.TestCase):
         self.assertEqual(len(plan), 4)
         plan, _ = scheduler_dp.build_plan_dp(now, [0] * 4, [500] * 4, 500, 1000, 100, 100, 100, [(-0.05, "valle")] * 4)
         self.assertEqual(len(plan), 4)
+
+
+class TinySolarDoesNotBlockGridCharge(unittest.TestCase):
+    """Un hilo de excedente solar en una hora de valle no puede anular la
+    carga desde red de esa hora (antes: 5 W de sol -> se cargaban 5 W)."""
+
+    def _plan(self, pv0):
+        now = datetime(2026, 9, 22, 6, 0)   # martes 06:00, valle hasta las 08:00
+        horizon = 24
+        prices = tariff_source.fixed_tariff_prices(now, horizon, tariff_source.FixedTariffConfig())
+        pv = [pv0, pv0] + [0.0] * (horizon - 2)
+        load = [0.0, 0.0] + [800.0] * (horizon - 2)
+        plan, _ = scheduler.build_plan(now, pv, load, 1000, 9600, 4800, 4800, 288, prices)
+        return plan
+
+    def test_grid_charge_survives_a_trickle_of_solar(self):
+        sin_sol = self._plan(0.0)
+        con_sol = self._plan(5.0)
+        self.assertGreater(sin_sol[0].charge_w, 1000)
+        # con 5 W de sol tiene que cargar practicamente lo mismo, no 5 W
+        self.assertGreater(con_sol[0].charge_w, sin_sol[0].charge_w - 50)
+        self.assertEqual(con_sol[0].charge_source, "grid")
+        self.assertLessEqual(con_sol[0].charge_w, 4800 + 1e-6)
+
+    def test_pure_solar_hour_unchanged(self):
+        """Fuera de valle/llano-con-punta-pendiente, el excedente sigue siendo solo solar."""
+        now = datetime(2026, 9, 22, 12, 0)   # punta
+        prices = tariff_source.fixed_tariff_prices(now, 6, tariff_source.FixedTariffConfig())
+        plan, _ = scheduler.build_plan(now, [900.0] * 6, [300.0] * 6, 1000, 9600, 4800, 4800, 288, prices)
+        self.assertAlmostEqual(plan[0].charge_w, 600.0)
+        self.assertEqual(plan[0].charge_source, "solar")
+
+    def test_never_exceeds_ceiling_or_max_power(self):
+        now = datetime(2026, 9, 22, 6, 30)
+        prices = tariff_source.fixed_tariff_prices(now, 24, tariff_source.FixedTariffConfig())
+        for pv0 in (1.0, 50.0, 2000.0, 6000.0):
+            plan, _ = scheduler.build_plan(now, [pv0] * 2 + [0.0] * 22, [0.0] * 2 + [900.0] * 22,
+                                           9000, 9600, 4800, 4800, 288, prices, contracted_power_w=5000)
+            for hp in plan:
+                self.assertLessEqual(hp.soc_wh, 9600 + 1e-6)
+                self.assertLessEqual(hp.charge_w, 4800 + 1e-6)
 
 
 if __name__ == "__main__":

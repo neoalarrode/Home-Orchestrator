@@ -181,7 +181,11 @@ def sync(grafana_url: str, grafana_token: str, pv_arrays: list[dict]) -> dict:
         log.warning("Grafana: fallo leyendo el dashboard", exc_info=True)
         return {"ok": False, "error": "No se pudo leer el dashboard de Grafana -- revisa la URL y el token."}
 
-    dashboard = r.json()["dashboard"]
+    try:
+        dashboard = r.json()["dashboard"]
+    except (ValueError, KeyError, TypeError):
+        log.warning("Grafana: respuesta inesperada leyendo el dashboard", exc_info=True)
+        return {"ok": False, "error": "Grafana devolvió una respuesta inesperada al leer el dashboard."}
     panels = dashboard.get("panels", [])
 
     array_panel = _find_panel(panels, ARRAY_PANEL_TITLE)

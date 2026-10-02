@@ -15,9 +15,10 @@ coste_sin_bateria - coste_real, con los mismos datos que usa el planificador.
 
 from __future__ import annotations
 
-import json
 import os
 import threading
+
+import json_store
 from datetime import datetime
 
 SAVINGS_PATH = os.environ.get("SAVINGS_PATH", "/data/savings.json")
@@ -41,37 +42,24 @@ def _default() -> dict:
 
 
 def _load() -> dict:
-    with _lock:
-        if not os.path.exists(SAVINGS_PATH):
-            return _default()
-        try:
-            with open(SAVINGS_PATH, encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return _default()
-        if not isinstance(data, dict):
-            return _default()
-        # Completar claves que falten en vez de indexar a ciegas: un fichero
-        # escrito por una version anterior no tiene "last_update", y el resto
-        # del modulo hacia `data["since"]`/`data["days"]` directo, que sobre un
-        # esquema viejo o incompleto revienta con KeyError.
-        merged = _default()
-        merged.update(data)
-        if not isinstance(merged.get("days"), dict):
-            merged["days"] = {}
-        return merged
+    data = json_store.load(SAVINGS_PATH)
+    if not isinstance(data, dict):
+        return _default()
+    # Completar claves que falten en vez de indexar a ciegas: un fichero
+    # escrito por una version anterior no tiene "last_update", y el resto
+    # del modulo hacia `data["since"]`/`data["days"]` directo, que sobre un
+    # esquema viejo o incompleto revienta con KeyError.
+    merged = _default()
+    merged.update(data)
+    if not isinstance(merged.get("days"), dict):
+        merged["days"] = {}
+    return merged
 
 
 def _save(data: dict) -> None:
-    os.makedirs(os.path.dirname(SAVINGS_PATH), exist_ok=True)
-    with _lock:
-        # Escritura ATOMICA (.tmp + os.replace) -- ver config_store._write_raw:
-        # un corte a mitad de un `open(..., "w")` directo dejaba el fichero
-        # truncado o con dos objetos JSON concatenados.
-        tmp = SAVINGS_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, SAVINGS_PATH)
+    # Copia en memoria + volcado a disco diferido y atomico: ver json_store.py
+    # (este fichero se reescribia entero en cada ciclo de planificacion).
+    json_store.save(SAVINGS_PATH, data)
 
 
 def record(now: datetime, real_power_w: float, baseline_power_w: float,

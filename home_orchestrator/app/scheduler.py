@@ -29,6 +29,11 @@ from datetime import datetime, timedelta
 # 20% de mas potencia de la estrictamente necesaria, no al filo.
 PACED_CHARGE_SAFETY_MARGIN = 1.2
 
+# Por debajo de esto no hay descarga que planificar: lo que queda disponible es
+# un resto de coma flotante (la bateria justo en su reserva), y el plan mostraba
+# "descarga para cubrir consumo" con 0 W.
+MIN_DISCHARGE_W = 1.0
+
 
 @dataclass
 class HourPlan:
@@ -42,6 +47,10 @@ class HourPlan:
     soc_wh: float = 0.0
     reason: str = ""
     charge_source: str | None = None  # "solar" | "grid" | None — de donde sale la carga de esta hora
+    # Parte de `charge_w` que sale del excedente solar cuando la hora mezcla
+    # sol y red (`charge_source == "grid"` con algo de excedente). 0 en una
+    # hora de carga solo desde red. Lo usa `cycle_planner.ac_charge_for_now`.
+    solar_charge_w: float = 0.0
 
 
 def build_plan(
@@ -292,6 +301,38 @@ def build_plan(
                 hp.charge_w = charge
                 hp.charge_source = "solar"
                 hp.reason = "carga con excedente solar"
+            # BUG REAL: esta rama es un `if` y las de carga desde red de abajo
+            # cuelgan de su `elif`, asi que CUALQUIER excedente solar -- aunque
+            # fueran 5 W -- anulaba la carga desde red de esa hora entera. Una
+            # hora de valle con un hilo de sol (amanecer de verano, o un fin de
+            # semana, que es valle todo el dia) se quedaba cargando 5 W en vez
+            # de lo que hacia falta para la reserva. El excedente se sigue
+            # aprovechando primero; lo que falte hasta el objetivo se completa
+            # desde red con la potencia que quede libre.
+            if allow_grid_charging and tier in ("valle", "llano"):
+                target = (_reserve_target(i) if tier == "valle"
+                          else min(ceiling_wh, min_soc_wh + future_punta_after[i]))
+                if soc < target:
+                    solar_w = max(0.0, hp.charge_w)
+                    headroom = min(ceiling_wh - soc, target - soc)
+                    charge_limit = _paced_charge_limit(i, soc, target) if paced_charging else max_charge_w
+                    charge_limit = min(charge_limit, max(0.0, max_charge_w - solar_w))
+                    if contracted_power_w > 0:
+                        # con excedente la casa no importa nada: toda la potencia
+                        # contratada queda para la carga
+                        charge_limit = min(charge_limit, contracted_power_w)
+                    ef = frac0 if i == 0 else 1.0
+                    extra = min(charge_limit, headroom / ef)
+                    if extra > 0:
+                        soc += extra * ef
+                        hp.charge_w = solar_w + extra
+                        hp.solar_charge_w = solar_w
+                        hp.charge_source = "grid"
+                        hp.reason = (
+                            f"carga en valle con excedente solar y red (objetivo reserva {target/1000:.2f} kWh)"
+                            if tier == "valle"
+                            else "carga en llano con excedente solar y red (no llegaba a cubrir la punta que queda)"
+                        )
 
         # 2) Carga desde red en VALLE, oportunista, hasta la reserva completa
         #    (punta + llano que quepa). Respetando la potencia contratada.
@@ -357,7 +398,7 @@ def build_plan(
         elif deficit_w[i] > 0 and tier == "punta":
             available = max(0.0, soc - min_soc_wh)
             discharge = min(deficit_w[i], max_discharge_w, available)
-            if discharge > 0:
+            if discharge >= MIN_DISCHARGE_W:
                 soc -= discharge
                 hp.discharge_w = discharge
                 hp.reason = "descarga para cubrir consumo en punta"
@@ -368,7 +409,7 @@ def build_plan(
             reserved_for_future_punta = future_punta_after[i + 1]
             available = max(0.0, soc - min_soc_wh - reserved_for_future_punta - reserve_safety_margin_wh)
             discharge = min(deficit_w[i], max_discharge_w, available)
-            if discharge > 0:
+            if discharge >= MIN_DISCHARGE_W:
                 soc -= discharge
                 hp.discharge_w = discharge
                 hp.reason = "descarga para cubrir consumo en llano"
@@ -386,7 +427,7 @@ def build_plan(
         elif deficit_w[i] > 0 and tier == "valle":
             available = max(0.0, soc - _reserve_target(i))
             discharge = min(deficit_w[i], max_discharge_w, available)
-            if discharge > 0:
+            if discharge >= MIN_DISCHARGE_W:
                 soc -= discharge
                 hp.discharge_w = discharge
                 hp.reason = "descarga en valle: reserva de punta/llano ya cubierta, evita comprar de mas"

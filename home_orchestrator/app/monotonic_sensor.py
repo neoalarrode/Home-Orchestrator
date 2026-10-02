@@ -35,11 +35,12 @@ del contador en vivo.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
 import threading
+
+import json_store
 
 log = logging.getLogger("monotonic_sensor")
 
@@ -70,21 +71,14 @@ _lock = threading.RLock()
 
 
 def _load() -> dict:
-    if not os.path.exists(STORE_PATH):
-        return {}
-    try:
-        with open(STORE_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
+    data = json_store.load(STORE_PATH)
+    return data if isinstance(data, dict) else {}
 
 
 def _save(data: dict) -> None:
-    os.makedirs(os.path.dirname(STORE_PATH), exist_ok=True)
-    tmp = STORE_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, STORE_PATH)
+    # Copia en memoria + volcado a disco diferido y atomico: ver json_store.py
+    # (este fichero se reescribia entero en cada ciclo de planificacion).
+    json_store.save(STORE_PATH, data)
 
 
 def publishable(entity_id: str, total: float, get_known_ha_state=None,
@@ -111,7 +105,7 @@ def publishable(entity_id: str, total: float, get_known_ha_state=None,
 
         # BUG REAL, confirmado por fuzzing adversarial: un `total` NaN se
         # colaba por TODAS las comprobaciones de mas abajo sin excepcion --
-        # `nan > X`, `nan &lt; X` y `nan == X` son SIEMPRE False en Python, asi
+        # `nan > X`, `nan < X` y `nan == X` son SIEMPRE False en Python, asi
         # que ni la rama de salto positivo ni la de bajada se disparaban, y
         # a diferencia de cualquier otro caso raro de este modulo (que
         # siempre deja un log.warning/info), este pasaba en TOTAL silencio

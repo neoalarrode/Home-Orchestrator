@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import statistics
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -29,13 +30,33 @@ else:
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 TIMEOUT = 10
 
+# Conexion HTTP reutilizada (keep-alive) en vez de abrir una nueva por
+# llamada: el ciclo de planificacion lee varios sensores cada vez y se ejecuta
+# muy a menudo (ciclo reactivo). Una sesion POR HILO -- `requests.Session` no
+# garantiza ser segura compartida entre hilos.
+_http_local = threading.local()
+
+
+def _http() -> requests.Session:
+    session = getattr(_http_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        # Un reintento SOLO de conexion (no de lectura): cubre una conexion
+        # keep-alive que el otro extremo ya cerro, sin repetir una peticion
+        # que si llego a enviarse.
+        adapter = requests.adapters.HTTPAdapter(max_retries=1)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        _http_local.session = session
+    return session
+
 
 class HAError(Exception):
     pass
 
 
 def get_state(entity_id: str):
-    r = requests.get(f"{BASE_URL}/states/{entity_id}", headers=HEADERS, timeout=TIMEOUT)
+    r = _http().get(f"{BASE_URL}/states/{entity_id}", headers=HEADERS, timeout=TIMEOUT)
     if r.status_code == 404:
         raise HAError(f"Entidad no encontrada: {entity_id}")
     r.raise_for_status()
@@ -156,9 +177,69 @@ def set_number(entity_id: str, value: float):
 def publish_sensor(entity_id: str, state, attributes: dict | None = None):
     """Publica un sensor propio del orquestador en HA (para dashboards)."""
     payload = {"state": state, "attributes": attributes or {}}
-    r = requests.post(f"{BASE_URL}/states/{entity_id}", headers=HEADERS, json=payload, timeout=TIMEOUT)
+    r = _http().post(f"{BASE_URL}/states/{entity_id}", headers=HEADERS, json=payload, timeout=TIMEOUT)
     r.raise_for_status()
     return r.json()
+
+
+def _history_window(entity_id: str, start: datetime, end: datetime, minimal: bool) -> list[dict]:
+    """Historico de UNA entidad entre `start` y `end` (UTC).
+
+    BUG REAL, medido contra la instalacion del usuario: `/api/history/period/
+    <inicio>` SIN `end_time` no devuelve "desde <inicio> hasta ahora" sino UN
+    SOLO DIA a partir de <inicio>. Pedir "los ultimos 10 dias" devolvia nada
+    mas que el dia de hace 10 dias (comprobado: 11.064 puntos, todos del
+    21-22/09 pidiendo el 01/10). Toda la "media por hora de los ultimos N
+    dias" era en realidad el perfil de UN dia suelto, distinto cada dia, y
+    los cubos de fin de semana o de laborable se quedaban vacios segun en que
+    dia de la semana cayera ese unico dia.
+
+    La marca de tiempo de inicio va EMBEBIDA en la ruta (no en la query), asi
+    que tiene que ir "limpia": `.isoformat()` produce "...+00:00" y el "+"
+    rompe la ruta. Formato con sufijo "Z". `end_time` va como parametro de
+    query y `requests` lo codifica solo.
+    """
+    params = {"filter_entity_id": entity_id, "end_time": end.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    if minimal:
+        params["minimal_response"] = "true"
+    r = _http().get(
+        f"{BASE_URL}/history/period/{start.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+        headers=HEADERS, params=params, timeout=30,
+    )
+    r.raise_for_status()
+    data = r.json()
+    return data[0] if data else []
+
+
+def _history_days(entity_id: str, days: int, minimal: bool) -> list[dict]:
+    """Los ultimos `days` dias, pedidos DIA A DIA y concatenados en orden.
+
+    Un sensor de potencia que reporta cada segundo son ~10.000 puntos al dia:
+    diez dias de golpe son una respuesta de varios MB que HA tiene que montar
+    de una vez. Troceado, cada peticion es pequeña y rapida, y un trozo que
+    falle no tira los demas. Si fallan TODOS se propaga el ultimo error, para
+    que quien llama distinga "HA no responde" de "no hay historico".
+    """
+    now = datetime.now(timezone.utc)
+    out: list[dict] = []
+    last_error: Exception | None = None
+    ok = 0
+    for d in range(max(1, int(days)), 0, -1):
+        start = now - timedelta(days=d)
+        end = now - timedelta(days=d - 1)
+        try:
+            out.extend(_history_window(entity_id, start, end, minimal))
+            ok += 1
+        except requests.RequestException as e:
+            last_error = e
+            if ok == 0:
+                # El PRIMER trozo ya falla: HA no esta respondiendo. No se
+                # insiste con los demas dias (cada uno esperaria su timeout
+                # entero, con el ciclo de planificacion parado mientras).
+                break
+    if ok == 0 and last_error is not None:
+        raise last_error
+    return out
 
 
 def get_history_with_attributes(entity_id: str, days: int) -> list[dict]:
@@ -170,43 +251,14 @@ def get_history_with_attributes(entity_id: str, days: int) -> list[dict]:
     ver climate/thermal_model.py) -- para el resto, `get_history` (con
     minimal_response) es mas barato y suficiente.
     """
-    start = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    r = requests.get(
-        f"{BASE_URL}/history/period/{start}",
-        headers=HEADERS,
-        params={"filter_entity_id": entity_id},
-        timeout=30,
-    )
-    r.raise_for_status()
-    data = r.json()
-    return data[0] if data else []
+    return _history_days(entity_id, days, minimal=False)
 
 
 def get_history(entity_id: str, days: int) -> list[dict]:
-    # OJO: la marca de tiempo va EMBEBIDA en la ruta de la URL (no en un
-    # parametro de query), asi que tiene que ir "limpia". .isoformat() por
-    # defecto produce algo como "...T21:58:03.123456+00:00": el "+" ahi
-    # dentro rompe la ruta (se puede interpretar como espacio o generar una
-    # fecha invalida) y HA devuelve una respuesta vacia sin avisar de error.
-    # Formato limpio con sufijo "Z" (UTC) en su lugar.
-    start = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    r = requests.get(
-        f"{BASE_URL}/history/period/{start}",
-        headers=HEADERS,
-        params={"filter_entity_id": entity_id, "minimal_response": "true"},
-        timeout=30,
-    )
-    r.raise_for_status()
-    data = r.json()
-    return data[0] if data else []
+    """Cambios de estado de los ultimos `days` dias (ver `_history_window`
+    para el bug de "solo un dia" que esto corrige)."""
+    return _history_days(entity_id, days, minimal=True)
 
-
-# Con menos muestras reales que esto en una franja horaria concreta, esa
-# franja no se considera fiable todavia (una lectura suelta -p.ej. una nube
-# pasajera, o un sensor recien dado de alta que solo ha visto esa hora una
-# vez- no debe fijar la media de toda la franja) y se rellena como si no
-# hubiera dato, en vez de arrastrar ese ruido a la previsión.
-MIN_SAMPLES_PER_HOUR = 3
 
 # Mismo problema y mismo criterio que `_plausible_power_w` en main.py (no se
 # puede importar de aqui: ha_client es un modulo de mas bajo nivel que
@@ -274,120 +326,212 @@ def has_recent_history(entity_id: str, days: int = 1) -> bool:
 # Cuanto se reutiliza la media por hora-del-dia ya calculada antes de
 # volver a pedir el historico a HA. Estas medias apenas cambian de un ciclo
 # a otro (se basan en dias enteros de historico); pedirlas enteras cada
-# `cycle_seconds` (tipicamente 30-60s) es puro peso extra sobre el recorder
-# de HA sin ganar nada en precision. Se cachea SOLO la parte cara (pedir y
-# recorrer el historico), nunca el resultado ya alineado a "ahora" - la
-# alineacion cambia cada hora y tiene que calcularse fresca siempre, o un
-# resultado cacheado se quedaria "atrasado" una hora justo al cruzar el
-# limite entre dos horas dentro de la ventana de cache.
+# `cycle_seconds` es puro peso extra sobre el recorder de HA sin ganar nada
+# en precision. Se cachea SOLO la parte cara (pedir y recorrer el historico),
+# nunca el resultado ya alineado a "ahora" - la alineacion cambia cada hora.
 _HISTORY_CACHE_SECONDS = 900  # 15 min
-_hourly_avg_cache: dict[tuple, tuple[float, dict[tuple[bool, int], float], dict[tuple[bool, int], bool]]] = {}
+# clave (entity_id, days) -> (ts, {variante: (medias, fiable)} | None). Las
+# CUATRO variantes ("raw"/"abs"/"positive"/"negative") salen de UNA sola
+# pasada sobre el mismo historico: antes cada variante pedia el historico
+# entero por su cuenta (el sensor de potencia de bateria, dos veces seguidas).
+_hourly_avg_cache: dict[tuple, tuple[float, dict | None]] = {}
+_VARIANTS = ("raw", "abs", "positive", "negative")
+
+# Cobertura minima (segundos de señal real) para fiarse de una franja.
+MIN_COVERAGE_SECONDS_PER_HOUR = 600
 
 
 def _bucket_key(ts: datetime) -> tuple[bool, int]:
-    """(es_fin_de_semana, hora) -- ver comentario extenso en
-    `_hourly_avg_by_hour_of_day` sobre por que laborable y fin de semana se
-    promedian por separado."""
+    """(es_fin_de_semana, hora) -- ver `_weighted_buckets` sobre por que
+    laborable y fin de semana se promedian por separado."""
     local = ts.astimezone()
     return (local.weekday() >= 5, local.hour)
+
+
+def _parse_point_ts(point: dict) -> datetime | None:
+    raw = point.get("last_changed") or point.get("last_updated")
+    if not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+
+
+def _weighted_buckets(raw: list[dict], end: datetime) -> dict | None:
+    """Media PONDERADA POR TIEMPO de cada cubo `(es_fin_de_semana, hora)`,
+    para las cuatro variantes de signo a la vez. `None` si no hay ni una
+    muestra numerica.
+
+    Dos correcciones sobre la version anterior:
+
+    - Ponderar por TIEMPO, no por numero de muestras. HA solo graba un estado
+      cuando CAMBIA, asi que un sensor de potencia deja muchas muestras cuando
+      el consumo se mueve (cocinar) y casi ninguna cuando esta quieto (la base
+      de la madrugada). La media de muestras se sesgaba hacia los ratos
+      movidos. Cada lectura vale hasta la siguiente -- que es justo como se
+      comporta un estado en HA (y como ya integra `energy_recovery`).
+    - Un estado no numerico ("unavailable"/"unknown") CORTA la lectura
+      anterior y no aporta nada: ese rato no se mide, no se rellena.
+
+    Laborable y fin de semana van en cubos distintos (48, no 24): con
+    costumbres tipicas (fuera de casa entre semana, en casa el finde) una
+    media mezclada no representa a ninguno de los dos.
+
+    Glitches (ver IMPLAUSIBLE_POWER_CEILING_W): una muestra disparatada se
+    descarta entera y corta la lectura anterior, igual que un "unavailable".
+    """
+    points: list[tuple[datetime, float | None]] = []
+    for point in raw:
+        ts = _parse_point_ts(point)
+        if ts is None:
+            continue
+        try:
+            val: float | None = float(point["state"])
+        except (KeyError, TypeError, ValueError):
+            val = None
+        if val is not None and (val != val or abs(val) > IMPLAUSIBLE_POWER_CEILING_W):
+            val = None
+        points.append((ts, val))
+    if not any(v is not None for _, v in points):
+        return None
+    points.sort(key=lambda x: x[0])
+
+    keys = [(weekend, h) for weekend in (False, True) for h in range(24)]
+    seconds = {k: 0.0 for k in keys}
+    samples = {k: 0 for k in keys}
+    sums = {v: {k: 0.0 for k in keys} for v in _VARIANTS}
+
+    for i, (ts, val) in enumerate(points):
+        if val is None:
+            continue
+        stop = points[i + 1][0] if i + 1 < len(points) else end
+        if stop <= ts:
+            # Dos estados con la misma marca (o la ultima lectura justo en el
+            # borde): cuenta como muestra, sin peso de tiempo.
+            samples[_bucket_key(ts)] += 1
+            continue
+        variants = {
+            "raw": val, "abs": abs(val),
+            "positive": val if val > 0 else 0.0,
+            "negative": -val if val < 0 else 0.0,
+        }
+        samples[_bucket_key(ts)] += 1
+        cursor = ts
+        while cursor < stop:
+            # Se parte en el cambio de hora: una lectura que dura de 13:50 a
+            # 14:20 pesa 10 min en la franja de las 13 y 20 en la de las 14.
+            local = cursor.astimezone()
+            next_hour = (local.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)).astimezone(timezone.utc)
+            piece_end = min(stop, next_hour)
+            dur = (piece_end - cursor).total_seconds()
+            if dur <= 0:
+                break
+            key = (local.weekday() >= 5, local.hour)
+            seconds[key] += dur
+            for name, v in variants.items():
+                sums[name][key] += v * dur
+            cursor = piece_end
+
+    reliable = {
+        k: seconds[k] >= MIN_COVERAGE_SECONDS_PER_HOUR and samples[k] >= 1 for k in keys
+    }
+    out = {}
+    for name in _VARIANTS:
+        avg: dict = {k: (sums[name][k] / seconds[k] if reliable[k] else None) for k in keys}
+        # Relleno de huecos: la media de TODOS los cubos fiables (laborable +
+        # finde mezclados aqui SI, a proposito -- ultimo recurso cuando una
+        # franja no tiene cobertura propia).
+        known = [v for v in avg.values() if v is not None]
+        fallback = statistics.mean(known) if known else None
+        out[name] = ({k: (avg[k] if avg[k] is not None else fallback) for k in keys}, dict(reliable))
+    return out
+
+
+_refreshing_keys: set[tuple] = set()
+_refreshing_lock = threading.Lock()
+
+
+def _refresh_hourly_avg(cache_key: tuple) -> tuple[float, dict | None]:
+    entity_id, days = cache_key
+    raw = _safe_get_history(entity_id, days)
+    buckets = _weighted_buckets(raw, datetime.now(timezone.utc)) if raw else None
+    previous = _hourly_avg_cache.get(cache_key)
+    if buckets is None and previous is not None and previous[1] is not None:
+        # HA no ha respondido esta vez: se conserva la media buena que ya habia
+        # (se reintenta al volver a caducar) en vez de pisarla con "sin datos".
+        entry = (time.time(), previous[1])
+    else:
+        entry = (time.time(), buckets)
+    _hourly_avg_cache[cache_key] = entry
+    return entry
+
+
+def _refresh_hourly_avg_async(cache_key: tuple) -> None:
+    with _refreshing_lock:
+        if cache_key in _refreshing_keys:
+            return
+        _refreshing_keys.add(cache_key)
+
+    def _run() -> None:
+        try:
+            _refresh_hourly_avg(cache_key)
+        except Exception:
+            log.warning("Fallo refrescando el historico de %s", cache_key[0], exc_info=True)
+        finally:
+            with _refreshing_lock:
+                _refreshing_keys.discard(cache_key)
+
+    threading.Thread(target=_run, name="ha-history-refresh", daemon=True).start()
 
 
 def _hourly_avg_by_hour_of_day(
     entity_id: str, days: int, default: float, abs_values: bool, sign_filter: str | None = None
 ) -> tuple[dict[tuple[bool, int], float], dict[tuple[bool, int], bool]]:
+    """Dos diccionarios con clave `(es_fin_de_semana, hora)`: la media y si
+    esa franja tiene cobertura real suficiente. Ver `_weighted_buckets`.
+
+    `sign_filter` ("positive" | "negative") separa un sensor bidireccional
+    con signo en sus dos mitades (p.ej. la potencia de bateria: una mitad es
+    carga y la otra descarga) promediando cada una como ESPERANZA -- las
+    muestras del signo contrario cuentan como 0 W, no se descartan. Tiene
+    prioridad sobre `abs_values`.
     """
-    Devuelve dos diccionarios con clave `(es_fin_de_semana, hora)`, no solo
-    `hora` -- BUG REAL corregido a peticion expresa del usuario ("aprendizaje
-    de las costumbres de consumo"): antes se promediaba cada hora-del-dia
-    mezclando laborables y fines de semana en el mismo cubo. Con costumbres
-    tipicas (p.ej. fuera de casa en horario laboral entre semana, en casa
-    todo el dia el fin de semana), esa mezcla sesga los DOS casos a la vez
-    hacia un valor intermedio que no representa a ninguno -- confirmado en
-    pruebas: 15 laborables a 300W + 6 findes a 900W mezclados dan una unica
-    media de 471W, que sobreestima cada laborable real en +171W y
-    subestima cada finde real en -429W. Separar en 48 cubos en vez de 24
-    dejar que cada patron se prediga con sus propias muestras.
-    """
-    cache_key = (entity_id, days, default, abs_values, sign_filter)
+    variant = sign_filter if sign_filter in ("positive", "negative") else ("abs" if abs_values else "raw")
+    cache_key = (entity_id, days)
     cached = _hourly_avg_cache.get(cache_key)
     now_ts = time.time()
-    if cached is not None and (now_ts - cached[0]) < _HISTORY_CACHE_SECONDS:
-        return cached[1], cached[2]
+    if cached is None:
+        # Sin nada todavia (arranque): no queda otra que esperar a la descarga.
+        cached = _refresh_hourly_avg(cache_key)
+    elif (now_ts - cached[0]) >= _HISTORY_CACHE_SECONDS:
+        # Caducado pero utilizable: se sigue sirviendo lo que hay y se refresca
+        # EN SEGUNDO PLANO. Descargar varios dias de un sensor que reporta cada
+        # segundo tarda unos segundos; hacerlo dentro del ciclo dejaba el
+        # planificador parado ese rato cada vez que caducaba la cache, para
+        # unas medias de dias enteros que apenas cambian en 15 minutos.
+        _refresh_hourly_avg_async(cache_key)
 
-    raw = _safe_get_history(entity_id, days)
-    if not raw:
-        for fallback_days in (10, 7, 3, 1):
-            if fallback_days >= days:
-                continue
-            raw = _safe_get_history(entity_id, fallback_days)
-            if raw:
-                break
-    if not raw:
+    buckets = cached[1]
+    keys = [(weekend, h) for weekend in (False, True) for h in range(24)]
+    if buckets is None:
+        # Sin historico utilizable: el valor actual (o `default`) para todas
+        # las franjas, marcadas como NO fiables.
         current = get_numeric_state(entity_id, default=default)
-        if abs_values and current is not None:
-            current = abs(current)
-        hourly_avg = {(weekend, h): current for weekend in (False, True) for h in range(24)}
-        reliable_by_hour = {(weekend, h): False for weekend in (False, True) for h in range(24)}
-        _hourly_avg_cache[cache_key] = (now_ts, hourly_avg, reliable_by_hour)
-        return hourly_avg, reliable_by_hour
+        if current is not None:
+            if variant == "abs":
+                current = abs(current)
+            elif variant == "positive":
+                current = current if current > 0 else 0.0
+            elif variant == "negative":
+                current = -current if current < 0 else 0.0
+        return {k: current for k in keys}, {k: False for k in keys}
 
-    buckets: dict[tuple[bool, int], list[float]] = {(weekend, h): [] for weekend in (False, True) for h in range(24)}
-    for point in raw:
-        try:
-            val = float(point["state"])
-        except (KeyError, ValueError):
-            continue
-        # Ver IMPLAUSIBLE_POWER_CEILING_W: BUG REAL confirmado en pruebas --
-        # a diferencia de las lecturas EN VIVO (protegidas por
-        # `_plausible_power_w` en main.py desde hace tiempo), este camino
-        # de historico no filtraba nada. Una sola muestra disparatada ya
-        # grabada en HA (el mismo tipo de glitch de sensor que causo los
-        # saltos de miles de kWh documentados esta misma noche) se cuela
-        # aqui sin ningun freno y contamina la previsión de esa franja
-        # horaria durante `days` dias enteros.
-        if abs(val) > IMPLAUSIBLE_POWER_CEILING_W:
-            continue
-        # sign_filter separa un sensor bidireccional con signo en sus dos
-        # mitades (p.ej. un "net_power_sensor" de bateria: positivo=carga,
-        # negativo=descarga) para poder promediar cada una POR SEPARADO —
-        # necesario para reconstruir consumo desde un sensor de red en
-        # bruto (ver `true_load_forecast_from_grid`), donde la carga tiene
-        # que RESTARSE y la descarga SUMARSE, cosa que un abs_values() a
-        # secas no puede distinguir. Tiene prioridad sobre abs_values.
-        # BUG REAL, medido en simulacion (modo "combined": coste +0.9 % y
-        # captura del optimo 98 % -> 95 %): las muestras del signo contrario se
-        # DESCARTABAN, asi que la media era la media CONDICIONAL "cuando carga,
-        # carga a X W" en vez de la ESPERANZA "potencia de carga esperada a esta
-        # hora". Si la bateria cargo a esa hora 1 dia de 10, se restaba la carga
-        # entera de ese dia como si ocurriese siempre. Lo correcto es promediar
-        # tambien las muestras del otro signo como 0 W.
-        if sign_filter == "positive":
-            val = val if val > 0 else 0.0
-        elif sign_filter == "negative":
-            val = -val if val < 0 else 0.0
-        elif abs_values:
-            val = abs(val)
-        ts = datetime.fromisoformat(point["last_changed"].replace("Z", "+00:00"))
-        buckets[_bucket_key(ts)].append(val)
-
-    hourly_avg: dict[tuple[bool, int], float | None] = {}
-    reliable_by_hour: dict[tuple[bool, int], bool] = {}
-    for key, vals in buckets.items():
-        reliable_by_hour[key] = len(vals) >= MIN_SAMPLES_PER_HOUR
-        hourly_avg[key] = statistics.mean(vals) if reliable_by_hour[key] else None
-
-    # Relleno de huecos: la media de TODOS los cubos fiables (laborable +
-    # finde mezclados aqui SI, a proposito -- es solo el ultimo recurso
-    # cuando una franja concreta no tiene ni 3 muestras propias, mejor una
-    # aproximacion imperfecta que ningun dato).
-    known = [v for v in hourly_avg.values() if v is not None]
-    fallback = statistics.mean(known) if known else default
-    for key in buckets:
-        if hourly_avg[key] is None:
-            hourly_avg[key] = fallback
-
-    _hourly_avg_cache[cache_key] = (now_ts, hourly_avg, reliable_by_hour)
-    return hourly_avg, reliable_by_hour
+    avg, reliable = buckets[variant]
+    if any(v is None for v in avg.values()):
+        avg = {k: (v if v is not None else default) for k, v in avg.items()}
+    return avg, reliable
 
 
 def hourly_average_forecast_with_reliability(
@@ -396,8 +540,8 @@ def hourly_average_forecast_with_reliability(
 ) -> tuple[list[float], list[bool]]:
     """
     Igual que `hourly_average_forecast`, pero ademas devuelve, hora a hora,
-    si ese valor viene de suficiente historico real (>= MIN_SAMPLES_PER_HOUR
-    muestras en esa franja horaria) o si es un relleno (media de las horas
+    si ese valor viene de suficiente historico real (al menos
+    MIN_COVERAGE_SECONDS_PER_HOUR de señal medida en esa franja horaria) o si es un relleno (media de las horas
     que si tienen muestra suficiente, o el valor actual si no hay historico
     en absoluto). Sirve para que quien consuma esto sepa en que horas puede
     fiarse del historico y en cuales todavia no.

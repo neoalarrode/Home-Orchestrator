@@ -70,6 +70,28 @@ def _command_send_allowed(battery_id: str, signature: tuple, now: datetime,
 def _note_command(battery_id: str, signature: tuple, now: datetime) -> None:
     _last_command[battery_id] = {"signature": signature, "sent_at": now}
 
+
+# Una bateria cuyo SOC no se puede leer se salta el ciclo SIN mandarle nada, o
+# sea que se queda con la ULTIMA orden que recibio. Si esa orden era "cargar
+# desde red" y el sensor sigue caido, seguiria cargando horas -- tambien en
+# punta -- sin que nadie se lo impida. Pasado este tiempo sin SOC se le corta la
+# carga (y solo la carga: la descarga se deja como este, no se sabe lo bastante
+# de la bateria como para decidir mas). En cuanto vuelve el SOC, el ciclo
+# normal retoma el control.
+SOC_UNAVAILABLE_SAFE_STOP_SECONDS = 300.0
+_soc_unavailable_since: dict[str, datetime] = {}
+
+
+def _safe_stop_charge(b: "Battery") -> None:
+    """Corta la carga de UNA bateria sin tocar nada del resto del grupo: en
+    EcoFlow se baja su propio limite de carga a 0 (el `isEnable` de la tarea es
+    del grupo entero, no se toca); con entidades de HA, su switch de carga."""
+    if b.source == "ecoflow":
+        if not b.ecoflow_set_charging_task(power_limit_w=0):
+            raise RuntimeError("EcoFlow no confirmo el corte de carga")
+    elif b.charge_switch:
+        ha_client.turn_off(b.charge_switch)
+
 # Campos del estado en vivo de EcoFlow Cloud que pueden traer el SOC, por
 # orden de preferencia. IMPORTANTE: "cmsBattSoc" es el SOC AGREGADO de
 # todo el grupo BKW si hay varias unidades enlazadas (equivalente al
@@ -431,7 +453,7 @@ def _round_preserving_sum(assigned: dict[str, float], total_w: float) -> dict[st
     mismo numero es el que se manda tal cual como limite de potencia al
     equipo real. Metodo del "mayor resto": redondear todo hacia abajo
     primero (la suma de eso nunca puede superar el total, ya que
-    `_distribute` garantiza `sum(assigned.values()) &lt;= total_w`) y repartir
+    `_distribute` garantiza `sum(assigned.values()) <= total_w`) y repartir
     los vatios enteros que sobren, uno a uno, a quien mas cerca estuviera
     de redondear hacia arriba.
     """
@@ -562,8 +584,21 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
 
         if entry["soc_pct"] is None:
             line = f"[{b.name}] OMITIDA — {entry['note']}"
+            first_seen = _soc_unavailable_since.setdefault(b.id, now)
+            sin_soc_s = (now - first_seen).total_seconds()
+            if sin_soc_s >= SOC_UNAVAILABLE_SAFE_STOP_SECONDS:
+                line += f" — sin SOC desde hace {int(sin_soc_s // 60)} min: carga cortada por seguridad"
+                signature = ("safe_stop",)
+                if not dry_run and _command_send_allowed(b.id, signature, now, refresh_seconds=COMMAND_REFRESH_SECONDS):
+                    try:
+                        _safe_stop_charge(b)
+                        _note_command(b.id, signature, now)
+                    except Exception as e:
+                        _last_command.pop(b.id, None)
+                        line += f" — AVISO: no se pudo aplicar en Home Assistant ({e})"
             log_lines.append(("[SIMULACION] " if dry_run else "") + line)
             continue
+        _soc_unavailable_since.pop(b.id, None)
 
         # Semantica confirmada por el usuario para estos equipos (p.ej.
         # EcoFlow): cargar = switch de carga ON, switch de descarga OFF (a

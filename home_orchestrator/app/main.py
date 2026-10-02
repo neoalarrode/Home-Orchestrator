@@ -181,6 +181,41 @@ def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
         _last_published_at[entity_id] = now_ts
 
 
+def _int_setting(section: dict, key: str, default: int, lo: int, hi: int) -> int:
+    """Ajuste entero de la configuracion, tolerante a un campo del formulario
+    en blanco (llega como `None`): antes `int(None)` lanzaba TypeError en CADA
+    ciclo y el planificador se quedaba parado hasta corregir el campo."""
+    try:
+        value = int(section.get(key))
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, value))
+
+
+# El resumen de cada ciclo (una linea por bateria, por carga diferible, y la
+# decision de la hora) se escribia en el log en CADA ciclo: con el ciclo
+# reactivo eso eran ~115 ciclos por minuto y unas 14.000 lineas cada 20 minutos
+# (medido), casi todas identicas a las del ciclo anterior -- el log rotaba tan
+# rapido que los avisos de verdad duraban minutos. Se escribe cuando CAMBIA
+# algo, y como latido cada cierto tiempo aunque no cambie nada.
+LOG_HEARTBEAT_SECONDS = 600
+_last_logged: dict[str, tuple[tuple, float]] = {}
+# El sufijo de "orden ya enviada" aparece y desaparece cada vez que se reafirma
+# una orden: no es un cambio de decision, no cuenta para comparar.
+_LOG_VOLATILE_SUFFIX = " [misma orden ya enviada hace poco, omitida]"
+
+
+def _log_lines_if_changed(group: str, lines: list[str]) -> None:
+    signature = tuple(line.replace(_LOG_VOLATILE_SUFFIX, "") for line in lines)
+    now_ts = time.time()
+    last = _last_logged.get(group)
+    if last is not None and last[0] == signature and (now_ts - last[1]) < LOG_HEARTBEAT_SECONDS:
+        return
+    _last_logged[group] = (signature, now_ts)
+    for line in lines:
+        log.info(line)
+
+
 _ecoflow_missing_main_sn_warned: set[str] = set()
 
 
@@ -711,6 +746,32 @@ def _ecoflow_pv_live_overrides(cfg: dict) -> dict[str, float]:
     return overrides
 
 
+def _solar_history_sensors(cfg: dict) -> list[str]:
+    """Sensores de HA con el HISTORICO de generacion de cada array, para
+    reconstruir el consumo de la casa (ver `ha_client.true_load_forecast`).
+
+    BUG REAL, visto en el plan de la instalacion del usuario (consumo previsto
+    de 16 W a las 13:00): aqui solo entraban los arrays con `current_sensor`
+    de HA. Un array vinculado a un puerto MPPT de una bateria EcoFlow no tiene
+    sensor de HA declarado -- su dato en vivo llega por BLE/Cloud -- asi que su
+    produccion NO se sumaba al reconstruir el consumo: todo lo que el sol
+    cubria directamente desaparecia de la prevision, que a mediodia se hundia
+    a casi cero e inventaba un "excedente solar" que no existe.
+
+    Ese dato SI tiene historico en HA: este mismo plugin publica un sensor por
+    array (`sensor.battery_orchestrator_solar_<id>`, ver `_live_sensor_loop`).
+    Se usa ese, igual que la potencia de bateria ya se lee de
+    `sensor.battery_orchestrator_power` en vez de pedir un sensor por equipo.
+    """
+    sensors: list[str] = []
+    for a in cfg.get("pv_arrays") or []:
+        if a.get("current_sensor"):
+            sensors.append(a["current_sensor"])
+        elif a.get("ecoflow_battery_id") and a.get("ecoflow_pv_channels") and a.get("id"):
+            sensors.append(f"sensor.battery_orchestrator_solar_{a['id']}")
+    return sensors
+
+
 # Tope de cuanto tiempo "de golpe" se deja integrar en una sola vuelta de
 # la acumulacion de energia de baterias (ver mas abajo) — si run_cycle
 # estuvo sin ejecutarse un rato (reinicio, fallo...) no se quiere sumar
@@ -779,7 +840,7 @@ def run_cycle():
     # despues -- esa señal debe seguir publicandose aunque las baterias no
     # respondan (ver el comentario extenso junto a la publicacion).
     max_discharge_w_all = sum(b.max_discharge_w for b in batteries)
-    horizon = int(cfg["general"]["horizon_hours"])
+    horizon = _int_setting(cfg["general"], "horizon_hours", 48, 1, 168)
 
     now = datetime.now()
     prices_tiers = tariff_source.get_prices_tiers(cfg["tariff"], now, horizon)
@@ -789,7 +850,8 @@ def run_cycle():
     # array que tenga su propio sensor instantáneo declarado — asi no hace
     # falta un sensor agregado en HA para tener varios strings/tejados.
     pv_forecast, pv_now_actual, hybrid_pv_now_w = pv_source.get_pv_forecast_total(
-        cfg["pv_arrays"], horizon, refresh_seconds=cfg["general"]["pv_refresh_seconds"],
+        cfg["pv_arrays"], horizon,
+        refresh_seconds=_int_setting(cfg["general"], "pv_refresh_seconds", 1800, 60, 86400),
         live_now_overrides=_ecoflow_pv_live_overrides(cfg), now=now,
     )
 
@@ -811,8 +873,8 @@ def run_cycle():
     load_sensor = cfg.get("load_sensor")
     load_sensor_mode = cfg.get("load_sensor_mode") or "separate"
     net_grid_sensor = cfg.get("net_grid_sensor")
-    history_days = cfg["general"]["history_days_for_load"]
-    solar_sensors_for_load = [a.get("current_sensor") for a in cfg["pv_arrays"] if a.get("current_sensor")]
+    history_days = _int_setting(cfg["general"], "history_days_for_load", 10, 1, 60)
+    solar_sensors_for_load = _solar_history_sensors(cfg)
     live_charge_w, live_discharge_w, live_battery_data_ok = _live_battery_charge_discharge_w(batteries_cfg, cfg)
     net_grid_now_w = None  # solo se rellena en modo "combined"; se reutiliza mas abajo para el vertido
 
@@ -1042,8 +1104,7 @@ def run_cycle():
             deferrable_loads_cfg, deferrable_schedules, now,
             live_surplus_w=live_surplus_w, dry_run=dry_run,
         )
-        for line in deferrable_log_lines:
-            log.info(line)
+        _log_lines_if_changed("deferrable", deferrable_log_lines)
         for load_id in just_done_once:
             config_store.update_deferrable_load(cfg, load_id, {"done": True})
 
@@ -1120,9 +1181,10 @@ def run_cycle():
         except Exception as e:  # nunca tumbar el ciclo por este backstop
             log.warning(f"No se pudo aplicar el backstop de limite de importacion de red: {e}")
 
-    for line in log_lines:
-        log.info(line)
-    log.info(f"Hora actual: {now_hp.tier} ({now_hp.price} EUR/kWh) - {now_hp.reason}")
+    _log_lines_if_changed(
+        "batteries",
+        log_lines + [f"Hora actual: {now_hp.tier} ({now_hp.price} EUR/kWh) - {now_hp.reason}"],
+    )
 
     # Cuenta atras a la proxima punta: reserve_wh ya es el objetivo real
     # que usa el planificador ahora mismo (cortado en el proximo valle,
@@ -1675,7 +1737,7 @@ def background_loop():
             with _state_lock:
                 _last_status["error"] = "Error en el ultimo ciclo, revisa los logs del addon."
         cfg = config_store.load_config()
-        time.sleep(max(15, int(cfg["general"]["cycle_seconds"])))
+        time.sleep(_int_setting(cfg["general"], "cycle_seconds", 60, 15, 3600))
 
 
 LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS = 10
@@ -1683,7 +1745,12 @@ LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS = 10
 # bucle -- si el add-on estuvo parado un rato (reinicio, fallo...) no se
 # quiere sumar esas horas enteras como si hubiera habido sol todo ese
 # tiempo a la ultima potencia conocida; se descarta ese hueco.
-SOLAR_ENERGY_MAX_GAP_SECONDS = LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS * 3
+# Una vuelta del bucle puede tardar bastante mas que el intervalo nominal: la
+# lectura BLE "fresca" de una bateria fuera de alcance espera hasta 40 s. Con el
+# tope en 30 s, cada vuelta lenta integraba 30 s aunque hubieran pasado 50 -- la
+# energia solar se quedaba corta de forma sistematica. El tope cubre esa vuelta
+# lenta y sigue descartando un hueco de verdad (reinicio, addon parado).
+SOLAR_ENERGY_MAX_GAP_SECONDS = 120
 
 _solar_energy_last_ts: float | None = None
 

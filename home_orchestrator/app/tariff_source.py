@@ -16,6 +16,7 @@ cual se esta usando: solo recibe una lista de (precio, tramo) por hora.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
@@ -79,7 +80,16 @@ def _read_pvpc_hourly_prices(entity_id: str, now: datetime) -> dict[datetime, fl
                     dt = datetime.fromisoformat(str(item.get("datetime") or item.get("date")).replace("Z", "+00:00"))
                     val = item.get("price") if item.get("price") is not None else item.get("value")
                     if val is not None:
-                        prices[dt.replace(tzinfo=None)] = float(val)
+                        # BUG: `replace(tzinfo=None)` a secas TIRA el huso sin
+                        # convertir. Una marca en UTC ("...T22:00:00+00:00",
+                        # que es como las dan varias integraciones) se quedaba
+                        # como las 22:00 LOCALES: todos los precios desplazados
+                        # 1-2 horas. Se convierte primero a hora local, que es
+                        # la convencion del resto del modulo (`now` es naive
+                        # local).
+                        if dt.tzinfo is not None:
+                            dt = dt.astimezone()
+                        prices[dt.replace(tzinfo=None, minute=0, second=0, microsecond=0)] = float(val)
                 except (TypeError, ValueError, AttributeError):
                     continue
 
@@ -161,12 +171,38 @@ def get_prices_tiers(tariff_cfg: dict, now: datetime, horizon_hours: int) -> lis
         # sin sensor configurado todavia: no inventar precio, tratar todo como llano
         return [(0.15, "llano")] * horizon_hours
 
+    # Los valores vienen de un formulario: un precio en blanco o un periodo a
+    # medio escribir ("18-") llegan como `None`/NaN, y con eso la comparacion
+    # `start <= h < end` lanzaba TypeError en CADA ciclo -- las baterias se
+    # quedaban sin ordenes hasta que alguien corrigiera el campo. Un valor
+    # invalido cae al de por defecto; un periodo invalido se ignora.
+    defaults = FixedTariffConfig()
     cfg = FixedTariffConfig(
-        punta_price=tariff_cfg["punta_price"],
-        llano_price=tariff_cfg["llano_price"],
-        valle_price=tariff_cfg["valle_price"],
-        punta_periods=[tuple(p) for p in tariff_cfg["punta_periods"]],
-        llano_periods=[tuple(p) for p in tariff_cfg["llano_periods"]],
-        weekend_is_valle=tariff_cfg["weekend_is_valle"],
+        punta_price=_clean_price(tariff_cfg.get("punta_price"), defaults.punta_price),
+        llano_price=_clean_price(tariff_cfg.get("llano_price"), defaults.llano_price),
+        valle_price=_clean_price(tariff_cfg.get("valle_price"), defaults.valle_price),
+        punta_periods=_clean_periods(tariff_cfg.get("punta_periods")),
+        llano_periods=_clean_periods(tariff_cfg.get("llano_periods")),
+        weekend_is_valle=bool(tariff_cfg.get("weekend_is_valle", True)),
     )
     return fixed_tariff_prices(now, horizon_hours, cfg)
+
+
+def _clean_price(value, default: float) -> float:
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return default
+    return price if math.isfinite(price) else default
+
+
+def _clean_periods(raw) -> list[tuple[int, int]]:
+    out: list[tuple[int, int]] = []
+    for period in raw or []:
+        try:
+            start, end = int(period[0]), int(period[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if 0 <= start < end <= 24:
+            out.append((start, end))
+    return out

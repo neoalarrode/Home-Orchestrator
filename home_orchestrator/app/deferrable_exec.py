@@ -11,7 +11,7 @@ Ademas:
   - Si esta marcada como "interrumpible" (p.ej. un termo electrico, que no
     pasa nada por pararlo a medias) y su ventana era por excedente solar,
     comprueba cada ciclo si ese excedente sigue existiendo de verdad; si
-    desaparece varios ciclos seguidos, la apaga antes de tiempo. Las que NO
+    desaparece durante un par de minutos seguidos, la apaga antes de tiempo. Las que NO
     son interrumpibles (p.ej. una lavadora, que no se debe cortar a medio
     programa) se quedan encendidas toda su ventana pase lo que pase.
   - Devuelve cuanta potencia se espera que esten consumiendo AHORA MISMO
@@ -27,7 +27,16 @@ from datetime import datetime
 import deferrable_store
 import ha_client
 
-INTERRUPT_CONFIRM_CYCLES = 2  # ciclos seguidos sin excedente antes de cortar una carga interrumpible
+# Tiempo SEGUIDO sin excedente antes de cortar una carga interrumpible (antes se
+# contaba en ciclos -- 2 seguidos --, que con el ciclo reactivo era un segundo).
+INTERRUPT_CONFIRM_SECONDS = 120
+
+# El `turn_on` del switch se reafirma como mucho cada tanto mientras dura la
+# ventana: antes se mandaba en CADA ciclo (~2 llamadas de servicio por segundo
+# a Home Assistant durante toda la ventana, para dejar encendido lo que ya lo
+# estaba).
+SWITCH_REASSERT_SECONDS = 60
+_last_turn_on: dict[str, datetime] = {}
 
 # BUG REAL DE SEGURIDAD, confirmado por fuzzing adversarial: hasta ahora,
 # cuando la ventana ESTIMADA de una carga terminaba, `execute()` apagaba el
@@ -120,8 +129,8 @@ def execute(loads: list[dict], schedules: dict[str, dict], now: datetime,
 
         if active_occ and active_occ["mode"] == "solar" and load.get("interruptible"):
             min_power_w = active_occ["energy_wh"] / duration_hours
-            streak = deferrable_store.record_no_surplus_streak(load_id, live_surplus_w >= min_power_w)
-            if streak >= INTERRUPT_CONFIRM_CYCLES:
+            dry_for = deferrable_store.seconds_without_surplus(load_id, live_surplus_w >= min_power_w, now)
+            if dry_for >= INTERRUPT_CONFIRM_SECONDS:
                 deferrable_store.truncate_occurrence_now(load_id, now)
                 log_lines.append(f"{prefix}[{name}] interrumpida: el excedente solar previsto ya no esta disponible")
                 active_occ = None
@@ -136,10 +145,14 @@ def execute(loads: list[dict], schedules: dict[str, dict], now: datetime,
             window_txt = f"{active_occ['start'][11:16]}-{active_occ['end'][11:16]}"
             line = f"{prefix}[{name}] ENCENDIDA ({mode_txt}, ventana {window_txt})"
             if not dry_run:
-                try:
-                    ha_client.turn_on(switch)
-                except Exception as e:
-                    line += f" — AVISO: no se pudo encender en Home Assistant ({e})"
+                last_on = _last_turn_on.get(load_id)
+                if last_on is None or (now - last_on).total_seconds() >= SWITCH_REASSERT_SECONDS:
+                    try:
+                        ha_client.turn_on(switch)
+                        _last_turn_on[load_id] = now
+                    except Exception as e:
+                        _last_turn_on.pop(load_id, None)  # se reintenta en el ciclo siguiente
+                        line += f" — AVISO: no se pudo encender en Home Assistant ({e})"
         elif (still_running_w := _still_running_past_window(load, power_sensor, now)) is not None:
             live_w = still_running_w
             expected_power_now_w += live_w
@@ -150,6 +163,7 @@ def execute(loads: list[dict], schedules: dict[str, dict], now: datetime,
                 f"({round(live_w)}W) -- no interrumpible, se prorroga"
             )
         else:
+            _last_turn_on.pop(load_id, None)
             energy = deferrable_store.end_session(load_id, now)
             if energy is not None and energy > 1:
                 log_lines.append(f"{prefix}[{name}] sesion finalizada, ~{round(energy)}Wh medidos")

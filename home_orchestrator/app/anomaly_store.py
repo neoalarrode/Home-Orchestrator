@@ -7,57 +7,68 @@ fuera de lo normal.
 Nada de aprendizaje automatico: se compara el dato de ahora contra la
 previsión ya existente, con un margen relativo Y un minimo absoluto (para
 no disparar con bases de consumo pequeñas donde un 60% de mas son 30W sin
-importancia), y se exige que se repita varios ciclos seguidos antes de
-avisar — para no reaccionar a un pico de un instante — y varios ciclos
-seguidos normales antes de desactivar la alerta.
+importancia), y se exige que se mantenga unos minutos seguidos antes de
+avisar — para no reaccionar a un pico de un instante — y otros tantos
+de consumo normal antes de desactivar la alerta.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import threading
+
+import json_store
 from datetime import datetime
 
 ANOMALY_PATH = os.environ.get("ANOMALY_PATH", "/data/anomaly.json")
 
 THRESHOLD_RATIO = 1.6   # el consumo real tiene que superar la previsión en un 60%...
 THRESHOLD_MIN_W = 400   # ...Y superarla en al menos 400W, para no disparar con bases pequeñas
-CONFIRM_CYCLES = 3      # ciclos seguidos por encima antes de confirmar la anomalia
-CLEAR_CYCLES = 3        # ciclos seguidos normales antes de darla por resuelta
+# Cuanto tiempo SEGUIDO tiene que mantenerse por encima (o por debajo) antes de
+# cambiar de estado.
+#
+# BUG REAL, visto en el log de produccion (anomalia "detectada" a las 07:44:25 y
+# "resuelta" a las 07:44:31, con su notificacion de HA creada y borrada): esto
+# se contaba en CICLOS (3 seguidos), pensado para un ciclo por minuto. Con el
+# ciclo reactivo hay ~2 ciclos por segundo, asi que "3 ciclos seguidos" eran
+# segundo y medio: cualquier pico de un instante (un hervidor, el arranque de un
+# compresor) disparaba el aviso. Se cuenta en tiempo real, que no depende de
+# cada cuanto se ejecute el ciclo.
+CONFIRM_SECONDS = 180
+CLEAR_SECONDS = 180
 
 _lock = threading.RLock()
 
 
 def _default() -> dict:
     return {
-        "status": "ok", "since": None, "over_streak": 0, "under_streak": 0,
+        "status": "ok", "since": None, "over_since": None, "under_since": None,
         "live_load_w": None, "expected_load_w": None,
     }
 
 
+def _seconds_since(iso: str | None, now: datetime) -> float:
+    if not iso:
+        return 0.0
+    try:
+        return max(0.0, (now - datetime.fromisoformat(iso)).total_seconds())
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _load() -> dict:
-    with _lock:
-        if not os.path.exists(ANOMALY_PATH):
-            return _default()
-        try:
-            with open(ANOMALY_PATH) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return _default()
+    data = json_store.load(ANOMALY_PATH)
+    if not isinstance(data, dict):
+        return _default()
+    merged = _default()
+    merged.update(data)
+    return merged
 
 
 def _save(data: dict) -> None:
-    os.makedirs(os.path.dirname(ANOMALY_PATH), exist_ok=True)
-    with _lock:
-        # Escritura ATOMICA: un `open(..., "w")` directo trunca el fichero al
-        # instante y vuelca encima, asi que un corte a mitad (reinicio, OOM)
-        # lo dejaba truncado o con dos objetos JSON concatenados -- el mismo
-        # fallo que dejo el add-on en crash-loop. Ver config_store._write_raw.
-        tmp = ANOMALY_PATH + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, ANOMALY_PATH)
+    # Copia en memoria + volcado a disco diferido y atomico: ver json_store.py
+    # (este fichero se reescribia entero en cada ciclo de planificacion).
+    json_store.save(ANOMALY_PATH, data)
 
 
 def update(now: datetime, live_load_w: float, expected_load_w: float) -> dict:
@@ -80,26 +91,33 @@ def update(now: datetime, live_load_w: float, expected_load_w: float) -> dict:
         )
 
         if is_over:
-            data["over_streak"] = data.get("over_streak", 0) + 1
-            data["under_streak"] = 0
+            data["under_since"] = None
+            if not data.get("over_since"):
+                data["over_since"] = now.isoformat()
         else:
-            data["under_streak"] = data.get("under_streak", 0) + 1
-            data["over_streak"] = 0
+            data["over_since"] = None
+            if not data.get("under_since"):
+                data["under_since"] = now.isoformat()
 
-        if data["status"] == "ok" and data["over_streak"] >= CONFIRM_CYCLES:
+        if data["status"] == "ok" and is_over and _seconds_since(data["over_since"], now) >= CONFIRM_SECONDS:
             data["status"] = "anomaly"
             data["since"] = now.isoformat()
-        elif data["status"] == "anomaly" and data["under_streak"] >= CLEAR_CYCLES:
+        elif data["status"] == "anomaly" and not is_over and _seconds_since(data["under_since"], now) >= CLEAR_SECONDS:
             data["status"] = "ok"
             data["since"] = None
+        # restos del conteo por ciclos de versiones anteriores
+        data.pop("over_streak", None)
+        data.pop("under_streak", None)
 
         data["live_load_w"] = round(live_load_w)
         data["expected_load_w"] = round(expected_load_w)
         _save(data)
 
-        return {**data, "changed": data["status"] != was_status}
+        return {**{k: v for k, v in data.items() if k not in ("over_since", "under_since")},
+                "changed": data["status"] != was_status}
 
 
 def get_status() -> dict:
     data = _load()
-    return {k: v for k, v in data.items() if k not in ("over_streak", "under_streak")}
+    return {k: v for k, v in data.items()
+            if k not in ("over_streak", "under_streak", "over_since", "under_since")}

@@ -123,7 +123,12 @@ def discover_zone_ids() -> list[str]:
         except (json.JSONDecodeError, TypeError):
             ids = None
 
-    if ids is None:
+    # Lista VACIA tambien cae a la red de seguridad, no solo un fallo de la
+    # plantilla: desde que Climate es un plugin de este mismo add-on (ya no una
+    # integracion de HA llamada "climate_orchestrator"), `integration_entities`
+    # responde bien... con cero entidades. Las zonas siguen llevando el
+    # atributo marcador, que es lo que busca el volcado.
+    if not ids:
         all_states = ha_client.get_all_states()
         ids = [s["entity_id"] for s in all_states if s.get("attributes", {}).get(ZONE_MARKER_ATTR)]
 

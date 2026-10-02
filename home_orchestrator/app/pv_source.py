@@ -44,8 +44,12 @@ import ha_client
 FORECAST_SOLAR_BASE = "https://api.forecast.solar"
 TIMEOUT = 15
 
-# cache por array_id: {"fetched_at": epoch, "watts": {timestamp_str: valor}}
+# cache por array_id: {"fetched_at": epoch, "watts": {timestamp_str: valor}, "signature": parametros}
 _cache: dict[str, dict] = {}
+# Espera minima antes de volver a llamar a la API tras un fallo (ver
+# `fetch_forecast_solar_api`).
+FAILURE_BACKOFF_SECONDS = 600
+_last_failure: dict[str, float] = {}
 
 
 def _fetch_raw(api_key: str, lat: float, lon: float, declination: float,
@@ -112,16 +116,34 @@ def fetch_forecast_solar_api(array_id: str, api_key: str, lat: float, lon: float
     ejecute mucho mas a menudo.
     """
     now_ts = time.time()
+    # La cache es de ESTOS parametros: si el usuario corrige la orientacion, la
+    # potencia o las coordenadas, la respuesta guardada ya no vale.
+    signature = (api_key, lat, lon, declination, azimuth, kwp)
     cached = _cache.get(array_id)
-    if cached is None or (now_ts - cached["fetched_at"]) > refresh_seconds:
+    if cached is not None and cached.get("signature") != signature:
+        cached = None
+        _cache.pop(array_id, None)
+    stale = cached is None or (now_ts - cached["fetched_at"]) > refresh_seconds
+    # BUG REAL: tras un fallo no se anotaba nada, asi que la llamada se repetia
+    # en CADA ciclo (varias veces por segundo con el ciclo reactivo). Con la
+    # cuota agotada -que es justo como suele fallar esta API- eso mantiene el
+    # bloqueo en vez de dejar que caduque, y cada intento es una espera de red
+    # con el ciclo de planificacion parado. Tras un fallo se espera antes de
+    # volver a preguntar.
+    last_fail = _last_failure.get(array_id)
+    in_backoff = last_fail is not None and (now_ts - last_fail) < FAILURE_BACKOFF_SECONDS
+    if stale and not in_backoff:
         try:
             watts = _fetch_raw(api_key, lat, lon, declination, azimuth, kwp)
-            _cache[array_id] = {"fetched_at": now_ts, "watts": watts}
+            cached = {"fetched_at": now_ts, "watts": watts, "signature": signature}
+            _cache[array_id] = cached
+            _last_failure.pop(array_id, None)
         except (requests.RequestException, ValueError):
-            if cached is None:
-                return [0.0] * horizon_hours
+            _last_failure[array_id] = now_ts
             # si falla la llamada, seguir usando la cache anterior aunque este vencida
-    return _hourly_from_watts(_cache[array_id]["watts"], horizon_hours, now)
+    if cached is None:
+        return [0.0] * horizon_hours
+    return _hourly_from_watts(cached["watts"], horizon_hours, now)
 
 
 def _historical_actual_forecast(current_sensor: str, horizon_hours: int, days: int = 21) -> tuple[list[float], list[bool]] | None:

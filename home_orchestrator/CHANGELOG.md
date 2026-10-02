@@ -1,5 +1,40 @@
 # Changelog
 
+## battery 0.14.11
+
+Revision completa del plugin (planificador, ejecucion, almacenes, EcoFlow e interfaz), contrastada contra una instalacion en produccion.
+
+Prevision de consumo
+- El historico de HA se pedia sin `end_time`, y HA devuelve entonces UN solo dia a partir de la fecha de inicio: "los ultimos 10 dias" era en realidad el dia de hace 10 dias. La prevision era el perfil de un dia suelto y, segun el dia de la semana, los cubos de laborable o de fin de semana se quedaban vacios (todo el sabado plano). Ahora se piden todos los dias, troceados, con su `end_time`.
+- La media por hora se pondera por TIEMPO (cada lectura vale hasta la siguiente), no por numero de muestras: HA solo graba cuando el valor cambia, asi que la media de muestras se sesgaba hacia los ratos con mas variacion.
+- La produccion de los paneles conectados a un puerto MPPT de una bateria EcoFlow no se sumaba al reconstruir el consumo (solo los arrays con sensor de HA): a mediodia la prevision se hundia y aparecia un excedente solar inexistente. Se usa el sensor por array que el propio plugin ya publica.
+- El historico se descarga una vez por sensor (antes una por variante de signo) y se refresca en segundo plano: el ciclo ya no espera a esa descarga.
+
+Planificador
+- Una hora de valle (o de llano con punta pendiente) con cualquier excedente solar, aunque fueran 5 W, anulaba la carga desde red de esa hora. El excedente se sigue aprovechando primero y el resto hasta la reserva se completa desde red.
+- Una "descarga" de menos de 1 W (resto de coma flotante con la bateria justo en su reserva) ya no aparece como accion.
+- Un campo en blanco en tarifa u horizonte (llega como `null`) ya no hace fallar el ciclo entero: los precios y ajustes invalidos caen a su valor por defecto y los periodos mal escritos se ignoran.
+- Precios PVPC con marca de tiempo en UTC: se convierten a hora local (antes se quedaban desplazados 1-2 horas).
+
+Eficiencia (medido: ~115 ciclos por minuto con el ciclo reactivo)
+- Los ficheros de estado de `/data` se reescribian enteros en cada ciclo (del orden de veinte escrituras por segundo). Ahora hay una copia en memoria y el volcado a disco es como mucho cada 10 s, atomico (`json_store.py`); mismos ficheros y mismo formato.
+- El resumen del ciclo se escribe en el log solo cuando cambia (y cada 10 min como latido): antes ~14.000 lineas cada 20 minutos.
+- El feed MQTT de EcoFlow relanza el ciclo solo cuando cambia algo que el planificador usa (SOC, tareas, potencias en mas de 25 W), no con cada mensaje.
+- Conexion HTTP reutilizada con Home Assistant; el `turn_on` de una carga diferible se reafirma cada minuto en vez de en cada ciclo; Forecast.Solar no se vuelve a llamar hasta 10 min despues de un fallo (antes en cada ciclo, lo que mantenia el bloqueo por cuota).
+
+Avisos y seguridad
+- La anomalia de consumo y el corte de una carga interrumpible se confirmaban contando CICLOS (3 y 2 seguidos), que con el ciclo reactivo eran uno o dos segundos: un pico de un instante disparaba el aviso. Ahora se cuentan minutos reales.
+- Una bateria cuyo SOC lleva mas de 5 minutos sin leerse se quedaba con su ultima orden. Si era "cargar", se le corta la carga (solo la suya, sin tocar la tarea del grupo).
+- La integracion de energia solar toleraba 30 s por vuelta y una lectura Bluetooth lenta la superaba: la energia quedaba corta. Ahora 120 s.
+- "Buscar zonas" de Climate vuelve a encontrarlas desde que Climate es un plugin del mismo add-on.
+
+Interfaz
+- La tarjeta "Consumo" sumaba dos veces el sol y la descarga de baterias.
+- Borrar una bateria, un panel, una carga o una entidad pide confirmacion. Los botones de borrar de paneles, cargas y entidades decian "Eliminar esta bateria".
+- Un SOC minimo de 0 % o una inclinacion de 0° se guardaban como 3 % y 30°.
+- Guardar con un campo numerico en blanco o unas horas mal escritas avisa en vez de guardar un valor invalido.
+- Con la pestaña oculta no se sondea el servidor. Los nombres de baterias, sensores y dispositivos se escapan antes de pintarlos, y un nombre de dispositivo EcoFlow con apostrofo ya no rompe el boton de añadir.
+
 ## battery 0.14.10
 
 - Reparto de carga: con las baterias saturadas cada una recibia +1 W sobre su limite (1201 W con limite 1200).
