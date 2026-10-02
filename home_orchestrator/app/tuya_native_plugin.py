@@ -13,6 +13,7 @@ from plugin_base import Plugin
 from flask import Flask, jsonify, request
 from tuya_native import client as tclient, mqtt_transport, auth as tauth, device_manager as tdm, migration as tmig
 from tuya_native import handles as thandles
+from tuya_native import app_channel as tchannel
 
 log = logging.getLogger("tuya_native")
 PLUGIN_KEY = "tuya"   # EVOLUCION: sustituye al plugin Tuya antiguo (mismo slug/seccion)
@@ -89,13 +90,14 @@ def _build_client(sec: dict):
 
 
 class TuyaNativePlugin(Plugin):
-    slug = "tuya"; name = "Tuya"; version = "1.0.0"   # evolucion del plugin Tuya (reimplementa la app)
+    slug = "tuya"; name = "Tuya"; version = "1.0.4"   # evolucion del plugin Tuya (reimplementa la app)
     serves_root = True
 
     def __init__(self):
         self._mqtt = ha_mqtt.HAMqttClient(client_id="home_orchestrator_tuya_native")
         self._devices = {}       # device_id -> TuyaDevice
         self._qr = None          # {token, country_code} del login QR en curso
+        self._channel = None     # canal MQTT permanente de la app (tuya_native/app_channel.py)
         self._app = self._build_flask()
         self._stop = threading.Event()
         # Proveedor de dispositivos para consumo INTERNO (Climate/Lighting) sin
@@ -192,12 +194,46 @@ class TuyaNativePlugin(Plugin):
             # Habitaciones del aspirador (segment_id -> nombre) para HA clean_area.
             # Se pueden definir en config; si no, se autodescubren del mapa (pendiente).
             if d.get("rooms"):
-                dev.rooms = {str(k): v for k, v in dict(d["rooms"]).items()}
+                dev.pinned_rooms = {str(k): v for k, v in dict(d["rooms"]).items()}
+                dev.rooms = dict(dev.pinned_rooms)
             try:
                 dev.refresh_profile(); new_devices[did] = dev
             except Exception:
                 log.exception("tuya_native: fallo cargando perfil de %s", did)
         self._devices = new_devices   # cambio atomico (rebind del atributo)
+        self._start_channel(new_devices)
+
+    def _start_channel(self, devices):
+        """Canal permanente de la app para los aspiradores: por el llega lo que el
+        robot contesta y lo que se cambia desde la app del movil (antes el plugin
+        solo mandaba, nunca escuchaba). Se rehace en cada carga de dispositivos."""
+        old, self._channel = self._channel, None
+        if old is not None:
+            old.stop()
+        vacuums = [d for d in devices.values()
+                   if d.plan.get("main_domain") == "vacuum" and d.ctl.local_key]
+        if not vacuums:
+            return
+
+        def _session():
+            a = (_section().get("auth") or {})
+            return {"sid": a.get("sid"), "ecode": a.get("ecode"), "uid": a.get("uid"),
+                    "device_id": a.get("terminal_device_id")}
+
+        ch = tchannel.AppChannel(_session)
+        for d in vacuums:
+            ch.register(d.device_id, d.ctl.local_key, d.on_app_message)
+            d.ctl.channel = ch
+        if ch.start():
+            self._channel = ch
+            # La primera lectura de habitaciones (al cargar el perfil) fue sin
+            # canal: que el siguiente ciclo de estado la repita ya con el.
+            for d in vacuums:
+                d._rooms_dirty = True
+        else:
+            for d in vacuums:
+                d.ctl.channel = None
+            log.warning("tuya_native: sin sesion para el canal de la app -- habitaciones solo desde la nube")
 
     # --- MQTT discovery + estado + comandos ---
     def _publish_all_discovery(self):
@@ -272,6 +308,8 @@ class TuyaNativePlugin(Plugin):
 
     def shutdown(self):
         self._stop.set()
+        if self._channel is not None:
+            self._channel.stop()
 
     def _login_client(self, sec):
         """Cliente listo para login (creds presentes) SIN exigir sesion todavia.

@@ -1,11 +1,19 @@
 """Runtime del plugin: por dispositivo, perfil dinamico -> entidades HA nativas,
 discovery+estado por MQTT, y comandos HA -> DPs / encoders de kit."""
 from __future__ import annotations
-import json
+import json, logging, time
 from typing import Any, Dict, Mapping
 from . import entities as ent_gen, controller as ctrl, mqtt_transport, ha_aux
 from .kits import light as lightkit
 HA_DISCOVERY_PREFIX="homeassistant"
+log=logging.getLogger("tuya_native")
+# Cada cuanto se comprueba si hay habitaciones nuevas (un cambio hecho desde la
+# app del movil se adelanta a este plazo: ver `TuyaDevice.on_app_message`).
+ROOMS_REFRESH_SECONDS=300
+# Mensajes del canal de la app que cambian las habitaciones del mapa.
+_ROOM_EVENTS_RENAME=("roomPropertySet",)
+_ROOM_EVENTS_RESHAPE=("partDivisionSet","partDivisionRst","partMergeSet","partMergeRst","resetCurrMapSet",
+                      "resetCurrMapRst","SaveCurrMapSet","SaveCurrMapRst","useMapSet","deleteMapSet")
 class TuyaDevice:
     def __init__(self,api,device_id,category,product_id,name,*,local_key=None,mqtt_transport=None,mqtt_session=None,expose_advanced=False):
         self.api=api; self.device_id=device_id; self.category=category; self.product_id=product_id; self.name=name
@@ -14,6 +22,80 @@ class TuyaDevice:
         # {segment_id(str): nombre} de las habitaciones del robot (aspirador). Se
         # publica como `segments` en el estado -> HA lo mapea a areas (clean_area).
         self.rooms={}
+        self.pinned_rooms={}      # fijadas a mano en la config: mandan sobre el nombre descubierto
+        self._map_rooms={}        # las del ultimo mapa leido de la nube
+        self._map_file=None       # ...y de que fichero salieron
+        self._live_names={}       # nombres vistos pasar por el canal de la app (mas recientes que el mapa)
+        self._rooms_ts=0.0; self._rooms_dirty=False
+    def refresh_rooms(self,force=False):
+        """Pone al dia `self.rooms`. BUG REAL: las habitaciones se leian UNA vez al
+        arrancar y nunca mas; una habitacion creada despues en la app no aparecia
+        hasta reiniciar el add-on (y ni asi, si el mapa de la nube aun era el de la
+        ultima limpieza). Ahora se combinan tres fuentes:
+          1. el mapa mas reciente de la nube (ids + nombres) -- se vuelve a mirar
+             cada ROOMS_REFRESH_SECONDS, y solo se descarga si es un fichero nuevo;
+          2. los nombres vistos pasar por el canal de la app cuando se editan;
+          3. los ids que el propio robot usa en sus programaciones: una habitacion
+             recien creada existe ahi antes de que el mapa de la nube se actualice
+             (que solo ocurre al terminar una limpieza). Sin nombre todavia, sale
+             como "Habitación <id>" y toma el nombre real en cuanto haya mapa.
+        Nunca lanza y nunca vacia lo que ya se sabia por un fallo de red."""
+        now=time.time()
+        if not force and not self._rooms_dirty and now-self._rooms_ts < ROOMS_REFRESH_SECONDS:
+            return self.rooms
+        self._rooms_ts=now; self._rooms_dirty=False
+        try:
+            from . import sweeper_map
+            latest=sweeper_map.latest_map_file(self.api,self.device_id)
+            if latest and (latest!=self._map_file or not self._map_rooms):
+                rooms=sweeper_map.fetch_rooms(self.api,self.device_id,latest)
+                if rooms:
+                    if self._map_file is not None and latest!=self._map_file:
+                        self._live_names={}   # el mapa nuevo ya trae lo que se edito
+                    self._map_rooms=rooms; self._map_file=latest
+            merged=dict(self._map_rooms)
+            merged.update(self._live_names)
+            for rid in self._robot_room_ids():
+                merged.setdefault(str(rid),"Habitación %s"%rid)
+            merged.update(self.pinned_rooms)
+            if merged and merged!=self.rooms:
+                log.info("tuya_native: habitaciones de %s actualizadas: %s",self.name,merged)
+            if merged: self.rooms=merged
+        except Exception:
+            log.exception("tuya_native: fallo refrescando las habitaciones de %s",self.device_id)
+        return self.rooms
+    def _robot_room_ids(self):
+        """Ids de habitacion que el robot usa en sus programaciones (consulta
+        `scheduleQry` por el canal de la app). [] si no hay canal o no contesta."""
+        try:
+            r=self.ctl.request("scheduleQry")
+        except Exception:
+            return []
+        ids=set()
+        for item in (r or {}).get("list") or []:
+            for i in item.get("ids") or []:
+                try: ids.add(int(i))
+                except (TypeError,ValueError): pass
+        return sorted(ids)
+    def on_app_message(self,direction,data):
+        """Mensaje del canal de la app (`direction`: "in" robot->app, "out"
+        app->robot, tambien lo que manda la app del movil). Solo anota; el
+        refresco de verdad lo hace el siguiente ciclo de estado."""
+        rt=data.get("reqType")
+        if rt in _ROOM_EVENTS_RENAME:
+            ids=data.get("ids"); names=data.get("names")
+            if isinstance(ids,list) and isinstance(names,list):
+                for i,rid in enumerate(ids):
+                    if i<len(names) and isinstance(names[i],str) and names[i].strip():
+                        self._live_names[str(rid)]=names[i].strip()
+            self._rooms_dirty=True
+        elif rt in _ROOM_EVENTS_RESHAPE:
+            self._live_names={}       # dividir/unir/cambiar de mapa renumera
+            self._rooms_dirty=True
+        else:
+            return
+        log.info("tuya_native: %s recibe %s (%s) por el canal de la app -- se refrescan las habitaciones",
+                 self.name,rt,direction)
     def refresh_profile(self):
         self.codes=self.ctl.load_profile()   # una sola descarga del thing-model
         try: live=self.ctl.get_state()
@@ -21,9 +103,8 @@ class TuyaDevice:
         self.plan=ent_gen.build_entities(self.category,self.codes,self.name,self.device_id,state=live,expose_advanced=self.expose_advanced)
         # Aspirador: habitaciones desde el mapa en la nube (id->nombre) para HA
         # clean_area, salvo que ya se hayan fijado por config.
-        if self.plan.get("main_domain")=="vacuum" and not self.rooms:
-            from . import sweeper_map
-            self.rooms=sweeper_map.fetch_rooms(self.api,self.device_id)
+        if self.plan.get("main_domain")=="vacuum":
+            self.refresh_rooms(force=True)
         return self
     def state_payload(self): return self.ctl.get_state()
 
@@ -58,16 +139,8 @@ class TuyaDevice:
         bat=raw.get("battery_percentage") or raw.get("electricity_left")
         if bat is not None: o["battery_level"]=int(bat)
         if raw.get("suction") is not None: o["fan_speed"]=raw.get("suction")
-        # Reintento perezoso de las habitaciones si el fetch al arrancar fallo
-        # (red/token transitorio): 1 intento como mucho cada 5 min hasta lograrlo.
-        if not self.rooms:
-            import time as _t
-            if _t.time()-getattr(self,"_rooms_try",0) > 300:
-                self._rooms_try=_t.time()
-                try:
-                    from . import sweeper_map
-                    self.rooms=sweeper_map.fetch_rooms(self.api,self.device_id)
-                except Exception: pass
+        # Habitaciones al dia (barato salvo cuando toca refrescar: ver refresh_rooms).
+        self.refresh_rooms()
         if self.rooms: o["segments"]=dict(self.rooms)   # {id:nombre} -> HA clean_area
         return o
 

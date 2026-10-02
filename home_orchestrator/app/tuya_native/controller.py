@@ -12,6 +12,9 @@ class DeviceController:
         self.product_id=product_id; self.category=category
         self._c2d={}; self._d2c={}
         self._state_cache=None; self._state_ts=0.0
+        # Canal permanente de la app (ver app_channel.py). Lo fija el plugin; None
+        # en pruebas o si no hay sesion.
+        self.channel=None
     _STATE_TTL=3.0  # s: una decision de zona lee varias propiedades -> 1 sola llamada
     def load_profile(self):
         tm=self.api.call("thing.m.product.thing.model","1.0",
@@ -47,6 +50,22 @@ class DeviceController:
         return bool(self._mqtt(dps))
     def publish_message(self,message,*,protocol):
         if not (self.mqtt and self.local_key and self.mqtt_session): return False
+        # Por el canal permanente si esta en pie. Si no lo esta, el envio de usar
+        # y tirar de siempre -- soltando antes el canal, porque comparten
+        # client_id y se echarian el uno al otro a mitad del envio.
+        ch=self.channel
+        if ch is not None:
+            if ch.publish(self.device_id,message,protocol=protocol): return True
+            ch.pause()
+            try: return self._publish_one_shot(message,protocol)
+            finally: ch.resume()
+        return self._publish_one_shot(message,protocol)
+    def request(self,req_type,message=None,**kw):
+        """Pregunta al dispositivo por el canal de la app y devuelve su respuesta
+        (None si no hay canal o no contesta)."""
+        if self.channel is None: return None
+        return self.channel.request(self.device_id,req_type,message,**kw)
+    def _publish_one_shot(self,message,protocol):
         import paho.mqtt.client as mqtt, ssl
         ms=self.mqtt_session; cr=self.mqtt.derive_credentials(ms["sid"],ms["ecode"],ms["uid"],ms.get("device_id"))
         cl=mqtt.Client(client_id=cr.client_id,protocol=mqtt.MQTTv311); cl.username_pw_set(cr.username,cr.password)

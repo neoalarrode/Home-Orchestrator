@@ -21,6 +21,16 @@ def _storage_config(api, device_id: str) -> cloud_storage.CloudStorageConfig:
     return cloud_storage.CloudStorageConfig.from_json(d)
 
 
+def latest_map_file(api, device_id: str) -> str | None:
+    """Ruta del mapa mas reciente en la nube, o None. Barato (una llamada): sirve
+    para saber si hay un mapa NUEVO sin descargarlo."""
+    try:
+        return _latest_map_file(api, device_id)
+    except Exception:
+        log.debug("tuya_native: no se pudo listar los mapas de %s", device_id, exc_info=True)
+        return None
+
+
 def _latest_map_file(api, device_id: str) -> str | None:
     r = api.call("thing.m.dev.common.file.list", "1.0",
                  post_data={"devId": device_id, "fileType": "pic", "limit": 5, "offset": 0},
@@ -34,12 +44,13 @@ def _latest_map_file(api, device_id: str) -> str | None:
     return None
 
 
-def fetch_rooms(api, device_id: str) -> dict:
+def fetch_rooms(api, device_id: str, path: str | None = None) -> dict:
     """{segment_id(str): nombre}. {} si no hay mapa/habitaciones o si algo falla
-    (nunca lanza: la limpieza normal del aspirador no debe depender de esto)."""
+    (nunca lanza: la limpieza normal del aspirador no debe depender de esto).
+    `path`: fichero concreto (el de `latest_map_file`); si no, el mas reciente."""
     try:
         cfg = _storage_config(api, device_id)
-        path = _latest_map_file(api, device_id)
+        path = path or _latest_map_file(api, device_id)
         if not path:
             return {}
         data = cloud_storage.fetch(cfg, path)
