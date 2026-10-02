@@ -73,11 +73,27 @@ COLOR_TEMP_TOLERANCE_KELVIN = 150
 # se reintenta; si se ha movido a OTRO valor -> lo ha tocado alguien a mano,
 # se respeta (ver `_verify_and_detect_overrides`).
 APPLY_MAX_RETRIES = 3
+# Margen antes de dar por "tocada a mano" una luz que no coincide con lo
+# mandado (puede estar a media transicion). NO es la espera de un reintento.
 APPLY_SETTLE_SECONDS = 8.0
 # Un reintento solo tiene sentido justo despues de la orden original. Pasado
 # este tiempo ya no se reenvia nada: lo que la luz tenga entonces es su estado
 # de verdad (la apago alguien, cambio la regla...), no un envio perdido.
-APPLY_RETRY_WINDOW_SECONDS = 60.0
+APPLY_RETRY_WINDOW_SECONDS = 30.0
+# REINTENTOS RAPIDOS, iguales para cualquier bombilla (HA/Matter, TP-Link,
+# Tuya, Govee, Shelly...). A peticion expresa del usuario: "tiene que ser algo
+# super rapido, que el usuario final ni lo note". Dos casos:
+#   1. El ENVIO fallo (la llamada lanzo: timeout, pasarela caida, HA devolvio
+#      error). Se sabe al instante y sin leer nada: se reenvia casi de inmediato.
+APPLY_SEND_FAILED_RETRY_DELAYS = (0.3, 0.8, 2.0)
+#   2. El envio se acepto pero la luz no cambia. Hay que LEER su estado, y cada
+#      via tarda lo suyo en reflejarlo: Home Assistant lo empuja por WebSocket en
+#      decimas de segundo; un puente directo solo lo sabe cuando sondea o cuando
+#      su nube se pone al dia. Comprobar antes de ese plazo no detecta nada: solo
+#      reenvia a ciegas una orden que ya se aplico.
+APPLY_STATE_CHECK_DELAYS = (0.7, 1.5, 3.0)
+BRIDGE_STATE_LATENCY_SECONDS = {"shelly": 2.0, "tuya": 5.0, "tplink": 6.0, "govee": 8.0}
+BRIDGE_STATE_LATENCY_DEFAULT_SECONDS = 6.0
 
 # Segundo escudo contra el parpadeo por lux (ver ZoneRunner._lux_dark_enough_debounced):
 # ademas de la histeresis de schedule.lux_dark_enough, un cambio de estado
@@ -181,6 +197,10 @@ class ZoneRunner:
         # ver `_verify_and_detect_overrides`). Se refresca al inicio de cada
         # `_decide_and_act_locked`.
         self._last_states: dict[str, dict] = {}
+        # Luces que la zona quiere ENCENDIDAS ahora mismo (las de la regla activa,
+        # si no hay luz natural de sobra): las unicas a las que se reenvia algo.
+        self._wanted_on: set[str] = set()
+        self._verify_timer: threading.Timer | None = None
 
     # ------------------------------------------------------------ estado -
 
@@ -398,7 +418,7 @@ class ZoneRunner:
         # "no se aplico" (sigue en este valor) de "lo han tocado a mano" (se
         # movio a otro). Ver `_verify_and_detect_overrides`.
         pre = self._current_light_values(self._last_states or {}, entity_id)
-        self._send_to_light(entity_id, brightness_pct, color_temp_kelvin, hs)
+        sent_ok = self._send_to_light(entity_id, brightness_pct, color_temp_kelvin, hs)
         commanded = self._state.setdefault("commanded", {})
         # OJO: se guarda lo que de VERDAD se mando (brightness_pct/
         # color_temp_kelvin ya filtrados arriba por `brightness_only`),
@@ -412,6 +432,9 @@ class ZoneRunner:
             "color_temp_kelvin": color_temp_kelvin,
             "ts": time.time(),
             "first_ts": time.time(),   # el de la orden original; `ts` avanza con cada reintento
+            # False = la llamada de envio LANZO: no hace falta leer nada para
+            # saber que hay que repetirla (ver APPLY_SEND_FAILED_RETRY_DELAYS).
+            "sent_ok": bool(sent_ok),
             # Intento fresco: 0 reintentos consumidos. La verificacion decide,
             # mirando el estado REAL, si hace falta reintentar (hasta
             # APPLY_MAX_RETRIES) -- tanto si el envio lanzo como si el equipo
@@ -422,6 +445,9 @@ class ZoneRunner:
             "pre_color_temp_kelvin": (pre or {}).get("color_temp_kelvin"),
             "pre_on": bool((pre or {}).get("on")),
         }
+        # No se espera al siguiente ciclo de la zona (puede tardar minutos): la
+        # propia zona vuelve a mirar esta luz en decimas de segundo.
+        self._schedule_fast_verify()
         # NOTA: el olvido de un override manual NO se hace aqui. Antes se
         # limpiaba con `turning_on=True` (entrada fresca/cambio de regla), pero
         # eso tambien salta en reentradas dentro de la misma sesion y, con
@@ -606,6 +632,8 @@ class ZoneRunner:
                 # al quedarse la zona vacia).
                 still_at_pre = (bool(cmd.get("pre_on")) and cmd.get("first_ts") is not None
                                 and not self._moved_from_pre(cmd, vals))
+                if cmd.get("sent_ok") is False:
+                    still_at_pre = True   # el envio fallo: seguro que no es un cambio manual
                 if not still_at_pre:
                     if now - cmd.get("ts", 0) < APPLY_SETTLE_SECONDS:
                         continue  # recien mandado: puede estar a media transicion
@@ -618,26 +646,90 @@ class ZoneRunner:
             if entity_id not in retry_ids:
                 continue  # la zona no la quiere encendida ahora: nada que reenviar
             first_ts = cmd.get("first_ts")
-            if first_ts is None or now - first_ts > APPLY_RETRY_WINDOW_SECONDS:
-                continue  # orden antigua (o de una version anterior): ya no es un envio perdido
-            if now - cmd.get("ts", 0) < APPLY_SETTLE_SECONDS:
-                continue  # dar tiempo a que la transicion/nube reflejen el cambio
+            if first_ts is None:
+                continue  # orden guardada por una version anterior: nunca se reenvia
             attempts = cmd.get("attempts", 0)
-            if attempts < APPLY_MAX_RETRIES:
+            expired = now - first_ts > APPLY_RETRY_WINDOW_SECONDS
+            if not expired and attempts < APPLY_MAX_RETRIES:
+                if now - cmd.get("ts", 0) < self._retry_delay(entity_id, cmd):
+                    continue  # todavia no toca (ver APPLY_*_DELAYS)
                 cmd["attempts"] = attempts + 1
                 cmd["ts"] = now
                 log.info(
-                    "Zona lighting %s: %s no reflejo el cambio mandado -- reintento %d/%d",
-                    self.zone_id, entity_id, cmd["attempts"], APPLY_MAX_RETRIES,
+                    "Zona lighting %s: %s %s -- reintento %d/%d",
+                    self.zone_id, entity_id,
+                    "no acepto el envio" if cmd.get("sent_ok") is False else "no reflejo el cambio mandado",
+                    cmd["attempts"], APPLY_MAX_RETRIES,
                 )
-                self._send_to_light(entity_id, cmd.get("brightness_pct"), cmd.get("color_temp_kelvin"), None)
+                cmd["sent_ok"] = bool(
+                    self._send_to_light(entity_id, cmd.get("brightness_pct"), cmd.get("color_temp_kelvin"), None))
             elif not cmd.get("gave_up"):
                 cmd["gave_up"] = True
                 log.warning(
                     "Zona lighting %s: %s no aplico el cambio tras %d intentos -- se deja de insistir "
                     "hasta el proximo cambio real (dispositivo inalcanzable o rechazando la orden)",
-                    self.zone_id, entity_id, APPLY_MAX_RETRIES,
+                    self.zone_id, entity_id, attempts,
                 )
+
+    # ------------------------------------------- comprobacion rapida tras enviar
+
+    def _retry_delay(self, entity_id: str, cmd: dict) -> float:
+        """Cuanto esperar desde el ultimo envio antes de reenviar a esta luz."""
+        step = min(cmd.get("attempts", 0), len(APPLY_SEND_FAILED_RETRY_DELAYS) - 1)
+        if cmd.get("sent_ok") is False:
+            return APPLY_SEND_FAILED_RETRY_DELAYS[step]
+        if self._is_bridge_ref(entity_id):
+            return BRIDGE_STATE_LATENCY_SECONDS.get(str(entity_id).split(":", 1)[0], BRIDGE_STATE_LATENCY_DEFAULT_SECONDS)
+        return APPLY_STATE_CHECK_DELAYS[step]
+
+    def _pending_verification(self, now: float) -> dict[str, dict]:
+        """Luces con una orden reciente aun sin confirmar a las que todavia se les
+        puede reenviar algo."""
+        pending = {}
+        for entity_id, cmd in (self._state.get("commanded") or {}).items():
+            first_ts = cmd.get("first_ts")
+            if (entity_id not in self._wanted_on or cmd.get("confirmed") or cmd.get("gave_up")
+                    or first_ts is None or now - first_ts > APPLY_RETRY_WINDOW_SECONDS
+                    or cmd.get("attempts", 0) >= APPLY_MAX_RETRIES):
+                continue
+            pending[entity_id] = cmd
+        return pending
+
+    def _schedule_fast_verify(self) -> None:
+        """Programa la proxima comprobacion para cuando le toque a la luz que
+        antes venza. No hace nada si no queda ninguna pendiente."""
+        now = time.time()
+        pending = self._pending_verification(now)
+        if not pending:
+            return
+        delay = min(max(0.0, cmd.get("ts", now) + self._retry_delay(e, cmd) - now) for e, cmd in pending.items())
+        old = self._verify_timer
+        if old is not None:
+            old.cancel()
+        timer = threading.Timer(delay + 0.02, self._fast_verify)
+        timer.daemon = True
+        self._verify_timer = timer
+        timer.start()
+
+    def _fast_verify(self) -> None:
+        """Comprobacion propia de la zona poco despues de enviar: BUG REAL de la
+        version anterior -- la verificacion solo corria dentro de un ciclo normal
+        de la zona (un evento de HA o el repaso cada `reapply_minutes`), asi que un
+        reintento "a los 8 segundos" podia llegar minutos tarde o no llegar."""
+        try:
+            with self._lock:
+                pending = self._pending_verification(time.time())
+                if not pending:
+                    return
+                states = self._snapshot_states()
+                # Una luz de HA que no aparece en la lectura no esta "apagada":
+                # no se ha podido leer. Sin dato no se concluye nada.
+                ids = {e for e in pending if self._is_bridge_ref(e) or e in states}
+                if ids:
+                    self._verify_and_detect_overrides(states, ids, retry_ids=ids)
+                self._schedule_fast_verify()
+        except Exception:
+            log.exception("Zona lighting %s: fallo en la comprobacion rapida", self.zone_id)
 
     def _presence_boost_active(self, cfg: dict, now: float) -> bool:
         """True si toca el brillo maximo por presencia sostenida -- ver el
@@ -882,6 +974,7 @@ class ZoneRunner:
         plant_suffix = " (+ modo plantas activo)" if plant_mode_active and plant_lights else ""
 
         if not occupied:
+            self._wanted_on = set()
             self.active_rule = None
             self._state["active_rule"] = None
             if cfg.get("auto_off", True):
@@ -941,8 +1034,8 @@ class ZoneRunner:
         # Verificacion del ultimo cambio y deteccion de cambios manuales, ANTES
         # de apagar/aplicar nada este ciclo. Se miran todas las luces de la
         # zona, pero solo se REENVIA a las que la zona quiere encendidas ahora.
-        self._verify_and_detect_overrides(
-            states, all_zone_lights, retry_ids=selected_lights if dark_enough else set())
+        self._wanted_on = set(selected_lights) if dark_enough else set()
+        self._verify_and_detect_overrides(states, all_zone_lights, retry_ids=self._wanted_on)
 
         transitioned = (not was_occupied) or (selected_name != self.active_rule) or just_got_dark_enough
         self.active_rule = selected_name

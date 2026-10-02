@@ -1,5 +1,20 @@
 # Changelog
 
+## lighting 0.7.25
+
+Reintentos rapidos, iguales para cualquier bombilla (Home Assistant/Matter, TP-Link, Tuya, Govee, Shelly).
+
+- Si el ENVIO falla (la llamada lanza: timeout, pasarela caida, error de HA) se reenvia a los 0,3 s, 0,8 s y 2 s, sin esperar a leer nada. Antes se esperaban 8 s entre intentos.
+- La zona hace su propia comprobacion poco despues de cada envio. Antes la verificacion solo corria dentro de un ciclo normal de la zona (un evento de HA o el repaso cada `reapply_minutes`), asi que el reintento podia llegar minutos tarde o no llegar.
+- Si el envio se acepta pero la luz no cambia, se comprueba su estado en cuanto esa via puede darlo: 0,7 s / 1,5 s / 3 s para entidades de Home Assistant (empuja el estado por WebSocket); para un puente directo, cuando su sondeo o su nube lo reflejan (Shelly 2 s, Tuya 5 s, TP-Link 6 s, Govee 8 s). Comprobar antes solo reenviaria a ciegas una orden ya aplicada.
+- La ventana de reintento baja de 60 a 30 s. El margen para dar una luz por "tocada a mano" sigue en 8 s (no es una espera de reintento).
+
+## tuya 1.0.4
+
+- Habitaciones del aspirador: se leian UNA vez al arrancar, del mapa de la ultima limpieza guardado en la nube, y no se volvian a mirar. Una habitacion creada despues en la app no aparecia nunca (ni reiniciando, mientras la nube no tuviera un mapa nuevo). Ahora se refrescan cada 5 minutos y combinan el mapa mas reciente de la nube con los ids que el propio robot usa en sus programaciones: una habitacion nueva sale enseguida como "Habitación <id>" y toma su nombre real en cuanto la nube publica un mapa que la incluya (al terminar una limpieza).
+- Canal de la app en los dos sentidos: el plugin solo abria una conexion de usar y tirar para mandar y nunca escuchaba. Ahora mantiene una conexion permanente y recibe lo que contesta el robot (`tuya_native/app_channel.py`). Un cambio de mapa (dividir, unir, renombrar, cambiar de mapa) fuerza el refresco de habitaciones en el siguiente ciclo. Los envios (limpieza por habitacion) pasan por esa misma conexion; si no esta en pie se usa el envio de siempre.
+- La version que declara el plugin estaba en 1.0.0 desde hace cuatro publicaciones.
+
 ## lighting 0.7.24
 
 - La 0.7.23 se retiro a los pocos minutos de desplegarla: su verificacion reintentaba sobre TODAS las luces de la zona, y una luz apagada con una orden antigua guardada (de antes de actualizar, o de una regla que ya no aplicaba) contaba como "encendido fallido" y se reencendia sola; la zona la volvia a apagar al momento. Ahora solo se reenvia a las luces que la zona quiere encendidas en ese instante (las de la regla activa, y solo si no hay luz natural de sobra), solo durante el primer minuto tras la orden original, y nunca a partir de una orden guardada por una version anterior. Cuando es la propia zona la que apaga una luz, su orden pendiente se olvida.
