@@ -61,6 +61,20 @@ log = logging.getLogger("lighting.zone_runner")
 BRIGHTNESS_TOLERANCE_PCT = 4
 COLOR_TEMP_TOLERANCE_KELVIN = 150
 
+# Verificacion + reintento del apply (bug real, confirmado en los logs del
+# usuario: un `light.turn_on` a una bombilla TP-Link lanzo excepcion -timeout
+# KLAP, ciclo de 10s- y NO se reintentaba; tambien pasa sin excepcion, cuando
+# el driver acepta la orden pero el dispositivo no la aplica de verdad). Tras
+# mandar un cambio se comprueba el estado REAL de la luz; si no coincide con lo
+# mandado se reintenta hasta MAX veces, con una ventana de asentamiento entre
+# intentos (dar tiempo a que la transicion/nube reflejen el cambio antes de
+# concluir que fallo). El discriminador clave para no PELEARSE con un cambio
+# manual: si la luz sigue en su valor PREVIO al envio -> fallo de aplicacion,
+# se reintenta; si se ha movido a OTRO valor -> lo ha tocado alguien a mano,
+# se respeta (ver `_verify_and_detect_overrides`).
+APPLY_MAX_RETRIES = 3
+APPLY_SETTLE_SECONDS = 8.0
+
 # Segundo escudo contra el parpadeo por lux (ver ZoneRunner._lux_dark_enough_debounced):
 # ademas de la histeresis de schedule.lux_dark_enough, un cambio de estado
 # "oscuro"/"claro" no cuenta hasta que pase este tiempo desde el ultimo --
@@ -157,6 +171,12 @@ class ZoneRunner:
         # `_manual_hs` -- se recuerda aqui, en memoria, mientras el color
         # SI tenia su propio campo.
         self._manual_brightness_pct: float | None = None
+        # Ultimo snapshot de estados del ciclo en curso -- lo usa `_apply_values`
+        # para leer el valor PREVIO de una luz justo antes de mandarle el
+        # cambio (discriminar despues "no se aplico" de "lo han tocado a mano",
+        # ver `_verify_and_detect_overrides`). Se refresca al inicio de cada
+        # `_decide_and_act_locked`.
+        self._last_states: dict[str, dict] = {}
 
     # ------------------------------------------------------------ estado -
 
@@ -364,11 +384,50 @@ class ZoneRunner:
         brightness_pct = None if on_off_only else (values.get("brightness_pct") if values else None)
         hs = None if on_off_only else hs
         color_temp_kelvin = None if (brightness_only or on_off_only or hs is not None) else (values.get("color_temp_kelvin") if values else None)
+        # Valor REAL de la luz JUSTO ANTES de mandar -- para distinguir luego
+        # "no se aplico" (sigue en este valor) de "lo han tocado a mano" (se
+        # movio a otro). Ver `_verify_and_detect_overrides`.
+        pre = self._current_light_values(self._last_states or {}, entity_id)
+        self._send_to_light(entity_id, brightness_pct, color_temp_kelvin, hs)
+        commanded = self._state.setdefault("commanded", {})
+        # OJO: se guarda lo que de VERDAD se mando (brightness_pct/
+        # color_temp_kelvin ya filtrados arriba por `brightness_only`),
+        # NUNCA el `values` crudo de la curva -- si no, una luz «:solo_
+        # brillo» quedaria con un color_temp_kelvin "esperado" en cache
+        # que el dispositivo real nunca recibio, y `_verify_and_detect_
+        # overrides` la marcaria como tocada a mano en el proximo ciclo
+        # sin que nadie la haya tocado.
+        commanded[entity_id] = {
+            "brightness_pct": brightness_pct,
+            "color_temp_kelvin": color_temp_kelvin,
+            "ts": time.time(),
+            # Intento fresco: 0 reintentos consumidos. La verificacion decide,
+            # mirando el estado REAL, si hace falta reintentar (hasta
+            # APPLY_MAX_RETRIES) -- tanto si el envio lanzo como si el equipo
+            # simplemente no reflejo el cambio.
+            "attempts": 0,
+            "confirmed": False,
+            "pre_brightness_pct": (pre or {}).get("brightness_pct"),
+            "pre_color_temp_kelvin": (pre or {}).get("color_temp_kelvin"),
+            "pre_on": bool((pre or {}).get("on")),
+        }
+        # NOTA: el olvido de un override manual NO se hace aqui. Antes se
+        # limpiaba con `turning_on=True` (entrada fresca/cambio de regla), pero
+        # eso tambien salta en reentradas dentro de la misma sesion y, con
+        # `off_delay_seconds=0`, en cada parpadeo del sensor -> un brillo puesto
+        # a mano se re-adaptaba al rato. Ahora se olvida SOLO al quedarse la
+        # zona vacia de verdad ("salir y volver"), en `_decide_and_act_locked`.
+
+    def _send_to_light(self, entity_id: str, brightness_pct, color_temp_kelvin, hs) -> bool:
+        """Manda el encendido/ajuste al dispositivo real. Devuelve True si la
+        llamada NO lanzo (no garantiza que el equipo lo haya aplicado -- de eso
+        se encarga la verificacion posterior), False si fallo. Factorizado de
+        `_apply_values` para que el reintento reuse exactamente el mismo envio."""
         try:
             if self._is_bridge_ref(entity_id):
                 handle = self._resolve_bridge_handle(entity_id)
                 if handle is None:
-                    return
+                    return False
                 # BUG REAL, confirmado en produccion: la curva solar de la
                 # zona no sabe (ni tiene por que saber) el limite fisico
                 # real de CADA bombilla -- un min/max_color_temp_kelvin de
@@ -376,13 +435,9 @@ class ZoneRunner:
                 # concreto no admite (Govee H6008: 2700-6500K real, no el
                 # 2000-9000K generico; la API lo rechazaba con 400 y la
                 # luz se quedaba sin brillo ni color aplicados). Cada
-                # bridge conoce su propio rango real si puede saberlo
-                # (Govee: detectado contra su Cloud API; TP-Link: python-
-                # kasa ya lo reporta por modelo; Tuya: el rango fijo
-                # asumido por la conversion mireds<->DP, ver profile.py) y
+                # bridge conoce su propio rango real si puede saberlo y
                 # lo expone via `color_temp_range` -- se recorta AQUI,
-                # antes de mandar nada, para que la zona nunca dependa de
-                # que su propio min/max este bien puesto para CADA luz.
+                # antes de mandar nada.
                 if color_temp_kelvin is not None:
                     handle_range = getattr(handle, "color_temp_range", None)
                     if handle_range is not None:
@@ -401,27 +456,10 @@ class ZoneRunner:
                 if transition is not None:
                     service_data["transition"] = float(transition)
                 self.ws.call_service("light", "turn_on", service_data=service_data, target={"entity_id": entity_id})
+            return True
         except Exception:
             log.exception("Zona lighting %s: fallo encendiendo/ajustando %s", self.zone_id, entity_id)
-            return
-        commanded = self._state.setdefault("commanded", {})
-        # OJO: se guarda lo que de VERDAD se mando (brightness_pct/
-        # color_temp_kelvin ya filtrados arriba por `brightness_only`),
-        # NUNCA el `values` crudo de la curva -- si no, una luz «:solo_
-        # brillo» quedaria con un color_temp_kelvin "esperado" en cache
-        # que el dispositivo real nunca recibio, y `_detect_manual_
-        # overrides` la marcaria como tocada a mano en el proximo ciclo
-        # sin que nadie la haya tocado.
-        commanded[entity_id] = {
-            "brightness_pct": brightness_pct,
-            "color_temp_kelvin": color_temp_kelvin,
-            "ts": time.time(),
-        }
-        if turning_on:
-            # entrada fresca en la zona (o cambio de regla): se considera
-            # "mano limpia" de nuevo, cualquier marca de override anterior
-            # de ESTA luz deja de aplicar.
-            self._state.setdefault("manual_override", {}).pop(entity_id, None)
+            return False
 
     def all_lights(self) -> set[str]:
         """Todas las luces que esta zona puede llegar a tocar, de cualquiera
@@ -456,40 +494,112 @@ class ZoneRunner:
         return (commanded.get("brightness_pct") != brillo
                 or commanded.get("color_temp_kelvin") != color)
 
-    def _detect_manual_overrides(self, states: dict[str, dict], entity_ids: set[str]) -> None:
-        """Heuristica deliberadamente simple (mismo espiritu "sin caja
-        negra" que el resto del proyecto, y el mismo problema que
-        resuelve "Adaptive Lighting" de forma parecida): si el brillo o
-        el color REAL de una luz que seguimos gestionando ya no coincide
-        con lo ultimo que le mandamos, alguien la ha tocado a mano -- se
-        marca y se deja de reajustar su color/brillo hasta la proxima vez
-        que la zona vuelva a encenderla desde cero (ver `_apply_values`,
-        `turning_on=True` limpia la marca). Si la luz esta APAGADA no se
-        evalua nada (apagarla a mano no es "un override de color", es
-        simplemente que la persona no la quiere encendida ahora)."""
-        if not self.zone.get("respect_manual_changes", True):
-            return
+    @staticmethod
+    def _within(a, b, tol) -> bool:
+        return a is not None and b is not None and abs(a - b) <= tol
+
+    def _apply_confirmed(self, cmd: dict, vals: dict) -> bool:
+        """True si el estado REAL de la luz coincide con lo ULTIMO que le
+        mandamos (dentro de tolerancia). Una luz que mandamos encender pero
+        sigue apagada NO esta aplicada."""
+        if not vals.get("on"):
+            return False
+        if cmd.get("brightness_pct") is not None and vals.get("brightness_pct") is not None:
+            if not self._within(vals["brightness_pct"], cmd["brightness_pct"], BRIGHTNESS_TOLERANCE_PCT):
+                return False
+        if cmd.get("color_temp_kelvin") is not None and vals.get("color_temp_kelvin") is not None:
+            if not self._within(vals["color_temp_kelvin"], cmd["color_temp_kelvin"], COLOR_TEMP_TOLERANCE_KELVIN):
+                return False
+        return True
+
+    def _moved_from_pre(self, cmd: dict, vals: dict) -> bool:
+        """True si el valor REAL difiere del que la luz tenia JUSTO ANTES de
+        nuestro envio -> alguien la ha movido a mano. Si sigue en su valor
+        previo, es que NUESTRA orden no se aplico (no un cambio manual)."""
+        if (cmd.get("brightness_pct") is not None and vals.get("brightness_pct") is not None
+                and cmd.get("pre_brightness_pct") is not None
+                and not self._within(vals["brightness_pct"], cmd["pre_brightness_pct"], BRIGHTNESS_TOLERANCE_PCT)):
+            return True
+        if (cmd.get("color_temp_kelvin") is not None and vals.get("color_temp_kelvin") is not None
+                and cmd.get("pre_color_temp_kelvin") is not None
+                and not self._within(vals["color_temp_kelvin"], cmd["pre_color_temp_kelvin"], COLOR_TEMP_TOLERANCE_KELVIN)):
+            return True
+        return False
+
+    def _verify_and_detect_overrides(self, states: dict[str, dict], entity_ids: set[str]) -> None:
+        """Comprueba, para cada luz que gestionamos, si el ULTIMO cambio que le
+        mandamos se aplico de verdad -- y actua segun el caso. Resuelve dos
+        bugs reales confirmados en produccion:
+
+        1. Un apply que NO llega a la bombilla (excepcion de red -timeout KLAP
+           de TP-Link en los logs-, o el driver acepta pero el equipo no
+           cambia) se quedaba sin reintentar: la curva pedia adaptarse y la luz
+           no cambiaba nunca. Ahora se reintenta hasta APPLY_MAX_RETRIES, con
+           una ventana de asentamiento entre intentos.
+        2. Un cambio MANUAL (p.ej. subir el brillo al 100%) se re-adaptaba al
+           rato: no se marcaba de forma fiable como "tocado a mano". Ahora se
+           distingue con claridad de un fallo de aplicacion.
+
+        Discriminador: si la luz sigue en su valor PREVIO al envio, nuestra
+        orden no se aplico -> reintentar; si se ha movido a OTRO valor, la ha
+        tocado alguien -> respetar (marcar override). Una luz APAGADA que YA
+        habiamos confirmado encendida se trata como apagado manual (no se
+        reintenta encenderla); si nunca llego a confirmarse, es un encendido
+        fallido y SI se reintenta."""
+        respect_manual = self.zone.get("respect_manual_changes", True)
         commanded = self._state.get("commanded") or {}
         overrides = self._state.setdefault("manual_override", {})
+        now = time.time()
         for entity_id in entity_ids:
             cmd = commanded.get(entity_id)
-            vals = self._current_light_values(states, entity_id)
-            if not cmd or not vals or not vals["on"]:
+            if not cmd:
                 continue
-            mismatch = False
-            # `cmd.get(...) is not None` -- NO solo "in cmd": desde que
-            # `_apply_values` guarda siempre las dos claves (ver su
-            # comentario), una luz «:solo_brillo» o sin lectura de sol
-            # todavia tiene la clave con valor `None`, que no es
-            # comparable (bug real que esto evita: `None - int` revienta).
-            if cmd.get("brightness_pct") is not None and vals["brightness_pct"] is not None:
-                if abs(vals["brightness_pct"] - cmd["brightness_pct"]) > BRIGHTNESS_TOLERANCE_PCT:
-                    mismatch = True
-            if not mismatch and cmd.get("color_temp_kelvin") is not None and vals["color_temp_kelvin"] is not None:
-                if abs(vals["color_temp_kelvin"] - cmd["color_temp_kelvin"]) > COLOR_TEMP_TOLERANCE_KELVIN:
-                    mismatch = True
-            if mismatch:
+            vals = self._current_light_values(states, entity_id)
+            if vals is None:
+                continue  # no se pudo leer el estado -> no concluir nada este ciclo
+
+            if self._apply_confirmed(cmd, vals):
+                cmd["attempts"] = 0
+                cmd["confirmed"] = True
+                cmd.pop("gave_up", None)
+                continue
+
+            # No coincide con lo mandado.
+            if not vals.get("on"):
+                # Apagada: si ya la habiamos confirmado encendida, es un apagado
+                # MANUAL -> se respeta, no se reintenta. Si nunca se confirmo, el
+                # encendido fallo -> cae al reintento de abajo.
+                if cmd.get("confirmed"):
+                    continue
+            elif respect_manual and cmd.get("pre_on") and self._moved_from_pre(cmd, vals):
+                # Encendida pero en otro valor distinto del previo: cambio
+                # manual -> respetar hasta "salir y volver" (ver bucle de
+                # presencia en _decide_and_act_locked, que limpia overrides al
+                # quedarse la zona vacia).
                 overrides[entity_id] = True
+                cmd["attempts"] = 0
+                continue
+
+            # Fallo de aplicacion (sigue en su valor previo, el envio fallo, o
+            # sigue apagada sin haberse confirmado nunca): reintento acotado.
+            if now - cmd.get("ts", 0) < APPLY_SETTLE_SECONDS:
+                continue  # dar tiempo a que la transicion/nube reflejen el cambio
+            attempts = cmd.get("attempts", 0)
+            if attempts < APPLY_MAX_RETRIES:
+                cmd["attempts"] = attempts + 1
+                cmd["ts"] = now
+                log.info(
+                    "Zona lighting %s: %s no reflejo el cambio mandado -- reintento %d/%d",
+                    self.zone_id, entity_id, cmd["attempts"], APPLY_MAX_RETRIES,
+                )
+                self._send_to_light(entity_id, cmd.get("brightness_pct"), cmd.get("color_temp_kelvin"), None)
+            elif not cmd.get("gave_up"):
+                cmd["gave_up"] = True
+                log.warning(
+                    "Zona lighting %s: %s no aplico el cambio tras %d intentos -- se deja de insistir "
+                    "hasta el proximo cambio real (dispositivo inalcanzable o rechazando la orden)",
+                    self.zone_id, entity_id, APPLY_MAX_RETRIES,
+                )
 
     def _presence_boost_active(self, cfg: dict, now: float) -> bool:
         """True si toca el brillo maximo por presencia sostenida -- ver el
@@ -628,6 +738,9 @@ class ZoneRunner:
         cfg = self.zone
         now = time.time()
         states = states if states is not None else self._snapshot_states()
+        # Lo usa `_apply_values` para leer el valor previo de cada luz antes de
+        # mandarle un cambio (ver `_verify_and_detect_overrides`).
+        self._last_states = states
 
         # BUG REAL: un snapshot de estados VACIO o sin ninguna de las
         # entidades de presencia era indistinguible de "no hay nadie en
@@ -694,6 +807,19 @@ class ZoneRunner:
         elif not occupied:
             self._state.pop("occupied_since_ts", None)
 
+        # "Salir y volver" (preferencia explicita del usuario): un cambio
+        # manual sobre una luz se respeta mientras haya presencia CONTINUA; en
+        # cuanto la zona se queda vacia de verdad (con `off_delay_seconds` ya
+        # aplicado por `_occupied_with_delay`), se olvida -- al volver, la curva
+        # adaptativa retoma el control desde cero. Antes el olvido se ataba a
+        # `turning_on=True` de `_apply_values`, que tambien salta en reentradas
+        # dentro de la misma sesion (y, con `off_delay_seconds=0`, en cada
+        # parpadeo del sensor) -- por eso un brillo puesto a mano se
+        # re-adaptaba "al rato" sin que el usuario se hubiera ido. Ahora el
+        # olvido ocurre SOLO en el flanco ocupada->vacia.
+        if was_occupied and not occupied:
+            self._state.pop("manual_override", None)
+
         # Lectura del sensor de lux para el sparkline -- UNA vez por
         # ciclo, independiente de cuantos canales de histeresis lo
         # consuman despues (ver `_record_lux_sparkline`).
@@ -714,11 +840,6 @@ class ZoneRunner:
         plant_lights = {e for e in (cfg.get("plant_mode_lights") or []) if e}
 
         all_zone_lights = rules.all_lights(self._rules)
-        # deteccion de "tocado a mano" sobre TODAS las luces que la zona
-        # gestiona, encendidas o no -- independiente de si hay presencia
-        # ahora mismo, para no perder la marca si alguien la toca justo
-        # cuando la zona se queda vacia.
-        self._detect_manual_overrides(states, all_zone_lights)
 
         plant_suffix = " (+ modo plantas activo)" if plant_mode_active and plant_lights else ""
 
@@ -740,6 +861,12 @@ class ZoneRunner:
                 self.reason = "sin presencia (apagado automatico desactivado)"
             self._apply_plant_mode(cfg, states, plant_mode_active, plant_lights)
             return
+
+        # Verificacion + reintento del ultimo cambio, y deteccion de cambios
+        # manuales -- solo con la zona OCUPADA: cuando esta vacia las luces se
+        # apagan (arriba) y los overrides ya se han olvidado en el flanco
+        # ocupada->vacia, asi que no hay nada que verificar ni reintentar.
+        self._verify_and_detect_overrides(states, all_zone_lights)
 
         selected = rules.select_rule(self._rules, states)
         selected_name = selected.get("name") if selected else None

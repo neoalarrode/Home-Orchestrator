@@ -172,6 +172,8 @@ class MqttClimateZone:
             "fan_mode_state_topic": f"{t}/fan_mode/state",
             "fan_mode_command_topic": f"{t}/fan_mode/set",
             "preset_modes": preset_modes,
+            # swing: ver mas abajo, se añade al payload solo si la zona lo
+            # ofrece (ningun delegado -> no se anuncia el control).
             "preset_mode_state_topic": f"{t}/preset_mode/state",
             "preset_mode_command_topic": f"{t}/preset_mode/set",
             "action_topic": f"{t}/action/state",
@@ -192,7 +194,18 @@ class MqttClimateZone:
                 "model": "Home Orchestrator",
             },
         }
+        # Oscilacion: solo si la zona la ofrece de verdad (algun delegado la
+        # expone). Si no, no se anuncia el control -- igual criterio de "no
+        # anunciar lo que el equipo real no soporta" que modes/fan_modes.
+        swing_modes = runner.swing_modes if runner else []
+        if swing_modes:
+            payload["swing_modes"] = swing_modes
+            payload["swing_mode_state_topic"] = f"{t}/swing_mode/state"
+            payload["swing_mode_command_topic"] = f"{t}/swing_mode/set"
+
         self._mqtt.publish(f"{t}/config", payload, retain=True)
+        if swing_modes:
+            self._mqtt.subscribe(f"{t}/swing_mode/set", self._on_swing_mode)
         self._mqtt.subscribe(f"{t}/mode/set", self._on_mode)
         self._mqtt.subscribe(f"{t}/temp/set", self._on_temp)
         self._mqtt.subscribe(f"{t}/temp_low/set", self._on_temp_low)
@@ -253,6 +266,8 @@ class MqttClimateZone:
         self._mqtt.publish(f"{t}/preset_mode/state", runner._preset_mode, retain=True)
         if runner._fan_mode:
             self._mqtt.publish(f"{t}/fan_mode/state", runner._fan_mode, retain=True)
+        if runner.swing_mode:
+            self._mqtt.publish(f"{t}/swing_mode/state", runner.swing_mode, retain=True)
         self._mqtt.publish(f"{t}/attributes/state", runner.extra_attributes(), retain=True)
 
     # ----------------------------------------------------------- comandos -
@@ -300,6 +315,17 @@ class MqttClimateZone:
     def _on_fan_mode(self, client, userdata, msg) -> None:
         mode = msg.payload.decode(errors="replace").strip()
         self._dispatch(lambda: self._runner.set_fan_mode(mode))
+
+    def _on_swing_mode(self, client, userdata, msg) -> None:
+        mode = msg.payload.decode(errors="replace").strip()
+        valid = getattr(self._runner, "swing_modes", None) if self._runner else None
+        if valid and mode not in valid:
+            log.warning(
+                "Zona climate %s: swing '%s' no soportado (validos: %s) -- ignorado",
+                self.zone_id, mode, ", ".join(valid),
+            )
+            return
+        self._dispatch(lambda: self._runner.set_swing_mode(mode))
 
     def _on_preset_mode(self, client, userdata, msg) -> None:
         preset = msg.payload.decode(errors="replace").strip()

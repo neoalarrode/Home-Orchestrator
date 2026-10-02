@@ -84,7 +84,8 @@
      una linea fina; el acento se queda en los propios controles
      (boton activo, thumb del stepper), no en un panel entero. --- */
   .zone-control { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 14px 0 4px; padding-top: 14px; border-top: 1px solid var(--border); flex-wrap: wrap; }
-  .zone-control.disabled { opacity: .5; pointer-events: none; }
+  .therm-steppers { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .therm-steppers.disabled { opacity: .5; pointer-events: none; }
   .therm-stepper { display: flex; align-items: center; gap: 10px; }
   .therm-stepper button { width: 28px; height: 28px; padding: 0; border-radius: 50%; font-size: 1rem; line-height: 1; font-weight: 700; background: var(--card); color: var(--accent); box-shadow: 0 0 0 1px var(--border); }
   .therm-stepper button:hover { background: var(--accent); color: var(--accent-ink); }
@@ -208,7 +209,7 @@
       <label for="zf-humidifiers">Humidificadores/deshumidificadores (opcional)</label>
       <input id="zf-humidifiers" placeholder="humidifier.salon">
 
-      <p class="help" style="margin-top:14px">Extractor de vapor (opcional) — a diferencia de arriba, no es un delegado inteligente: se enciende/apaga aquí por umbral de humedad, sea cual sea el modo de la zona (incluso apagada).</p>
+      <p class="help" style="margin-top:14px">Extractor de vapor (opcional) — a diferencia de arriba, no es un delegado inteligente: se enciende/apaga aquí por humedad, sea cual sea el modo de la zona (incluso apagada). El disparo es RELATIVO a la humedad de reposo del propio baño (una línea base que se ancla sola): se activa por cuánto SUBE la humedad sobre ese reposo, no por un número fijo — así no se queda encendido para siempre en un baño que de por sí está húmedo.</p>
       <div class="grid2">
         <div>
           <label for="zf-extractor-switches">Switches extractores</label>
@@ -221,13 +222,13 @@
       </div>
       <div class="grid2">
         <div>
-          <label for="zf-extractor-threshold">Enciende a partir de (% humedad)</label>
-          <input id="zf-extractor-threshold" type="number" step="1" value="65">
+          <label for="zf-extractor-rise-on">Enciende al subir (+% sobre reposo)</label>
+          <input id="zf-extractor-rise-on" type="number" step="1" value="7">
         </div>
         <div>
-          <label for="zf-extractor-dead-band">Zona muerta (%)</label>
-          <input id="zf-extractor-dead-band" type="number" step="1" value="5">
-          <p class="help">Apaga al bajar de (umbral − zona muerta). Con los valores de ejemplo: enciende al 65%, apaga al 60%.</p>
+          <label for="zf-extractor-rise-off">Apaga al volver a (+% sobre reposo)</label>
+          <input id="zf-extractor-rise-off" type="number" step="1" value="3">
+          <p class="help">Con los valores de ejemplo: enciende cuando la humedad sube 7 puntos sobre su reposo y apaga cuando vuelve a menos de 3 por encima. Un techo de seguridad al 75% lo fuerza encendido pase lo que pase.</p>
         </div>
       </div>
 
@@ -466,7 +467,13 @@ function renderThermostat(id, live) {
   const modeButtons = modes.map(m => `<button type="button" class="${m === live.hvac_mode ? "current" : ""}" onclick="setHvacMode('${id}','${esc(m)}')">${esc(modeLabel[m] || m)}</button>`).join("");
   const presetOptions = (live.preset_modes || []).map(p => `<option value="${esc(p)}" ${p === live.preset_mode ? "selected" : ""}>${esc(p)}</option>`).join("");
 
-  const disabledCls = live.hvac_mode === "off" ? " disabled" : "";
+  // Con la zona apagada, los steppers de temperatura no aplican, pero el
+  // selector de MODO tiene que seguir activo: es justamente lo que enciende
+  // la zona desde el panel. Antes el `disabled` (pointer-events:none) envolvia
+  // TODO el bloque -- incluidos los botones de modo -- asi que una zona en
+  // "off" no se podia volver a encender desde el Dashboard, solo via la
+  // entidad climate.* por MQTT. El disabled va ahora solo en los steppers.
+  const stepperDisabledCls = live.hvac_mode === "off" ? " disabled" : "";
   let stepperHtml;
   if (live.hvac_mode === "heat_cool") {
     stepperHtml = `
@@ -490,8 +497,8 @@ function renderThermostat(id, live) {
   }
 
   return `
-  <div class="zone-control${disabledCls}">
-    ${stepperHtml}
+  <div class="zone-control">
+    <div class="therm-steppers${stepperDisabledCls}">${stepperHtml}</div>
     <div>
       <div class="mode-switch" role="group" aria-label="Modo">${modeButtons}</div>
       ${presetOptions ? `<select class="preset-select" onchange="setPresetMode('${id}', this.value)" aria-label="Preset">${presetOptions}</select>` : ""}
@@ -713,8 +720,8 @@ function readZoneForm() {
     humidifier_entities: csvToList("zf-humidifiers"),
     extractor_switches: csvToList("zf-extractor-switches"),
     extractor_fans: csvToList("zf-extractor-fans"),
-    extractor_humidity_threshold: parseFloat(document.getElementById("zf-extractor-threshold").value) || 65,
-    extractor_dead_band: parseFloat(document.getElementById("zf-extractor-dead-band").value) || 5,
+    extractor_rise_on: parseFloat(document.getElementById("zf-extractor-rise-on").value) || 7,
+    extractor_rise_off: parseFloat(document.getElementById("zf-extractor-rise-off").value) || 3,
     presence_entities: csvToList("zf-presence"),
     door_window_entities: csvToList("zf-doors"),
     auto_window_detection: document.getElementById("zf-auto-window").checked,
@@ -745,8 +752,8 @@ function fillZoneForm(cfg) {
   document.getElementById("zf-humidifiers").value = listToCsv(cfg.humidifier_entities);
   document.getElementById("zf-extractor-switches").value = listToCsv(cfg.extractor_switches);
   document.getElementById("zf-extractor-fans").value = listToCsv(cfg.extractor_fans);
-  document.getElementById("zf-extractor-threshold").value = cfg.extractor_humidity_threshold ?? 65;
-  document.getElementById("zf-extractor-dead-band").value = cfg.extractor_dead_band ?? 5;
+  document.getElementById("zf-extractor-rise-on").value = cfg.extractor_rise_on ?? 7;
+  document.getElementById("zf-extractor-rise-off").value = cfg.extractor_rise_off ?? 3;
   document.getElementById("zf-presence").value = listToCsv(cfg.presence_entities);
   document.getElementById("zf-doors").value = listToCsv(cfg.door_window_entities);
   document.getElementById("zf-auto-window").checked = !!cfg.auto_window_detection;

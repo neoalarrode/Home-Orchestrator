@@ -1,5 +1,16 @@
 # Changelog
 
+## climate 0.7.8 + lighting 0.7.23
+
+Climate
+- Extractor de baño: se encendia y apagaba contra un umbral fijo de humedad, asi que en dias humedos no se apagaba nunca. Ahora compara contra la linea base de la propia estancia (baja rapido, sube despacio): enciende cuando la humedad sube `extractor_rise_on` puntos sobre ella y apaga cuando vuelve a quedar a `extractor_rise_off`. Hay un techo absoluto de seguridad. La linea base se conserva entre reinicios.
+- Una zona apagada no se podia volver a encender desde el panel: toda la tarjeta quedaba deshabilitada, botones de modo incluidos. Ahora solo se deshabilitan los controles de consigna.
+- Oscilacion (swing): se lee del equipo, se puede fijar desde la zona y se publica en la entidad MQTT cuando el equipo la soporta.
+
+Lighting
+- Verificacion de cada cambio enviado: si la luz sigue en el valor anterior pasados unos segundos, se reenvia (hasta 3 veces) y despues se avisa en el log en vez de darlo por aplicado.
+- Cambio manual: mover a mano el brillo o el color ya no se revierte en la siguiente adaptacion. El ajuste manual se respeta hasta que la zona se queda vacia y se vuelve a ocupar. Un cambio que no se aplico (la luz sigue donde estaba) ya no se confunde con un ajuste manual.
+
 ## battery 0.14.13
 
 Tercera tanda de la revision de Energy: lo que salio al leer entero el nucleo, el puente Bluetooth y el protocolo de las STREAM.

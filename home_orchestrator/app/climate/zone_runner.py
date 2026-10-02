@@ -37,9 +37,10 @@ from .const import (
     CONF_DEADBAND,
     CONF_DOOR_WINDOW_ENTITIES,
     CONF_DRY_HUMIDITY_THRESHOLD,
-    CONF_EXTRACTOR_DEAD_BAND,
+    CONF_EXTRACTOR_ABS_CEILING,
     CONF_EXTRACTOR_FANS,
-    CONF_EXTRACTOR_HUMIDITY_THRESHOLD,
+    CONF_EXTRACTOR_RISE_OFF,
+    CONF_EXTRACTOR_RISE_ON,
     CONF_EXTRACTOR_SWITCHES,
     CONF_FORECAST_REFRESH_MINUTES,
     CONF_HEAT_SWITCHES,
@@ -65,8 +66,11 @@ from .const import (
     CONF_WEATHER_ENTITY,
     DEFAULT_DEADBAND,
     DEFAULT_DRY_HUMIDITY_THRESHOLD,
-    DEFAULT_EXTRACTOR_DEAD_BAND,
-    DEFAULT_EXTRACTOR_HUMIDITY_THRESHOLD,
+    DEFAULT_EXTRACTOR_ABS_CEILING,
+    DEFAULT_EXTRACTOR_RISE_OFF,
+    DEFAULT_EXTRACTOR_RISE_ON,
+    EXTRACTOR_BASELINE_DOWN_HALFLIFE_SECONDS,
+    EXTRACTOR_BASELINE_UP_HALFLIFE_SECONDS,
     DEFAULT_FORECAST_REFRESH_MINUTES,
     DEFAULT_HISTORY_DAYS_FOR_INERTIA,
     DEFAULT_MAX_HUMIDITY,
@@ -271,6 +275,12 @@ class ZoneRunner:
         self._manual_fan_mode: str | None = None
         self._fan_mode: str | None = None
         self._fan_modes: list[str] | None = None
+        # Oscilacion (swing): mismo patron que el ventilador -- se agrega de los
+        # delegados (ver `_available_swing_modes`), se ofrece en el discovery y
+        # se propaga al equipo. `_manual_swing_mode` es lo que el usuario pidio.
+        self._manual_swing_mode: str | None = None
+        self._swing_mode: str | None = None
+        self._swing_modes: list[str] | None = None
 
         self._climate_entities_unresolved = False
         # Firma de lo ULTIMO que se anuncio en el discovery (ver
@@ -374,14 +384,15 @@ class ZoneRunner:
         self._delegate_last_command: dict[str, dict] = {}
         self._delegate_override_until: dict[str, datetime] = {}
         self._last_active_hvac_mode: str | None = self.hvac_mode if self.hvac_mode != "off" else None
-        # Histeresis del extractor de vapor -- a diferencia de
-        # `_delegate_*`/preset/modo, no se restaura tras un reinicio del
-        # plugin: arranca en False y se ratchetea sola al valor real en el
-        # primer ciclo salvo que la humedad este justo dentro de la zona
-        # muerta, en cuyo caso tarda un ciclo mas en detectar que deberia
-        # seguir encendido -- riesgo bajo, un extractor fisico normalmente
-        # no sigue encendido mucho rato tras un reinicio del addon.
+        # Histeresis del extractor de vapor, RELATIVA a una linea base rodante
+        # (ver `_extractor_desired_on`). `_extractor_active` arranca en False y
+        # se ratchetea al valor real en el primer ciclo. La linea base SI se
+        # persiste y restaura (si no, cada reinicio del addon la reinicializaria
+        # a la lectura del momento -- si justo hay vapor de una ducha, tardaria
+        # media hora en volver a anclarse al reposo y entre tanto no dispararia).
         self._extractor_active = False
+        self._extractor_baseline: float | None = None
+        self._extractor_baseline_ts: datetime | None = None
 
         self._temp_ema = ema_module.Ema(TEMP_EMA_HALFLIFE_SECONDS)
         self._sensor_stale = False
@@ -438,6 +449,13 @@ class ZoneRunner:
         if target_humidity is not None:
             self.target_humidity = float(target_humidity)
 
+        saved_baseline = state.get("extractor_baseline")
+        if saved_baseline is not None:
+            try:
+                self._extractor_baseline = float(saved_baseline)
+            except (TypeError, ValueError):
+                self._extractor_baseline = None
+
         learned_off = state.get("delegate_needs_explicit_off")
         if isinstance(learned_off, list):
             declared = set(self.zone.get(CONF_CLIMATE_ENTITIES) or [])
@@ -479,6 +497,7 @@ class ZoneRunner:
             "manual_cool": self._manual_cool,
             "fan_mode": self._manual_fan_mode,
             "target_humidity": self.target_humidity,
+            "extractor_baseline": self._extractor_baseline,
             "delegate_needs_explicit_off": sorted(self._delegate_needs_explicit_off),
             "switch_last_change": {
                 entity_id: [switch_state, ts.isoformat()]
@@ -530,6 +549,7 @@ class ZoneRunner:
             "zone_power_w": zone_power_w,
             "zone_power_breakdown": zone_power_breakdown,
             "extractor_active": self._extractor_active,
+            "extractor_humidity_baseline": self._extractor_baseline,
             "climate_orchestrator_zone": True,
             **{f"grid_{k}": v for k, v in grid_signal.read(self.ws).items() if k != "forecast"},
             "tpi_heat_on_percent": self._last_heat_on_percent,
@@ -624,6 +644,17 @@ class ZoneRunner:
             self._fan_modes = None
             self._fan_mode = None
 
+        swing_modes = self._available_swing_modes()
+        if swing_modes:
+            self._swing_modes = swing_modes
+            if self._manual_swing_mode in swing_modes:
+                self._swing_mode = self._manual_swing_mode
+            elif self._swing_mode not in swing_modes:
+                self._swing_mode = swing_modes[0]
+        else:
+            self._swing_modes = None
+            self._swing_mode = None
+
         # Si lo que la zona OFRECE cambia, hay que decirselo a HA: el discovery
         # de MQTT es retenido, asi que sin republicar se queda anunciando la
         # lista vieja para siempre. Antes solo se republicaba UNA vez, en
@@ -632,7 +663,7 @@ class ZoneRunner:
         # verdad) se quedaba sin anunciar, y la entidad de HA seguia ofreciendo
         # modos que ya no existen, o -- peor para Matter/HomeKit -- dejaba de
         # ofrecer `heat_cool` sin que nada lo corrigiera.
-        sig = (tuple(self.hvac_modes), tuple(self._fan_modes or ()))
+        sig = (tuple(self.hvac_modes), tuple(self._fan_modes or ()), tuple(self._swing_modes or ()))
         if self._published_modes_sig is None:
             self._published_modes_sig = sig  # primera vuelta: solo toma la referencia
         elif sig != self._published_modes_sig:
@@ -663,6 +694,24 @@ class ZoneRunner:
                     ordered.append(m)
                     seen.add(m)
         return ordered if len(ordered) > 1 else []
+
+    def _available_swing_modes(self) -> list[str]:
+        """Union de las oscilaciones que ofrecen los delegados, en orden y sin
+        repetir. A diferencia del ventilador NO se inyecta un "auto" sintetico:
+        el swing de Tuya es un enum crudo (p.ej. 0..3) sin un "auto" universal,
+        se ofrece tal cual lo expone el equipo."""
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for entity_id in self.zone.get(CONF_CLIMATE_ENTITIES) or []:
+            state = self._get_state(entity_id)
+            if state is None:
+                continue
+            for m in (state.get("attributes") or {}).get("swing_modes") or []:
+                sm = str(m)
+                if sm not in seen:
+                    ordered.append(sm)
+                    seen.add(sm)
+        return ordered
 
     def _capability_still_pending(self, capability: set[str]) -> bool:
         """True si hace falta reintentar mas tarde -- o la capacidad total
@@ -747,6 +796,16 @@ class ZoneRunner:
         """Publico para mqtt_climate.py:publish_discovery -- antes
         publicaba `["auto"]` a fuego en vez de esto, ver nota ahi."""
         return self._fan_modes or []
+
+    @property
+    def swing_modes(self) -> list[str]:
+        """Publico para mqtt_climate.py:publish_discovery. Lista vacia = la zona
+        no ofrece oscilacion (ningun delegado la expone) y no se anuncia."""
+        return self._swing_modes or []
+
+    @property
+    def swing_mode(self) -> str | None:
+        return self._swing_mode
 
     # ---------------------------------------------- accesores para zone_forecast.py -
     # Envoltorios PUBLICOS de estado ya existente -- zone_forecast.py (ver
@@ -871,6 +930,13 @@ class ZoneRunner:
                 set_fan_mode = getattr(handle, "set_fan_mode", None)
                 if set_fan_mode is not None:
                     set_fan_mode(data["fan_mode"])
+            elif service == "set_swing_mode" and "swing_mode" in data:
+                # Mismo criterio que set_fan_mode: si el handle no expone
+                # set_swing_mode, se ignora en silencio (el equipo no la soporta
+                # por esta via) -- sin acoplar el componente a ninguna marca.
+                set_swing_mode = getattr(handle, "set_swing_mode", None)
+                if set_swing_mode is not None:
+                    set_swing_mode(data["swing_mode"])
             return
         self.ws.call_service("climate", service, service_data=service_data or {}, target={"entity_id": entity_id})
 
@@ -897,6 +963,11 @@ class ZoneRunner:
                     "hvac_modes": getattr(handle, "hvac_modes", ["off", "heat", "cool"]),
                     "fan_mode": getattr(handle, "fan_mode", None),
                     "fan_modes": getattr(handle, "fan_modes", []),
+                    # Oscilacion: igual que fan_modes, `getattr` con default vacio
+                    # -- si el delegado no la expone, la zona simplemente no la
+                    # ofrece (no es un fallo). Sin acoplar a ninguna marca.
+                    "swing_mode": getattr(handle, "swing_mode", None),
+                    "swing_modes": getattr(handle, "swing_modes", []),
                 },
             }
         try:
@@ -1678,6 +1749,14 @@ class ZoneRunner:
         if desired_fan and desired_fan != attrs.get("fan_mode"):
             self._call_climate_service(entity_id, "set_fan_mode", {"fan_mode": desired_fan})
 
+        # Oscilacion: solo si el usuario la ha pedido y el delegado la soporta.
+        # No hay politica automatica (a diferencia del ventilador en urgencia):
+        # el swing es una preferencia del usuario, no una palanca de control.
+        if self._manual_swing_mode:
+            swing_modes = [str(m) for m in (attrs.get("swing_modes") or [])]
+            if self._manual_swing_mode in swing_modes and self._manual_swing_mode != str(attrs.get("swing_mode")):
+                self._call_climate_service(entity_id, "set_swing_mode", {"swing_mode": self._manual_swing_mode})
+
     def _drive_climate_idle(
         self, entity_id: str, current_temp: float | None, deadband: float, simulate: bool, safety_emergency: bool = False,
     ) -> str:
@@ -1817,22 +1896,50 @@ class ZoneRunner:
             elif state is not None and state.get("state") != "off":
                 self.ws.call_service("humidifier", "turn_off", target={"entity_id": entity_id})
 
+    def _update_extractor_baseline(self, humidity: float, now: datetime) -> float:
+        """Linea base ASIMETRICA de la humedad de reposo de la zona: baja
+        deprisa (se ancla pronto al suelo propio del bano) y sube muy despacio
+        (un pico de ducha de media hora apenas la mueve). Es lo que hace que el
+        disparo sea por cuanto SUBE la humedad sobre su reposo y no por un
+        numero absoluto que depende del clima del dia."""
+        if self._extractor_baseline is None or self._extractor_baseline_ts is None:
+            self._extractor_baseline = humidity
+            self._extractor_baseline_ts = now
+            return self._extractor_baseline
+        dt = max(0.0, (now - self._extractor_baseline_ts).total_seconds())
+        halflife = (
+            EXTRACTOR_BASELINE_DOWN_HALFLIFE_SECONDS
+            if humidity < self._extractor_baseline
+            else EXTRACTOR_BASELINE_UP_HALFLIFE_SECONDS
+        )
+        # Mismo criterio de alpha por vida media que ema.Ema, recortado a 0.5
+        # para que un hueco largo sin lecturas no pegue un salto.
+        alpha = min(0.5, 1 - 0.5 ** (dt / halflife)) if dt > 0 else 0.0
+        self._extractor_baseline = round(self._extractor_baseline + alpha * (humidity - self._extractor_baseline), 2)
+        self._extractor_baseline_ts = now
+        return self._extractor_baseline
+
     def _extractor_desired_on(self) -> bool:
-        """Histeresis simple anclada en el umbral: enciende al llegar o
-        superar `extractor_humidity_threshold`, apaga al bajar de
-        threshold - `extractor_dead_band`, se queda como esta entre medias.
-        Sin lectura de humedad (sin sensor declarado, o sensor caido) se
-        conserva el ultimo estado conocido -- no tiene sentido apagar a
-        ciegas un extractor que puede seguir haciendo falta."""
+        """Histeresis RELATIVA a la linea base (ver `_update_extractor_baseline`):
+        enciende cuando la humedad sube `extractor_rise_on` puntos por encima de
+        su reposo, apaga cuando vuelve a menos de `extractor_rise_off` por encima,
+        se queda como esta en la banda intermedia. Un techo absoluto de seguridad
+        (`extractor_abs_ceiling`, alto) fuerza ON por si la base aun no se ha
+        asentado. Sin lectura de humedad (sin sensor, o sensor caido) se conserva
+        el ultimo estado -- no tiene sentido apagar a ciegas un extractor que
+        puede seguir haciendo falta."""
         if not (self.zone.get(CONF_EXTRACTOR_SWITCHES) or self.zone.get(CONF_EXTRACTOR_FANS)):
             return False
         if self.current_humidity is None:
             return self._extractor_active
-        threshold = float(self.zone.get(CONF_EXTRACTOR_HUMIDITY_THRESHOLD, DEFAULT_EXTRACTOR_HUMIDITY_THRESHOLD))
-        dead_band = float(self.zone.get(CONF_EXTRACTOR_DEAD_BAND, DEFAULT_EXTRACTOR_DEAD_BAND))
-        if self.current_humidity >= threshold:
+        baseline = self._update_extractor_baseline(float(self.current_humidity), _utcnow())
+        rise_on = float(self.zone.get(CONF_EXTRACTOR_RISE_ON, DEFAULT_EXTRACTOR_RISE_ON))
+        rise_off = float(self.zone.get(CONF_EXTRACTOR_RISE_OFF, DEFAULT_EXTRACTOR_RISE_OFF))
+        ceiling = float(self.zone.get(CONF_EXTRACTOR_ABS_CEILING, DEFAULT_EXTRACTOR_ABS_CEILING))
+        rise = self.current_humidity - baseline
+        if self.current_humidity >= ceiling or rise >= rise_on:
             self._extractor_active = True
-        elif self.current_humidity <= threshold - dead_band:
+        elif rise <= rise_off:
             self._extractor_active = False
         return self._extractor_active
 
@@ -1991,6 +2098,20 @@ class ZoneRunner:
     def set_fan_mode(self, fan_mode: str) -> None:
         self._manual_fan_mode = None if fan_mode == "auto" else fan_mode
         self._fan_mode = fan_mode
+
+    def set_swing_mode(self, swing_mode: str) -> None:
+        if self._swing_modes and swing_mode not in self._swing_modes:
+            _LOGGER.warning(
+                "Zona climate %s: swing '%s' rechazado, no esta entre los que ofrece (%s)",
+                self.zone_id, swing_mode, ", ".join(self._swing_modes),
+            )
+            return
+        self._manual_swing_mode = swing_mode
+        self._swing_mode = swing_mode
+        # Propagar YA al equipo (mismo criterio que set_temperature ->
+        # decide_and_act): un cambio de swing debe aplicarse sin esperar al
+        # proximo ciclo periodico.
+        self.decide_and_act()
 
     # ------------------------------------------------------- grafico 24h --
 

@@ -34,6 +34,13 @@ DEFAULT_ZONE_CONFIG = {
     "humidifier_entities": [],
     "extractor_switches": [],
     "extractor_fans": [],
+    # Disparo del extractor relativo a la humedad de reposo de la zona (ver
+    # zone_runner._extractor_desired_on). `extractor_humidity_threshold`/
+    # `extractor_dead_band` quedan OBSOLETOS (umbral absoluto): ya no disparan,
+    # se dejan en el default solo para no romper configs viejas al leerlas.
+    "extractor_rise_on": 7.0,
+    "extractor_rise_off": 3.0,
+    "extractor_abs_ceiling": 75.0,
     "extractor_humidity_threshold": 65.0,
     "extractor_dead_band": 5.0,
     "presence_entities": [],

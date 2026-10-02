@@ -85,6 +85,35 @@ CONF_EXTRACTOR_DEAD_BAND = "extractor_dead_band"
 DEFAULT_EXTRACTOR_HUMIDITY_THRESHOLD = 65.0
 DEFAULT_EXTRACTOR_DEAD_BAND = 5.0
 
+# Disparo del extractor RELATIVO a una linea base rodante en vez de a un
+# umbral absoluto. Problema real (bano de arriba, confirmado en produccion):
+# con umbral absoluto 55% y la humedad de REPOSO del bano rondando ya el
+# 50-56%, el extractor no se apagaba casi nunca -- la humedad practicamente
+# nunca bajaba del punto de corte absoluto. La linea base se ancla al suelo
+# de humedad propio de ESE bano (baja rapido, sube muy lento para que un pico
+# de ducha no la arrastre) y el extractor se dispara por cuanto SUBE la
+# humedad por encima de su reposo, no por un numero fijo que depende del clima.
+#   - enciende cuando humedad >= base + RISE_ON
+#   - apaga cuando   humedad <= base + RISE_OFF
+#   - se queda como esta en la banda intermedia
+CONF_EXTRACTOR_RISE_ON = "extractor_rise_on"
+CONF_EXTRACTOR_RISE_OFF = "extractor_rise_off"
+DEFAULT_EXTRACTOR_RISE_ON = 7.0
+DEFAULT_EXTRACTOR_RISE_OFF = 3.0
+# La base se mueve DESPACIO en los dos sentidos para que un pico de ducha
+# (minutos) destaque claramente sobre ella; sube aun mas despacio que baja,
+# para que mientras el bano se seca la humedad caiga ANTES que la base y el
+# `rise` vuelva a cero -> apaga al recuperar. Baja algo mas rapido para
+# re-centrarse cuando el reposo del bano cambia de verdad (dia seco, ventana).
+EXTRACTOR_BASELINE_DOWN_HALFLIFE_SECONDS = 7200.0    # 2 h
+EXTRACTOR_BASELINE_UP_HALFLIFE_SECONDS = 43200.0     # 12 h
+# Techo absoluto de seguridad: por encima de esto el extractor se fuerza ON
+# pase lo que pase con la base (cubre un arranque del addon justo con la base
+# todavia sin asentar). Alto a proposito para no reintroducir el bug del
+# umbral absoluto bajo.
+CONF_EXTRACTOR_ABS_CEILING = "extractor_abs_ceiling"
+DEFAULT_EXTRACTOR_ABS_CEILING = 75.0
+
 # Presets con nombre en vez de horario (ver presets.py: se elimino la
 # franja horaria fija a proposito — no sabe si hay alguien de verdad en
 # la habitacion). "Nombre: temperatura, Nombre: temperatura..." declarado
