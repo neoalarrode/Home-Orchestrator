@@ -54,7 +54,7 @@ REDISCOVER_INTERVAL_SECONDS = 5 * 60
 class TplinkPlugin(Plugin):
     slug = "tplink"
     name = "TP-Link Orchestrator"
-    version = "0.2.5"
+    version = "0.2.7"
 
     def __init__(self) -> None:
         self._manager = TplinkDeviceManager(
@@ -223,8 +223,18 @@ class TplinkPlugin(Plugin):
         self._manager.start()
         self._mqtt.connect()
         devices = tplink_store.load_devices()
-        for device in devices:
-            self._start_device(device)
+        # Arranque EN PARALELO, no en serie: `_start_device` -> `add_device`
+        # conecta con el equipo con hasta 15 s de timeout, y un dispositivo
+        # inalcanzable bloquea todo ese rato. En serie, N equipos muertos son
+        # N*15 s (visto 2026-10-15: 14 dispositivos, ~210 s). Cada equipo es
+        # independiente (KLAP admite una sesion por EQUIPO, no una global), asi
+        # que se lanzan a la vez con un pool acotado y el arranque tarda lo que
+        # el mas lento, no la suma. Los fallos ya los traga `_start_device`.
+        if devices:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=min(8, len(devices)),
+                                    thread_name_prefix="tplink-start") as pool:
+                list(pool.map(self._start_device, devices))
         threading.Thread(
             target=self._rediscover_loop, name="tplink-rediscover", daemon=True,
         ).start()

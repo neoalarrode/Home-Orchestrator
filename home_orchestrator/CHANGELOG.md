@@ -1,5 +1,13 @@
 # Changelog
 
+## core 0.77.57
+
+- Arranque: el servidor web/ingress ya no espera a que terminen de arrancar los hilos de fondo de todos los plugins. El `root_app` se arma igual que antes (blueprint del nucleo y plugins montados) y el arranque de fondo pasa a un hilo aparte, asi que el ingress responde en cuanto levanta el proceso. Antes, un plugin lento bloqueaba el arranque del servidor: visto en produccion el ingress "no arrancaba" durante minutos porque TP-Link conectaba con sus dispositivos en serie (15 s por equipo inalcanzable, 14 equipos ~= 210 s).
+
+## tplink 0.2.7
+
+- Arranque EN PARALELO de los dispositivos. `start_background_threads` conectaba con cada equipo en serie (`_start_device` -> `add_device`, hasta 15 s por equipo que no responde); con 14 dispositivos y varios caidos eran ~210 s de bloqueo. Cada equipo es independiente (KLAP admite una sesion por equipo, no una global), asi que ahora se lanzan a la vez con un pool acotado: el arranque tarda lo que el mas lento, no la suma. Los fallos de conexion se siguen tragando igual (el dispositivo se expone y el sondeo lo recupera).
+
 ## lighting 0.7.25
 
 Reintentos rapidos, iguales para cualquier bombilla (Home Assistant/Matter, TP-Link, Tuya, Govee, Shelly).

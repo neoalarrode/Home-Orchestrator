@@ -132,34 +132,55 @@ def main() -> None:
     # `plugin_loader.load_all_plugins()` ya aplica a la CARGA de un
     # plugin ("se omite, el resto del nucleo sigue arrancando") --
     # faltaba aplicarlo tambien al ARRANQUE de sus hilos de fondo.
-    for p in plugins:
-        try:
-            p.start_background_threads()
-        except Exception:
-            log.exception(
-                "Plugin '%s' fallo arrancando sus hilos de fondo -- se omite, el resto "
-                "del nucleo sigue arrancando. Puede quedarse sin funcionar hasta que se "
-                "resuelva la causa (revisar los logs de arriba).",
-                p.slug,
-            )
-
-    # UNA sola conexion con HA para todo el addon, abierta por el core y
-    # consumida por los plugins (ver ha_websocket.shared()). Antes cada plugin
-    # abria la suya y las tres recibian el MISMO aluvion completo de cambios
-    # de estado -- medido: 786 KB/min y 9,3 eventos/s por conexion, de los que
-    # el filtro local tiraba el 97%, por tres.
+    # BUG REAL, confirmado en produccion (2026-10-15, el ingress "no
+    # arrancaba" durante minutos): el servidor HTTP/ingress (`run_simple`,
+    # 8099) era la ULTIMA linea, detras del arranque EN SERIE de los hilos de
+    # fondo de todos los plugins. El arranque de un plugin puede BLOQUEAR
+    # mucho -- visto: TP-Link conecta con cada dispositivo en serie con 15 s
+    # de timeout por equipo, y con 14 dispositivos (varios inalcanzables) eso
+    # son ~210 s en los que el ingress devuelve error y el addon parece caido,
+    # aunque el backend este sano. Starlink suma mas timeouts.
     #
-    # Se arranca DESPUES de instanciar los plugins, para que ya se hayan
-    # registrado con `subscribe()` y declarado sus entidades: asi el lector
-    # nace sabiendo a quien avisar de que.
-    import ha_websocket
-    ha_websocket.start_shared()
+    # El `root_app` YA esta completamente armado aqui (blueprint del nucleo
+    # registrado y plugins montados, lineas de arriba), asi que es seguro
+    # ponerlo a servir de inmediato y hacer el arranque de fondo (que puede
+    # tardar) en un hilo aparte -- ninguna peticion llega a un app a medio
+    # montar (la carrera que arreglaba el comentario de mas arriba era
+    # arrancar los hilos ANTES de `register_blueprint`, no despues). Asi el
+    # ingress esta disponible en cuanto el proceso levanta, pase lo que pase
+    # con la conexion a dispositivos lentos.
+    def _arranque_de_fondo() -> None:
+        for p in plugins:
+            try:
+                p.start_background_threads()
+            except Exception:
+                log.exception(
+                    "Plugin '%s' fallo arrancando sus hilos de fondo -- se omite, el resto "
+                    "del nucleo sigue arrancando. Puede quedarse sin funcionar hasta que se "
+                    "resuelva la causa (revisar los logs de arriba).",
+                    p.slug,
+                )
 
-    # Publicar un plugin ya no obliga a publicar el core: el addon revisa el
-    # registro remoto por su cuenta (ver plugin_manifest.py). El arranque ya
-    # ha comprobado una vez dentro de `load_all_plugins`; esto cubre el addon
-    # que lleva dias encendido.
-    plugin_loader.start_update_checker()
+        # UNA sola conexion con HA para todo el addon, abierta por el core y
+        # consumida por los plugins (ver ha_websocket.shared()). Antes cada plugin
+        # abria la suya y las tres recibian el MISMO aluvion completo de cambios
+        # de estado -- medido: 786 KB/min y 9,3 eventos/s por conexion, de los que
+        # el filtro local tiraba el 97%, por tres.
+        #
+        # Se arranca DESPUES de instanciar los plugins, para que ya se hayan
+        # registrado con `subscribe()` y declarado sus entidades: asi el lector
+        # nace sabiendo a quien avisar de que (ya instanciados en load_all_plugins).
+        import ha_websocket
+        ha_websocket.start_shared()
+
+        # Publicar un plugin ya no obliga a publicar el core: el addon revisa el
+        # registro remoto por su cuenta (ver plugin_manifest.py). El arranque ya
+        # ha comprobado una vez dentro de `load_all_plugins`; esto cubre el addon
+        # que lleva dias encendido.
+        plugin_loader.start_update_checker()
+
+    import threading
+    threading.Thread(target=_arranque_de_fondo, name="ho-arranque-de-fondo", daemon=True).start()
 
     run_simple("0.0.0.0", 8099, root_app, threaded=True)
 
