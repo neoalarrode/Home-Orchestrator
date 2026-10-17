@@ -37,6 +37,11 @@ _MODE = ("mode",)
 _TEMP_SET = ("temp_set", "temp_set_f", "TempSet")
 _TEMP_CUR = ("temp_current", "temp_current_f", "upper_temp")
 _FAN = ("fan_speed_enum", "windspeed", "fan_speed", "level", "fan")
+# Oscilacion vertical de las aspas -- mismo DP que anuncia el discovery MQTT
+# (ha_climate.py usa up_down_sweep como swing). El handle NO lo exponia, asi que
+# una zona de Climate con este AC de delegado no ofrecia swing aunque el equipo
+# (y su entidad Tuya en HA) si lo tuviera. Insensible a mayusculas via _first.
+_SWING = ("up_down_sweep",)
 
 _LIGHT_SW = ("switch_led", "switch_led_1")
 _BRIGHT = ("bright_value_v2", "bright_value")
@@ -96,6 +101,7 @@ class TuyaClimateHandle:
         self._tset = _first(codes, _TEMP_SET)
         self._tcur = _first(codes, _TEMP_CUR)
         self._fan = _first(codes, _FAN)
+        self._swing = _first(codes, _SWING)
 
     def _state(self) -> dict:
         try:
@@ -154,6 +160,17 @@ class TuyaClimateHandle:
     def fan_modes(self) -> list[str]:
         return [str(v) for v in _enum_range(self._codes, self._fan)]
 
+    @property
+    def swing_mode(self) -> str | None:
+        if not self._swing:
+            return None
+        raw = self._state().get(self._swing)
+        return str(raw) if raw is not None else None
+
+    @property
+    def swing_modes(self) -> list[str]:
+        return [str(v) for v in _enum_range(self._codes, self._swing)]
+
     def set_temperature(self, value: float) -> None:
         if not self._tset:
             return
@@ -185,6 +202,15 @@ class TuyaClimateHandle:
         for v in _enum_range(self._codes, self._fan):
             if str(v) == str(fan_mode):
                 self._ctl.set_dp(self._fan, v)
+                return
+
+    def set_swing_mode(self, swing_mode: str) -> None:
+        if not self._swing:
+            return
+        # Igual que el fan: el enum puede ser string o numero, se casa por str().
+        for v in _enum_range(self._codes, self._swing):
+            if str(v) == str(swing_mode):
+                self._ctl.set_dp(self._swing, v)
                 return
 
 

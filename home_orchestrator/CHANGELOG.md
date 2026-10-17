@@ -1,5 +1,9 @@
 # Changelog
 
+## core 0.77.60
+
+- Climatización/Tuya — oscilación de aspas (swing) en zonas con AC Tuya de delegado. El handle interno de tuya_native (`TuyaClimateHandle`) no exponía `swing_mode`/`swing_modes`/`set_swing_mode`, así que la entidad climate que genera Climate Orchestrator no ofrecía swing aunque el equipo (y su propia entidad Tuya en HA) sí lo soporta. Ahora el handle lee/escribe el DP `up_down_sweep` (el mismo que anuncia el discovery MQTT), y como el lado de Climate ya estaba preparado (`getattr` con reserva), la zona agrega y propaga el swing al equipo.
+
 ## core 0.77.59
 
 - Climatización — la inercia de cada zona ahora se APRENDE de verdad. Antes el modelo térmico salía `reliable=False` en todas las zonas (usaba el `idle_loss` por defecto 0.08, ~6× la inercia real de una casa bien aislada), porque aprendía del on/off del actuador vía el recorder/bridge y los actuadores Tuya (tuya_native) no publican ese historial. Ahora el add-on registra SU PROPIA acción por zona (heat/cool/off, persistida y con marca de tiempo) y el modelo reconstruye los tramos desde ahí — agnóstico del fabricante, válido para cualquier actuador. El "idle" (pérdida pasiva) se mide solo cuando no calienta ni enfría.
