@@ -267,7 +267,26 @@ def _runs_for_side(ws, zone: dict, side: str, wanted_action: str, days: int, bri
     return runs
 
 
-def _compute_model_sync(ws, zone: dict, days: int, bridges=None) -> dict:
+def _runs_from_action_log(action_log: list, now: datetime, on_when) -> list[_Run]:
+    """Tramos (inicio, fin, "on"/"off") a partir del log de ACCION PROPIA del
+    add-on: lista de transiciones (ts_epoch, accion) en orden. `on_when(accion)`
+    decide si ese tramo cuenta como "on". El fin de cada tramo es el inicio del
+    siguiente (o ahora en el ultimo). No depende de ningun historico de HA ni del
+    fabricante del actuador -- el add-on SABE que mando cada ciclo. Para la
+    perdida pasiva se pide on_when = (accion != "off"), de modo que los tramos
+    "off" sean SOLO cuando no se estaba ni calentando ni enfriando (ni confundir
+    un rato de enfriado con deriva pasiva)."""
+    runs: list[_Run] = []
+    for i, (ts, act) in enumerate(action_log):
+        start = _to_dt(float(ts))
+        end = _to_dt(float(action_log[i + 1][0])) if i + 1 < len(action_log) else now
+        if end <= start:
+            continue
+        runs.append((start, end, "on" if on_when(act) else "off"))
+    return runs
+
+
+def _compute_model_sync(ws, zone: dict, days: int, bridges=None, action_log: list | None = None) -> dict:
     model = {
         "heating_rate_deg_h": DEFAULT_HEATING_RATE_DEG_H,
         "cooling_rate_deg_h": DEFAULT_COOLING_RATE_DEG_H,
@@ -285,14 +304,31 @@ def _compute_model_sync(ws, zone: dict, days: int, bridges=None) -> dict:
 
     runs_used = 0
 
-    heat_runs = _runs_for_side(ws, zone, "heat", "heating", days, bridges=bridges)
+    # Fuente de los tramos ON/OFF del actuador:
+    #  - `action_log` (preferente): el historico de ACCION PROPIA del add-on por
+    #    zona (ver ZoneRunner._action_log). Agnostico del fabricante y no depende
+    #    de que el actuador publique su on/off en el recorder -- imprescindible
+    #    para actuadores de bridge (Tuya/tuya_native, Govee...) que NO exponen
+    #    `get_actuator_history`, que era justo por lo que el modelo no aprendia.
+    #  - si no hay log todavia, se cae al metodo anterior (switches propios +
+    #    `hvac_action` de climate.* delegados por historico de HA).
+    if action_log:
+        now = _utcnow()
+        heat_runs = _runs_from_action_log(action_log, now, lambda a: a == "heat")
+        cool_runs = _runs_from_action_log(action_log, now, lambda a: a == "cool")
+        # perdida pasiva: "off" SOLO cuando no se calienta NI se enfria
+        idle_runs = _runs_from_action_log(action_log, now, lambda a: a != "off")
+    else:
+        heat_runs = _runs_for_side(ws, zone, "heat", "heating", days, bridges=bridges)
+        cool_runs = _runs_for_side(ws, zone, "cool", "cooling", days, bridges=bridges)
+        idle_runs = heat_runs + cool_runs
+
     if heat_runs:
         rate, n = _learn_rate(temp_states, heat_runs)
         if rate is not None:
             model["heating_rate_deg_h"] = rate
             runs_used += n
 
-    cool_runs = _runs_for_side(ws, zone, "cool", "cooling", days, bridges=bridges)
     if cool_runs:
         rate, n = _learn_rate(temp_states, cool_runs)
         if rate is not None:
@@ -300,18 +336,9 @@ def _compute_model_sync(ws, zone: dict, days: int, bridges=None) -> dict:
             runs_used += n
 
     outdoor_sensor = zone.get("outdoor_temp_sensor")
-    # Tramos "apagado" de AMBOS lados juntos (calor y frio) — la perdida
-    # pasiva de la zona no depende de cual de los dos la calento/enfrio
-    # por ultima vez, cualquier tramo con el actuador correspondiente
-    # apagado sirve igual. Iba con "or" (heat_runs or cool_runs): al ser
-    # listas, eso escogia SOLO heat_runs en cuanto tuviera aunque fuera un
-    # tramo (aunque cool_runs tuviera muchos mas y mejores), descartando
-    # de raiz la mitad de las muestras disponibles sin motivo -- menos
-    # datos para `idle_loss_coeff`, que alimenta directamente la
-    # anticipacion (`scheduler._anticipate`): una estimacion peor ahi
-    # dispara la anticipacion demasiado pronto o demasiado tarde, ninguna
-    # de las dos eficiente.
-    idle_runs = heat_runs + cool_runs
+    # `idle_runs` ya se calculo arriba: con `action_log`, los tramos "off" son
+    # SOLO los de verdad en reposo (ni calor ni frio); sin log, es la union de
+    # los apagados de ambos lados (perdida pasiva, da igual cual actuo ultimo).
     if outdoor_sensor and idle_runs:
         outdoor_states = _history_for(ws, outdoor_sensor, days, bridges=bridges)
         coeff, n = _learn_idle_loss_coeff(temp_states, idle_runs, outdoor_states)
@@ -330,7 +357,8 @@ MODEL_COMPUTE_TIMEOUT_SECONDS = 60  # limite duro de espera — ver mas abajo
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="thermal_model")
 
 
-def get_model(ws, zone: dict, days: int, fallback: dict | None = None, bridges=None) -> dict:
+def get_model(ws, zone: dict, days: int, fallback: dict | None = None, bridges=None,
+              action_log: list | None = None) -> dict:
     """Consulta el historico por WebSocket en su propio hilo (nunca
     bloquea el hilo que llama mas de MODEL_COMPUTE_TIMEOUT_SECONDS — una
     consulta de varios dias puede tardar). `ws`: instancia de
@@ -358,7 +386,7 @@ def get_model(ws, zone: dict, days: int, fallback: dict | None = None, bridges=N
         "runs_used": 0,
     }
     fallback = fallback if fallback is not None else default_fallback
-    future = _executor.submit(_compute_model_sync, ws, zone, days, bridges)
+    future = _executor.submit(_compute_model_sync, ws, zone, days, bridges, action_log)
     try:
         return future.result(timeout=MODEL_COMPUTE_TIMEOUT_SECONDS)
     except FutureTimeoutError:

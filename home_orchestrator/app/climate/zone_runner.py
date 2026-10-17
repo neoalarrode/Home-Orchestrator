@@ -92,6 +92,14 @@ _LOGGER = logging.getLogger("climate.zone_runner")
 TEMP_EMA_HALFLIFE_SECONDS = 120
 STALE_SENSOR_HARD_TIMEOUT_SECONDS = 5400  # 90 min
 TEMP_HISTORY_MAXLEN = 24  # puntos para el sparkline del dashboard, no una serie historica de verdad (esa vive en HA)
+# Transiciones de ACCION PROPIA (heat/cool/off) que guarda cada zona para que el
+# modelo termico aprenda la inercia aunque el actuador sea de un bridge que no
+# publica su on/off en el recorder (Tuya/tuya_native, Govee...). Se registran SOLO
+# los cambios (no cada ciclo) y se persiste (ver to_persisted_state/_restore), asi
+# que sobrevive a reinicios -- antes el unico historial de actuador posible era en
+# memoria y se perdia en cada release. 2000 transiciones cubren de sobra la ventana
+# de aprendizaje (DEFAULT_HISTORY_DAYS_FOR_INERTIA).
+ACTION_LOG_MAXLEN = 2000
 WRITE_MIN_INTERVAL_SECONDS = 20
 MODEL_RECOMPUTE_MIN_INTERVAL_SECONDS = 21600  # 6 h
 TEMP_SEND_TOLERANCE_DEG = 0.1
@@ -347,6 +355,9 @@ class ZoneRunner:
         # para el sparkline del dashboard -- no pretende ser un historial
         # de verdad, para eso esta la propia HA (recorder).
         self.temp_history: deque[float] = deque(maxlen=TEMP_HISTORY_MAXLEN)
+        # Log de accion propia (ts_epoch, "heat"|"cool"|"off") -- solo transiciones.
+        # Alimenta thermal_model.get_model(action_log=...) para aprender la inercia.
+        self._action_log: deque[tuple[float, str]] = deque(maxlen=ACTION_LOG_MAXLEN)
 
         self._min_humidity = DEFAULT_MIN_HUMIDITY
         self._max_humidity = DEFAULT_MAX_HUMIDITY
@@ -487,10 +498,31 @@ class ZoneRunner:
                     continue
                 self._switch_last_change[entity_id] = (switch_state, ts)
 
+        # Log de accion propia persistido (ver _record_action / to_persisted_state):
+        # sobrevive a reinicios para que el modelo termico no empiece de cero cada
+        # release. Se validan tipos y se ignoran entradas corruptas sin fallar.
+        saved_log = state.get("action_log")
+        if isinstance(saved_log, list):
+            for entry in saved_log:
+                if (isinstance(entry, (list, tuple)) and len(entry) == 2
+                        and isinstance(entry[0], (int, float)) and entry[1] in ("heat", "cool", "off")):
+                    self._action_log.append((float(entry[0]), entry[1]))
+
+    def _record_action(self, act: str) -> None:
+        """Anota una transicion de accion propia (heat/cool/off) con marca de
+        tiempo, SOLO si cambia respecto a la ultima anotada -- el modelo termico
+        reconstruye los tramos a partir de estas transiciones (ver
+        thermal_model._runs_from_action_log). No anota cada ciclo: solo los
+        cambios, para que el log sea compacto y cubra varios dias."""
+        if self._action_log and self._action_log[-1][1] == act:
+            return
+        self._action_log.append((_utcnow().timestamp(), act))
+
     def to_persisted_state(self) -> dict:
         """Lo que se guarda en config_store en cada cambio que importa —
         ver zone_store.py."""
         return {
+            "action_log": [[ts, act] for ts, act in self._action_log],
             "hvac_mode": self.hvac_mode,
             "preset_mode": self._preset_mode,
             "manual_heat": self._manual_heat,
@@ -1198,6 +1230,7 @@ class ZoneRunner:
             self._thermal_model = thermal_model.get_model(
                 self.ws, self.zone, int(self.zone.get(CONF_HISTORY_DAYS_FOR_INERTIA, DEFAULT_HISTORY_DAYS_FOR_INERTIA)),
                 fallback=self._thermal_model, bridges=self.bridges,
+                action_log=list(self._action_log),
             )
             self._power_model = power_model.get_power_model(
                 self.ws, entities_to_learn, self.zone_id, self.all_zones, home_power_sensor,
@@ -1385,6 +1418,16 @@ class ZoneRunner:
             occupancy_forecast_likely = occupancy.forecast_likely(
                 self._occupancy_by_hour, now_local_hour, scheduler.OCCUPANCY_ANTICIPATE_LOOKAHEAD_HOURS,
             )
+            # Inercia SOLO si el modelo se ha APRENDIDO de verdad (reliable). Si no,
+            # se pasa None (inercia desconocida): `_modulate_target` y `_anticipate`
+            # no deben relajar la consigna ni adelantarse basandose en el valor por
+            # DEFECTO (DEFAULT_IDLE_LOSS_COEFF=0.08). Ese default es ~6x la inercia
+            # real de una casa bien aislada, y hacia que la modulacion pidiera p.ej.
+            # 26.5°C en vez de 24°C "porque el exterior aportara 2.5°C en 3h" cuando
+            # el interior en realidad apenas se inmuta. Mejor reactivo honesto que
+            # anticipar con una inercia inventada (ver scheduler._modulate_target).
+            _reliable = self._thermal_model.get("reliable", False)
+            _idle_learned = self._thermal_model.get("idle_loss_coeff", 0.0) if _reliable else None
             action, decide_reason = scheduler.decide_action(
                 current_temp=current_temp, heat_target=heat_target, cool_target=cool_target,
                 priority=self.zone.get(CONF_PRIORITY, "confort"), deadband=deadband,
@@ -1392,7 +1435,7 @@ class ZoneRunner:
                 outdoor_now=self._outdoor_now, outdoor_forecast=self._outdoor_forecast,
                 heating_rate_deg_h=self._thermal_model.get("heating_rate_deg_h", 0.0),
                 cooling_rate_deg_h=self._thermal_model.get("cooling_rate_deg_h", 0.0),
-                idle_loss_coeff=self._thermal_model.get("idle_loss_coeff", 0.0),
+                idle_loss_coeff=_idle_learned,
                 grid_tier=grid["tier"], solar_surplus_now_w=grid["solar_surplus_now_w"],
                 battery_discharge_headroom_now_w=grid["battery_discharge_headroom_now_w"],
                 zone_estimated_power_w=self._zone_estimated_power_w(),
@@ -1455,6 +1498,10 @@ class ZoneRunner:
             urgent=urgent, safety_emergency=safety_emergency,
         )
         self.hvac_action = "off" if self.hvac_mode == "off" else _ACTION_MAP.get(real_action, "idle")
+        # Registro de accion propia para el aprendizaje de inercia (ver _action_log /
+        # thermal_model). Para el modelo solo importa si se estuvo CALENTANDO,
+        # ENFRIANDO o ninguna (ventilar/secar/idle = "off", no condiciona pasivamente).
+        self._record_action("heat" if real_action == "heat" else "cool" if real_action == "cool" else "off")
         # Ventilar es un RESPALDO, no la accion de un termostato de temperatura.
         # Estando en un modo de temperatura (calor/frio/ambos) la zona puede
         # acabar ventilando -- porque hay una ventana abierta y el calor/frio

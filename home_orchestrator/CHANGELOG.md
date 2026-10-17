@@ -1,5 +1,10 @@
 # Changelog
 
+## core 0.77.59
+
+- Climatización — la inercia de cada zona ahora se APRENDE de verdad. Antes el modelo térmico salía `reliable=False` en todas las zonas (usaba el `idle_loss` por defecto 0.08, ~6× la inercia real de una casa bien aislada), porque aprendía del on/off del actuador vía el recorder/bridge y los actuadores Tuya (tuya_native) no publican ese historial. Ahora el add-on registra SU PROPIA acción por zona (heat/cool/off, persistida y con marca de tiempo) y el modelo reconstruye los tramos desde ahí — agnóstico del fabricante, válido para cualquier actuador. El "idle" (pérdida pasiva) se mide solo cuando no calienta ni enfría.
+- Climatización — mientras la inercia NO está aprendida, ya no se modula ni anticipa con el valor por defecto: `_modulate_target`/`_anticipate` solo actúan con inercia fiable. Corrige el caso real de relajar la consigna 2,5°C ("el exterior aportará ~2.5°C en 3h, pido 26.5 en vez de 24") cuando el interior en realidad apenas se inmuta. Hasta aprender, reactivo honesto.
+
 ## core 0.77.58
 
 - Energía — previsión de consumo: la agregación por franja (día-semana, hora) pasa de MEDIA a MEDIANA entre días. La media se disparaba con los picos puntuales de la casa (horno/vitro/aire); la mediana coge el consumo típico, que es lo que el planificador necesita. En backtest sobre histórico real con la tarifa real: error de previsión −20/−52 % y coste −1,2 % (instalación actual) / −9,2 % (planta 6 kW), mismo optimizador. Dentro de cada hora se sigue promediando por tiempo (la energía esperada se conserva, imprescindible para carga/descarga de batería); el cambio es solo ENTRE días. Flag `FORECAST_AGG` reversible a "mean". Sin numpy.
