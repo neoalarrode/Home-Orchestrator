@@ -15,7 +15,6 @@ image: "ghcr.io/neoalarrode/{arch}-home-orchestrator"
 arch:
   - aarch64
   - amd64
-  - armv7
 init: false
 startup: application
 boot: auto
