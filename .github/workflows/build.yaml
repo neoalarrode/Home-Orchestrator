@@ -55,8 +55,8 @@ jobs:
         uses: home-assistant/builder@master
         with:
           args: |
-            --${{ matrix.arch }}
-            --target /data/home_orchestrator
-            --image "{arch}-home-orchestrator"
-            --docker-hub "ghcr.io/neoalarrode"
+            --${{ matrix.arch }} \
+            --target /data/home_orchestrator \
+            --image "{arch}-home-orchestrator" \
+            --docker-hub "ghcr.io/neoalarrode" \
             --addon
