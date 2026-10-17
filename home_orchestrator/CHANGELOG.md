@@ -1,5 +1,10 @@
 # Changelog
 
+## core 0.77.58
+
+- Energía — previsión de consumo: la agregación por franja (día-semana, hora) pasa de MEDIA a MEDIANA entre días. La media se disparaba con los picos puntuales de la casa (horno/vitro/aire); la mediana coge el consumo típico, que es lo que el planificador necesita. En backtest sobre histórico real con la tarifa real: error de previsión −20/−52 % y coste −1,2 % (instalación actual) / −9,2 % (planta 6 kW), mismo optimizador. Dentro de cada hora se sigue promediando por tiempo (la energía esperada se conserva, imprescindible para carga/descarga de batería); el cambio es solo ENTRE días. Flag `FORECAST_AGG` reversible a "mean". Sin numpy.
+- Climatización — pre-climatizado dimensionado: el pre-banqueo de confort deja de estar topado a un solo deadband; ahora se dimensiona por la DURACIÓN del bloque de punta y la pérdida pasiva de la zona, hasta el límite de seguridad, nunca menos que antes, e inerte sin previsión/inercia. En simulación con datos reales (verano): hasta +2,4 % por zona en las que peor retienen (despacho, dormitorio), ≈0 % en las muy bien aisladas. Seguro en todas las zonas.
+
 ## core 0.77.57
 
 - Arranque: el servidor web/ingress ya no espera a que terminen de arrancar los hilos de fondo de todos los plugins. El `root_app` se arma igual que antes (blueprint del nucleo y plugins montados) y el arranque de fondo pasa a un hilo aparte, asi que el ingress responde en cuanto levanta el proceso. Antes, un plugin lento bloqueaba el arranque del servidor: visto en produccion el ingress "no arrancaba" durante minutos porque TP-Link conectaba con sus dispositivos en serie (15 s por equipo inalcanzable, 14 equipos ~= 210 s).

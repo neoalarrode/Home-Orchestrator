@@ -1,0 +1,62 @@
+name: Publicar imagen del add-on
+
+# Construye la imagen multi-arquitectura del add-on y la publica en ghcr.io.
+# Necesario para que el add-on se INSTALE DESCARGANDO (no construyendo en local)
+# y, con ello, para que las copias de seguridad se RESTAUREN SOLAS en una maquina
+# nueva: al tirar de imagen de registro, el backup no incrusta una image.tar OCI
+# que el Supervisor no sabe restaurar. Ver config.yaml (clave `image:`).
+#
+# Dispara cuando cambia algo del add-on en main (o a mano). El tag de la imagen lo
+# saca el builder de `version:` en config.yaml, asi que SUBE la version ahi antes
+# de que HA intente actualizar (si no, HA pediria una imagen que aun no existe).
+#
+# La primera vez: los paquetes de ghcr nacen PRIVADOS. Hazlos PUBLICOS en
+# github.com/users/neoalarrode/packages (o configura login de registro en HA),
+# para que el Supervisor pueda descargarlos sin autenticacion.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "home_orchestrator/**"
+      - ".github/workflows/build.yaml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, amd64, armv7]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Leer version del add-on
+        id: meta
+        run: |
+          version="$(grep -E '^version:' home_orchestrator/config.yaml | head -1 | sed -E 's/^version:[[:space:]]*"?([^"]+)"?/\1/')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Publicando home_orchestrator ${version} (${{ matrix.arch }})"
+
+      - name: Login en ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construir y publicar (${{ matrix.arch }})
+        uses: home-assistant/builder@master
+        with:
+          args: |
+            --${{ matrix.arch }}
+            --target /data/home_orchestrator
+            --image "{arch}-home-orchestrator"
+            --docker-hub "ghcr.io/neoalarrode"
+            --addon

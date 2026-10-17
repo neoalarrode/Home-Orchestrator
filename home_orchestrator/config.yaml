@@ -1,8 +1,17 @@
 name: "Home Orchestrator — Energy"
-version: "0.77.57"
+version: "0.77.58"
 slug: "home_orchestrator"
 description: "Baterias, solar y cargas diferibles, sin cajas negras — plugin Energy de Home Orchestrator"
 url: "https://github.com/neoalarrode/Home-Orchestrator"
+# Imagen PRE-CONSTRUIDA en registro (la publica .github/workflows/build.yaml en
+# ghcr.io por cada version). Con esto el Supervisor DESCARGA la imagen en vez de
+# construirla en local -> el backup ya no mete una `image.tar` propia (que salia
+# en formato OCI por el almacen containerd de Docker 29 y rompia el restaurador
+# del Supervisor: "Not a gzipped file"). Resultado: en una maquina nueva, HA
+# INSTALA (descargando) y RESTAURA los datos de forma automatica, sin pasos
+# manuales. `build.yaml`/`Dockerfile` se mantienen: solo los usa el builder de CI
+# (y un `ha addons rebuild` manual en desarrollo), el Supervisor ya no construye.
+image: "ghcr.io/neoalarrode/{arch}-home-orchestrator"
 arch:
   - aarch64
   - amd64

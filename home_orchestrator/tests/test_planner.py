@@ -198,6 +198,28 @@ class HistoryWindow(unittest.TestCase):
         avg, _ = ha_client._weighted_buckets(pts, base + timedelta(hours=2))["raw"]
         self.assertAlmostEqual(avg[ha_client._bucket_key(base)], 400.0)
 
+    def test_median_across_days_ignores_the_spike_day(self):
+        """ENTRE dias la franja se combina con MEDIANA, no media: 9 martes a 300 W
+        y 1 martes con pico de 3000 W -> 300 W (dia tipico), no ~470 W (media
+        inflada por el pico). Es el nucleo de la mejora de prevision de consumo.
+        DENTRO de cada dia se sigue promediando por tiempo (ver los otros tests)."""
+        from datetime import timezone
+        raw = []
+        for d in range(10):                      # 10 martes seguidos, franja 20h
+            day = datetime(2026, 9, 1, 20, 0, tzinfo=timezone.utc) + timedelta(days=7 * d)
+            raw.append({"state": "3000" if d == 3 else "300", "last_changed": day.isoformat()})
+            raw.append({"state": "unknown", "last_changed": (day + timedelta(hours=1)).isoformat()})
+        end = datetime(2026, 12, 1, tzinfo=timezone.utc)
+        key = (False, 20)
+        orig = ha_client.FORECAST_AGG
+        try:
+            ha_client.FORECAST_AGG = "median"
+            self.assertAlmostEqual(ha_client._weighted_buckets(raw, end)["raw"][0][key], 300.0, delta=1.0)
+            ha_client.FORECAST_AGG = "mean"
+            self.assertGreater(ha_client._weighted_buckets(raw, end)["raw"][0][key], 400.0)
+        finally:
+            ha_client.FORECAST_AGG = orig
+
 
 class DpPlanner(unittest.TestCase):
     def test_charges_in_valle_discharges_in_punta_and_respects_limits(self):

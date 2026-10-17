@@ -340,6 +340,25 @@ _VARIANTS = ("raw", "abs", "positive", "negative")
 # Cobertura minima (segundos de señal real) para fiarse de una franja.
 MIN_COVERAGE_SECONDS_PER_HOUR = 600
 
+# Agregacion por franja (es_fin_de_semana, hora). OJO: son DOS niveles distintos.
+#   1) DENTRO de cada dia: media PONDERADA POR TIEMPO de esa hora (= energia
+#      esperada de la franja ese dia). Un pulso corto -p.ej. 1000 W durante
+#      6 min- cuenta como su energia (100 W de media), NO se descarta: es real.
+#      Esto es imprescindible para los variantes con signo (carga/descarga de
+#      bateria) y para la energia en general.
+#   2) ENTRE dias: se combinan los valores diarios de esa misma franja con:
+#      "median" -> MEDIANA entre dias. Robusta al dia con pico (horno/vitro/aire):
+#                  coge el dia TIPICO. En backtest rolling sobre historico real
+#                  baja el error de prevision de consumo ~52% (MAE 381->184 W) y
+#                  en la simulacion economica con la tarifa real recorta el hueco
+#                  de prevision sin inflar nada. Metodo por defecto desde 2026-10
+#                  (ver memoria ho-forecast-ml).
+#      "mean"   -> media por tiempo entre dias (comportamiento anterior; se deja
+#                  como interruptor reversible por si hiciera falta comparar).
+# Clave: medianar DENTRO de la hora borraria los pulsos reales; medianar ENTRE
+# dias es lo que quita el sesgo de los picos. Son cosas distintas.
+FORECAST_AGG = "median"
+
 
 def _bucket_key(ts: datetime) -> tuple[bool, int]:
     """(es_fin_de_semana, hora) -- ver `_weighted_buckets` sobre por que
@@ -401,7 +420,12 @@ def _weighted_buckets(raw: list[dict], end: datetime) -> dict | None:
     keys = [(weekend, h) for weekend in (False, True) for h in range(24)]
     seconds = {k: 0.0 for k in keys}
     samples = {k: 0 for k in keys}
-    sums = {v: {k: 0.0 for k in keys} for v in _VARIANTS}
+    sums = {v: {k: 0.0 for k in keys} for v in _VARIANTS}   # global (modo "mean")
+    # Acumuladores POR DIA para la mediana entre dias: por franja, {fecha: num/den}
+    # donde num = suma(valor*segundos) de esa franja ESE dia y den = sus segundos.
+    # num/den = media por tiempo de la franja ese dia; luego se medianan los dias.
+    day_num = {v: {k: {} for k in keys} for v in _VARIANTS}
+    day_den = {k: {} for k in keys}
 
     for i, (ts, val) in enumerate(points):
         if val is None:
@@ -429,22 +453,35 @@ def _weighted_buckets(raw: list[dict], end: datetime) -> dict | None:
             if dur <= 0:
                 break
             key = (local.weekday() >= 5, local.hour)
+            day = local.date()
             seconds[key] += dur
+            day_den[key][day] = day_den[key].get(day, 0.0) + dur
             for name, v in variants.items():
                 sums[name][key] += v * dur
+                dn = day_num[name][key]
+                dn[day] = dn.get(day, 0.0) + v * dur
             cursor = piece_end
 
     reliable = {
         k: seconds[k] >= MIN_COVERAGE_SECONDS_PER_HOUR and samples[k] >= 1 for k in keys
     }
+    def _aggregate(name: str, k: tuple) -> float | None:
+        if not reliable[k]:
+            return None
+        if FORECAST_AGG == "mean":
+            return sums[name][k] / seconds[k] if seconds[k] > 0 else None
+        # mediana ENTRE dias de la media-por-tiempo de cada dia en esa franja
+        daily = [day_num[name][k][d] / day_den[k][d] for d in day_den[k] if day_den[k][d] > 0]
+        return statistics.median(daily) if daily else None
+
     out = {}
     for name in _VARIANTS:
-        avg: dict = {k: (sums[name][k] / seconds[k] if reliable[k] else None) for k in keys}
-        # Relleno de huecos: la media de TODOS los cubos fiables (laborable +
+        avg: dict = {k: _aggregate(name, k) for k in keys}
+        # Relleno de huecos: el agregado de TODOS los cubos fiables (laborable +
         # finde mezclados aqui SI, a proposito -- ultimo recurso cuando una
         # franja no tiene cobertura propia).
         known = [v for v in avg.values() if v is not None]
-        fallback = statistics.mean(known) if known else None
+        fallback = statistics.median(known) if known else None
         out[name] = ({k: (avg[k] if avg[k] is not None else fallback) for k in keys}, dict(reliable))
     return out
 
@@ -576,8 +613,11 @@ def hourly_average_forecast(
 ) -> list[float]:
     """
     Previsión simple y explicable para CUALQUIER sensor numerico: para cada
-    hora del horizonte, la media de esa MISMA hora-del-dia en los ultimos
-    `days` dias de historico real. Nada de aprendizaje automatico opaco.
+    hora del horizonte, el valor TIPICO de esa MISMA hora-del-dia (separando
+    laborable/fin de semana) en los ultimos `days` dias de historico real.
+    "Tipico" = MEDIANA entre dias de la media-por-tiempo de cada dia (ver
+    `FORECAST_AGG` y `_weighted_buckets`): robusta a los picos puntuales de la
+    casa, que inflaban la media. Nada de aprendizaje automatico opaco.
 
     Si `days` supera lo que tu Home Assistant realmente conserva (por
     defecto el recorder solo guarda 10 dias), reintenta con ventanas mas

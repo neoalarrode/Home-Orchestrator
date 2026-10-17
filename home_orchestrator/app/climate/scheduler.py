@@ -248,7 +248,7 @@ def decide_action(
                 return action, reason
             action, reason = _price_anticipation_preheat(True, current_temp, heat_target, deadband,
                                                            grid_tier, grid_forecast, zone_estimated_power_w,
-                                                           max_temp, min_temp, idle_loss_coeff)
+                                                           max_temp, min_temp, idle_loss_coeff, outdoor_forecast)
             if action != "idle":
                 return action, reason
         if cooling:
@@ -259,7 +259,7 @@ def decide_action(
                 return action, reason
             action, reason = _price_anticipation_preheat(False, current_temp, cool_target, deadband,
                                                            grid_tier, grid_forecast, zone_estimated_power_w,
-                                                           max_temp, min_temp, idle_loss_coeff)
+                                                           max_temp, min_temp, idle_loss_coeff, outdoor_forecast)
             if action != "idle":
                 return action, reason
 
@@ -408,10 +408,40 @@ def _opportunistic_preheat(heating: bool, current_temp: float, target_temp: floa
     return "idle", ""
 
 
+def _coast_boost(heating: bool, target_temp: float, deadband: float, idle_loss_coeff: float | None,
+                  outdoor_forecast: list[float], block_offset: int, block_hours: int) -> float:
+    """Cuanto pre-banquear por encima/debajo de la consigna antes de un bloque
+    caro. Al menos un deadband escalado por retencion (como hasta ahora, nunca
+    menos), pero si el bloque dura varias horas sin sol, lo suficiente para
+    COASTEARLO con la inercia: la deriva pasiva (grados que la zona perderia/
+    ganaria sola) durante esas horas, tambien escalada por retencion. El tope
+    de seguridad (max_temp/min_temp) lo aplica quien llama, no aqui.
+
+    Sin previsión exterior o sin inercia aprendida, cae al deadband de siempre
+    -- nunca inventa una deriva que no puede proyectar. `block_hours<=0` (no hay
+    bloque que coastear) tambien deja el comportamiento anterior intacto."""
+    ret = _retention_factor(idle_loss_coeff)
+    base = deadband * ret
+    if not outdoor_forecast or not idle_loss_coeff or idle_loss_coeff <= 0 or block_hours <= 0:
+        return base
+    temp = target_temp
+    drift = 0.0
+    for k in range(block_hours):
+        idx = block_offset + k
+        outdoor_h = outdoor_forecast[idx] if idx < len(outdoor_forecast) else outdoor_forecast[-1]
+        loss = idle_loss_coeff * (temp - outdoor_h) if heating else idle_loss_coeff * (outdoor_h - temp)
+        if loss <= 0:
+            break  # el exterior ya empuja a favor esa hora: no hay que banquear mas
+        temp = temp - loss if heating else temp + loss
+        drift += loss
+    return max(base, drift * ret)
+
+
 def _price_anticipation_preheat(heating: bool, current_temp: float, target_temp: float, deadband: float,
                                  grid_tier: str | None, grid_forecast: list[dict] | None,
                                  zone_power_w: float | None, max_temp: float, min_temp: float,
-                                 idle_loss_coeff: float | None = None) -> tuple[str, str]:
+                                 idle_loss_coeff: float | None = None,
+                                 outdoor_forecast: list[float] | None = None) -> tuple[str, str]:
     """Banco de confort por PRECIO: a diferencia de `_opportunistic_preheat`
     (que solo mira el excedente solar AHORA MISMO), esta mira el
     PRONOSTICO que Battery Orchestrator ya calcula para si mismo (ver
@@ -433,14 +463,28 @@ def _price_anticipation_preheat(heating: bool, current_temp: float, target_temp:
     confirmada en el pronostico."""
     if not grid_forecast or not zone_power_w or grid_tier == "punta":
         return "idle", ""
-    upcoming_expensive = any(
-        h.get("tier") == "punta" and (h.get("solar_surplus_w") or 0) < zone_power_w
-        for h in grid_forecast[1:PRICE_ANTICIPATE_LOOKAHEAD_HOURS + 1]
-    )
-    if not upcoming_expensive:
+    # Marca de "hora cara" (punta sin sol que cubra la zona) hora a hora, desde
+    # ahora (indice 0) hasta el horizonte de aviso. Se busca el PRIMER bloque
+    # caro a partir de la hora 1 (la 0 es "ahora", ya cubierta por grid_tier) y
+    # se mide cuantas horas SEGUIDAS dura: asi el pre-banqueo se dimensiona para
+    # COASTEAR ese bloque entero con la inercia, no un deadband fijo que se
+    # quedaria corto en una punta larga (ver `_coast_boost`).
+    flags = [
+        (h.get("tier") == "punta" and (h.get("solar_surplus_w") or 0) < zone_power_w)
+        for h in grid_forecast[:PRICE_ANTICIPATE_LOOKAHEAD_HOURS + 1]
+    ]
+    block_offset = next((i for i in range(1, len(flags)) if flags[i]), None)
+    if block_offset is None:
         return "idle", ""
-    boost = deadband * _retention_factor(idle_loss_coeff)
-    retention_note = f", retención {retention_label(idle_loss_coeff)}" if idle_loss_coeff else ""
+    block_hours = 0
+    for i in range(block_offset, len(flags)):
+        if not flags[i]:
+            break
+        block_hours += 1
+    boost = _coast_boost(heating, target_temp, deadband, idle_loss_coeff,
+                         outdoor_forecast or [], block_offset, block_hours)
+    coast_note = f", reservando para ~{block_hours}h de punta" if block_hours > 1 else ""
+    retention_note = (f", retención {retention_label(idle_loss_coeff)}" if idle_loss_coeff else "") + coast_note
     if heating:
         boost_target = min(target_temp + boost, max_temp)
         if current_temp < boost_target:
