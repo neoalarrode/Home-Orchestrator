@@ -1063,15 +1063,17 @@ class ZoneRunner:
         return _safe_float(state.get("state"))
 
     def _smart_idle_action(self, current_temp: float | None, heat_target: float | None, deadband: float) -> tuple[str, str | None]:
+        # Este metodo SOLO se llama cuando la accion seria 'idle' (la zona esta en
+        # banda, ni calentando ni enfriando). Por eso deshumidificar aqui cumple la
+        # regla del usuario: secar SIEMPRE que la zona este parada o fuese a ventilar,
+        # NUNCA mientras calienta/enfria (ese caso ni llega aqui). Antes habia un
+        # guard `heat_margin_ok` que, en la mitad baja de la banda de confort,
+        # prefería ventilar a secar; se retira para que la humedad mande en reposo.
         if "dry" in self._last_full_capability:
             humidity = self._read_humidity_now()
             threshold = float(self.zone.get(CONF_DRY_HUMIDITY_THRESHOLD, DEFAULT_DRY_HUMIDITY_THRESHOLD))
-            heat_margin_ok = (
-                heat_target is None or current_temp is None or current_temp >= heat_target + deadband
-            )
             if humidity is not None and humidity >= threshold:
-                if heat_margin_ok:
-                    return "dry", f"humedad {humidity:.0f}% ≥ {threshold:.0f}%: deshumidificando en vez de apagar"
+                return "dry", f"humedad {humidity:.0f}% ≥ {threshold:.0f}%: deshumidificando (en reposo/ventilando)"
         if "fan_only" in self._last_full_capability:
             return "fan_only", "dentro de margen: ventilando en vez de apagar del todo"
         return "idle", None
