@@ -226,24 +226,28 @@ def _pick_fan_mode(fan_modes: list[str], urgent: bool, manual: str | None) -> st
         return None
     if manual and manual in fan_modes:
         return manual
-    # BUG REAL, confirmado contra hardware real (ver URGENT_TEMP_DEVIATION_DEG
-    # mas arriba): con `fan_modes` en el orden real de fabricante (de mas
-    # fuerte a mas suave -- "strong, high, mid_high, mid, mid_low, low,
-    # mute, auto" en el AC del Salon), recorrer la lista de PRINCIPIO A FIN
-    # y quedarse con el PRIMER match funciona bien para "urgent" (el
-    # primero que coincide con las palabras fuertes YA es el mas fuerte),
-    # pero para "gentle" hacia que "mid_low" (contiene "low") ganara por
-    # delante del "low"/"mute" de VERDAD, que aparecen despues en la
-    # lista -- se estaba eligiendo una velocidad media-baja creyendo que
-    # era la mas suave disponible. Recorrer la lista AL REVES para
-    # "gentle" hace que se quede con el ULTIMO match, el mas suave real.
-    keywords = FAN_MODE_URGENT_KEYWORDS if urgent else FAN_MODE_GENTLE_KEYWORDS
-    ordered = fan_modes if urgent else list(reversed(fan_modes))
-    for mode in ordered:
-        if any(k in mode.lower() for k in keywords):
-            return mode
+    if urgent:
+        # Urgencia: la velocidad mas fuerte declarada (lista de fabricante de
+        # mas fuerte a mas suave, se coge el PRIMER match fuerte).
+        for mode in fan_modes:
+            if any(k in mode.lower() for k in FAN_MODE_URGENT_KEYWORDS):
+                return mode
+        for mode in fan_modes:
+            if "auto" in mode.lower():
+                return mode
+        return fan_modes[0]
+    # Marcha NORMAL (no urgente): AUTO, que el propio equipo module el
+    # ventilador. NUNCA forzar la velocidad minima: calentar/enfriar con el
+    # ventilador al minimo no reparte el aire, recalienta la sonda interna del
+    # equipo (que es la que usa para su demanda -> realimentacion) y ademas va
+    # lento. Solo si el equipo NO tiene 'auto' se cae al mas suave real como
+    # ultimo recurso (lista al reves para coger "low"/"mute" de verdad, no
+    # "mid_low").
     for mode in fan_modes:
         if "auto" in mode.lower():
+            return mode
+    for mode in reversed(fan_modes):
+        if any(k in mode.lower() for k in FAN_MODE_GENTLE_KEYWORDS):
             return mode
     return None
 
