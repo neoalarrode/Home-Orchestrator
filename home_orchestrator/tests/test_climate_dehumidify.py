@@ -1,6 +1,9 @@
-"""Deshumidificar en reposo/ventilando cuando la humedad supera el umbral, sin el
-guard de margen de calor (el usuario quiere secar siempre que la zona esté parada o
-fuese a ventilar; nunca mientras calienta/enfría, caso que ni llega a _smart_idle_action).
+"""_smart_idle_action (solo se llama con acción idle: la zona en banda, sin calentar
+ni enfriar):
+  - deshumidifica si hay humedad y el equipo puede (dry), en reposo/ventilando;
+  - en un AC/bomba de calor (soporta frío o dry) NO ventila como respaldo del idle
+    (gasta ventilador sin enfriar y es peor que dejar el inverter al ralentí) -> idle;
+  - un ventilador puro (fan_only sin compresor) sí conserva el fan_only.
 """
 import os, sys, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
@@ -17,22 +20,28 @@ class _Stub:
         return self._hum
 
 
-class Dehumidify(unittest.TestCase):
-    def test_dries_when_humid_regardless_of_heat_margin(self):
-        s = _Stub({"dry", "fan_only"}, 50, 60.0)
-        # current_temp muy por debajo del heat_target (antes bloqueaba por heat_margin) -> ahora seca igual
-        action, reason = s._smart_idle_action(current_temp=18.0, heat_target=21.0, deadband=0.3)
-        self.assertEqual(action, "dry")
-        self.assertIn("60", reason)
+class SmartIdle(unittest.TestCase):
+    def test_ac_dries_when_humid(self):
+        s = _Stub({"cool", "dry", "fan_only"}, 50, 60.0)
+        action, reason = s._smart_idle_action(18.0, 21.0, 0.3)  # temp baja: ya no bloquea
+        self.assertEqual(action, "dry"); self.assertIn("60", reason)
 
-    def test_vents_when_not_humid(self):
-        s = _Stub({"dry", "fan_only"}, 50, 40.0)
-        action, _ = s._smart_idle_action(20.0, 21.0, 0.3)
-        self.assertEqual(action, "fan_only")
+    def test_ac_in_band_not_humid_goes_idle_not_fan(self):
+        # AC (soporta dry/cool): en banda y seco -> idle al ralentí, NO ventilar
+        s = _Stub({"cool", "dry", "fan_only"}, 50, 40.0)
+        action, reason = s._smart_idle_action(21.0, 21.0, 0.3)
+        self.assertEqual(action, "idle"); self.assertIsNone(reason)
 
-    def test_no_dry_capability_falls_to_fan(self):
-        s = _Stub({"fan_only"}, 50, 70.0)
-        action, _ = s._smart_idle_action(20.0, None, 0.3)
+    def test_ac_without_dry_still_idle_not_fan(self):
+        # AC que enfría pero sin modo dry: igualmente idle, no fan
+        s = _Stub({"cool", "fan_only"}, 50, None)
+        action, _ = s._smart_idle_action(21.0, None, 0.3)
+        self.assertEqual(action, "idle")
+
+    def test_pure_fan_still_ventilates(self):
+        # ventilador puro (sin frío ni dry): conserva el fan_only como respaldo
+        s = _Stub({"fan_only"}, 50, 40.0)
+        action, _ = s._smart_idle_action(21.0, None, 0.3)
         self.assertEqual(action, "fan_only")
 
     def test_idle_when_nothing(self):

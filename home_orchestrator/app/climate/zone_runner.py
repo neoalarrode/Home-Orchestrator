@@ -106,7 +106,6 @@ TEMP_SEND_TOLERANCE_DEG = 0.1
 HUMIDITY_SEND_TOLERANCE_PCT = 1
 EQUIPMENT_FAILURE_DETECTION_MINUTES = 30
 EQUIPMENT_FAILURE_MIN_DELTA_DEG = 0.3
-OVERSHOOT_STRIKES_THRESHOLD = 2
 
 # BUG REAL, a peticion expresa del usuario tras el QA adversarial de
 # Climate ("debounce del delegado climate.*", "respeto a un apagado
@@ -388,8 +387,6 @@ class ZoneRunner:
         self._last_cool_on_percent: float | None = None
         self._delegate_deviations: dict[str, float] = {}
         self._delegate_last_active: dict[str, tuple[str, float]] = {}
-        self._delegate_overshoot_strikes: dict[str, int] = {}
-        self._delegate_needs_explicit_off: set[str] = set()
         # Debounce + deteccion de cambio manual del delegado -- ver
         # DELEGATE_COMMAND_DEBOUNCE_SECONDS mas arriba.
         self._delegate_last_command: dict[str, dict] = {}
@@ -467,11 +464,6 @@ class ZoneRunner:
             except (TypeError, ValueError):
                 self._extractor_baseline = None
 
-        learned_off = state.get("delegate_needs_explicit_off")
-        if isinstance(learned_off, list):
-            declared = set(self.zone.get(CONF_CLIMATE_ENTITIES) or [])
-            self._delegate_needs_explicit_off = {e for e in learned_off if e in declared}
-
         # BUG REAL, confirmado por fuzzing adversarial: `_switch_last_change`
         # (proteccion de tiempo minimo encendido/apagado del switch, ver
         # `_drive_switch` -- pensada para no dejar un compresor haciendo
@@ -530,7 +522,6 @@ class ZoneRunner:
             "fan_mode": self._manual_fan_mode,
             "target_humidity": self.target_humidity,
             "extractor_baseline": self._extractor_baseline,
-            "delegate_needs_explicit_off": sorted(self._delegate_needs_explicit_off),
             "switch_last_change": {
                 entity_id: [switch_state, ts.isoformat()]
                 for entity_id, (switch_state, ts) in self._switch_last_change.items()
@@ -574,7 +565,6 @@ class ZoneRunner:
             "outdoor_now": self._outdoor_now,
             "outdoor_forecast": [round(t, 1) for t in self._outdoor_forecast] if self._outdoor_forecast else [],
             "delegate_temperature_deviations": dict(self._delegate_deviations),
-            "delegate_needs_explicit_off": sorted(self._delegate_needs_explicit_off),
             "sensor_stale": self._sensor_stale,
             "window_slope_deg_h": self._window_detector.slope_deg_h,
             "equipment_failure_suspected": self._equipment_failure_suspected,
@@ -1074,7 +1064,14 @@ class ZoneRunner:
             threshold = float(self.zone.get(CONF_DRY_HUMIDITY_THRESHOLD, DEFAULT_DRY_HUMIDITY_THRESHOLD))
             if humidity is not None and humidity >= threshold:
                 return "dry", f"humedad {humidity:.0f}% ≥ {threshold:.0f}%: deshumidificando (en reposo/ventilando)"
-        if "fan_only" in self._last_full_capability:
+        # Ventilar como respaldo del idle SOLO en equipos que NO son AC (un
+        # ventilador puro, sin compresor). En un AC/bomba de calor con compresor
+        # (señal: soporta frío o dry) ventilar NO ahorra -- el ventilador interior
+        # gasta ~60-500 W sin enfriar ni secar -- y encima es peor que dejarlo al
+        # ralentí: mejor idle MANTENIENDO el delegado en su modo (climate_idle_keep),
+        # que deja al inverter modular el compresor al mínimo sin ciclar on/off.
+        is_ac = "cool" in self._last_full_capability or "dry" in self._last_full_capability
+        if not is_ac and "fan_only" in self._last_full_capability:
             return "fan_only", "dentro de margen: ventilando en vez de apagar del todo"
         return "idle", None
 
@@ -1689,7 +1686,6 @@ class ZoneRunner:
         if can_do:
             if action in ("heat", "cool"):
                 self._delegate_last_active[entity_id] = (action, target_temp)
-                self._delegate_overshoot_strikes[entity_id] = 0
             if not simulate:
                 now = _utcnow()
                 if (state is None or state.get("state") != action) and self._delegate_send_allowed(entity_id, now):
@@ -1809,65 +1805,60 @@ class ZoneRunner:
     def _drive_climate_idle(
         self, entity_id: str, current_temp: float | None, deadband: float, simulate: bool, safety_emergency: bool = False,
     ) -> str:
+        # IDLE de un equipo de climatizacion: NUNCA se apaga ni se cambia de modo
+        # para quedarse quieto (todo equipo se autorregula). Se le deja en SU modo
+        # termico (calor o frio) y se le aparca la consigna en la temperatura que EL
+        # MISMO lee, para que no tenga demanda y module al ralenti solo:
+        #   - en calor: consigna <= lo que lee  -> no pide calor
+        #   - en frio:  consigna >= lo que lee  -> no pide frio
+        # Quien decide calor/frio/idle sigue siendo Climate (decide_action); esto solo
+        # ejecuta el "quedate quieto". El unico off posible es el manual del usuario,
+        # que se respeta via _respect_delegate_override. Volver de 'dry' al modo
+        # termico tambien ocurre aqui (set_hvac_mode al modo base), que es una
+        # demanda real, no un cambio "para idle".
         state = self._get_state(entity_id)
         attrs = (state or {}).get("attributes") or {}
         supported = list(attrs.get("hvac_modes") or [])
-        last = self._delegate_last_active.get(entity_id)
-
-        if entity_id not in self._delegate_needs_explicit_off and last is not None:
-            last_mode, last_target = last
-            if last_mode in supported:
-                self._check_delegate_overshoot(entity_id, last_mode, last_target, current_temp, deadband)
 
         if not simulate and self._respect_delegate_override(entity_id, state, safety_emergency):
             return "idle"
 
-        if entity_id in self._delegate_needs_explicit_off or last is None or last[0] not in supported:
-            if not simulate and "off" in supported and state is not None and state.get("state") != "off":
-                now = _utcnow()
-                if self._delegate_send_allowed(entity_id, now):
-                    self._call_climate_service(entity_id, "set_hvac_mode", {"hvac_mode": "off"})
-                    self._note_delegate_command(entity_id, now, hvac_mode="off")
+        cur_state = (state or {}).get("state")
+        # Apagado manual del usuario: no lo encendemos nosotros (nunca encendemos/
+        # apagamos para idle). Sin estado utilizable, tampoco tocamos.
+        if cur_state in (None, "off", "unavailable", "unknown"):
             return "idle"
 
-        last_mode, last_target = last
-        if not simulate:
-            now = _utcnow()
-            compensated = self._compensate_delegate_target(entity_id, state, last_target, current_temp)
-            if (state is None or state.get("state") != last_mode) and self._delegate_send_allowed(entity_id, now):
-                self._call_climate_service(entity_id, "set_hvac_mode", {"hvac_mode": last_mode})
-                self._note_delegate_command(entity_id, now, hvac_mode=last_mode)
-            current_target = _safe_float(attrs.get("temperature"))
-            if current_target is None or abs(current_target - compensated) > TEMP_SEND_TOLERANCE_DEG:
-                if self._delegate_send_allowed(entity_id, now):
-                    self._call_climate_service(entity_id, "set_temperature", {"temperature": compensated})
-                    self._note_delegate_command(entity_id, now, temperature=compensated)
-            self._drive_delegate_fan_mode(entity_id, state, urgent=False)
-        else:
-            self._compensate_delegate_target(entity_id, state, last_target, current_temp)
-        return "idle"
+        # Modo termico en el que aparcar: el ultimo activo (heat/cool); si no hay,
+        # el estado actual si ya es heat/cool. Sin modo termico claro, no se toca.
+        last = self._delegate_last_active.get(entity_id)
+        mode = last[0] if last else (cur_state if cur_state in ("heat", "cool") else None)
+        if mode not in ("heat", "cool") or mode not in supported:
+            return "idle"
 
-    def _check_delegate_overshoot(
-        self, entity_id: str, last_mode: str, last_target: float, current_temp: float | None, deadband: float
-    ) -> None:
-        if current_temp is None:
-            return
-        overshoot = (
-            (last_mode == "heat" and current_temp > last_target + deadband) or
-            (last_mode == "cool" and current_temp < last_target - deadband)
-        )
-        if not overshoot:
-            self._delegate_overshoot_strikes[entity_id] = 0
-            return
-        strikes = self._delegate_overshoot_strikes.get(entity_id, 0) + 1
-        self._delegate_overshoot_strikes[entity_id] = strikes
-        if strikes >= OVERSHOOT_STRIKES_THRESHOLD:
-            self._delegate_needs_explicit_off.add(entity_id)
-            _LOGGER.info(
-                "%s: %s se mantenia encendido mas alla de su consigna repetidas veces — "
-                "a partir de ahora se apaga de verdad al llegar a la consigna",
-                self.zone.get("name"), entity_id,
-            )
+        # Temperatura que lee el PROPIO equipo (no el sensor de zona): es la que el
+        # equipo usa para su demanda, asi que es la que hay que neutralizar.
+        delegate_temp = _safe_float(attrs.get("current_temperature"))
+        if delegate_temp is None:
+            return "idle"
+        step = 0.5
+        parked = (math.floor(delegate_temp / step) if mode == "heat"
+                  else math.ceil(delegate_temp / step)) * step
+
+        if simulate:
+            return "idle"
+        now = _utcnow()
+        # Mantener el modo termico (solo se envia si no esta ya en el: p.ej. al
+        # volver de 'dry'); NUNCA se apaga.
+        if cur_state != mode and self._delegate_send_allowed(entity_id, now):
+            self._call_climate_service(entity_id, "set_hvac_mode", {"hvac_mode": mode})
+            self._note_delegate_command(entity_id, now, hvac_mode=mode)
+        current_target = _safe_float(attrs.get("temperature"))
+        if current_target is None or abs(current_target - parked) > TEMP_SEND_TOLERANCE_DEG:
+            if self._delegate_send_allowed(entity_id, now):
+                self._call_climate_service(entity_id, "set_temperature", {"temperature": parked})
+                self._note_delegate_command(entity_id, now, temperature=parked)
+        return "idle"
 
     def _compensate_delegate_target(self, entity_id: str, state: dict | None, target_temp: float, current_temp: float | None) -> float:
         attrs = (state or {}).get("attributes") or {}
