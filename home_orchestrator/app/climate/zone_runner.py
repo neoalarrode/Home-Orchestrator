@@ -1660,6 +1660,8 @@ class ZoneRunner:
                     real_cool = True
 
         for entity_id in self.zone.get(CONF_CLIMATE_ENTITIES) or []:
+            _LOGGER.info("[diag %s] entity=%s action=%s idle_keep=%s hvac_mode=%s force_off=%s",
+                         self.zone.get("name"), entity_id, action, climate_idle_keep, self.hvac_mode, force_off)
             if climate_idle_keep:
                 result = self._drive_climate_idle(entity_id, current_temp, deadband, simulate, safety_emergency=safety_emergency)
             else:
@@ -1836,12 +1838,14 @@ class ZoneRunner:
         supported = list(attrs.get("hvac_modes") or [])
 
         if not simulate and self._respect_delegate_override(entity_id, state, safety_emergency):
+            _LOGGER.info("[diag-idle %s] %s: BAIL override", self.zone.get("name"), entity_id)
             return "idle"
 
         cur_state = (state or {}).get("state")
         # Apagado manual del usuario: no lo encendemos nosotros (nunca encendemos/
         # apagamos para idle). Sin estado utilizable, tampoco tocamos.
         if cur_state in (None, "off", "unavailable", "unknown"):
+            _LOGGER.info("[diag-idle %s] %s: BAIL cur_state=%r state_none=%s", self.zone.get("name"), entity_id, cur_state, state is None)
             return "idle"
 
         # Modo termico en el que aparcar: el ultimo activo (heat/cool); si no hay,
@@ -1849,6 +1853,7 @@ class ZoneRunner:
         last = self._delegate_last_active.get(entity_id)
         mode = last[0] if last else (cur_state if cur_state in ("heat", "cool") else None)
         if mode not in ("heat", "cool") or mode not in supported:
+            _LOGGER.info("[diag-idle %s] %s: BAIL mode=%r supported=%s last_active=%s", self.zone.get("name"), entity_id, mode, supported, last)
             return "idle"
 
         # 'A tope', SIN fiarnos de la sonda interna del equipo (se contamina con su
@@ -1869,6 +1874,10 @@ class ZoneRunner:
             self._call_climate_service(entity_id, "set_hvac_mode", {"hvac_mode": mode})
             self._note_delegate_command(entity_id, now, hvac_mode=mode)
         current_target = _safe_float(attrs.get("temperature"))
+        _sa = self._delegate_send_allowed(entity_id, now)
+        _LOGGER.info("[diag-idle %s] %s: mode=%s parked=%s current_target=%s send_allowed=%s -> %s",
+                     self.zone.get("name"), entity_id, mode, parked, current_target, _sa,
+                     "SEND" if (current_target is None or abs(current_target - parked) > TEMP_SEND_TOLERANCE_DEG) and _sa else "noop")
         if current_target is None or abs(current_target - parked) > TEMP_SEND_TOLERANCE_DEG:
             if self._delegate_send_allowed(entity_id, now):
                 self._call_climate_service(entity_id, "set_temperature", {"temperature": parked})
