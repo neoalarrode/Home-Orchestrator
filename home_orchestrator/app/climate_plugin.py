@@ -411,4 +411,18 @@ class ClimatePlugin(Plugin):
                 zone_store.update_zone_state(zone_id, runner.to_persisted_state())
             except Exception:
                 log.exception("Fallo en refresco periodico de zona %s", zone_id)
+            # Re-CONDUCIR cada tick, no solo refrescar la prevision: se dispara un
+            # ciclo reactivo (que corre en el unico hilo reactivo -> sin carreras
+            # con los eventos de HA) para RE-APLICAR la decision actual al equipo
+            # aunque no haya cambiado ningun sensor. Sin esto, una zona en idle
+            # estable no se re-conducia nunca y el equipo se quedaba con la consigna
+            # del ultimo ciclo ACTIVO -- p.ej. el salon en idle con el AC en 23 en
+            # vez de aparcado en el minimo de zona (16). Ademas cubre el caso de que
+            # la suscripcion reactiva a HA de este plugin este degradada (cae a la
+            # suscripcion completa y no entrega eventos a su manejador): el equipo
+            # converge igual, como muy tarde en `refresh_minutes`.
+            try:
+                self._reactive.trigger()
+            except Exception:
+                log.exception("Fallo disparando el ciclo reactivo periodico de zona %s", zone_id)
             time.sleep(max(refresh_minutes, 1) * 60)
