@@ -103,6 +103,13 @@ ACTION_LOG_MAXLEN = 2000
 WRITE_MIN_INTERVAL_SECONDS = 20
 MODEL_RECOMPUTE_MIN_INTERVAL_SECONDS = 21600  # 6 h
 TEMP_SEND_TOLERANCE_DEG = 0.1
+# Compensacion de la sonda del delegado (ver _compensate_delegate_target): maxima
+# |desviacion| que se acepta como CALIBRACION de sonda; por encima se considera
+# contaminacion por la propia operacion del equipo (auto-calentamiento) y se
+# rechaza la muestra -> la desviacion se congela y no hay runaway. EMA lento para
+# que la calibracion sea estable.
+CALIB_BAND_DEG = 2.0
+DEVIATION_EMA_ALPHA = 0.25
 HUMIDITY_SEND_TOLERANCE_PCT = 1
 EQUIPMENT_FAILURE_DETECTION_MINUTES = 30
 EQUIPMENT_FAILURE_MIN_DELTA_DEG = 0.3
@@ -1696,6 +1703,9 @@ class ZoneRunner:
                     self._call_climate_service(entity_id, "set_hvac_mode", {"hvac_mode": action})
                     self._note_delegate_command(entity_id, now, hvac_mode=action)
                 if action in ("heat", "cool"):
+                    # Camino ACTIVO: aqui SI se usa la sonda interna, y SOLO para la
+                    # desviacion de calibracion contra NUESTRO sensor de zona, que
+                    # compensa la consigna que mandamos al equipo. En idle no se usa.
                     compensated = self._compensate_delegate_target(entity_id, state, target_temp, current_temp)
                     current_target = _safe_float(attrs.get("temperature"))
                     if current_target is None or abs(current_target - compensated) > TEMP_SEND_TOLERANCE_DEG:
@@ -1704,6 +1714,7 @@ class ZoneRunner:
                             self._note_delegate_command(entity_id, now, temperature=compensated)
                     self._drive_delegate_fan_mode(entity_id, state, urgent)
             elif action in ("heat", "cool"):
+                # En simulacion, mantener al dia la desviacion aprendida sin mandar nada.
                 self._compensate_delegate_target(entity_id, state, target_temp, current_temp)
             return action
 
@@ -1865,18 +1876,32 @@ class ZoneRunner:
         return "idle"
 
     def _compensate_delegate_target(self, entity_id: str, state: dict | None, target_temp: float, current_temp: float | None) -> float:
+        """Compensa la consigna que se manda al delegado con la DESVIACION de
+        calibracion de SU sonda interna frente a NUESTRO sensor de zona
+        (desviacion = sonda_equipo - sensor_zona). La sonda interna se usa SOLO
+        para esto, en ningun otro sitio (en idle no se toca).
+
+        La desviacion se trata como una CALIBRACION estable, no como el salto
+        instantaneo: cuando el equipo esta calentando/enfriando, su sonda se
+        contamina con su propia operacion (la desviacion se dispara varios
+        grados). Esas muestras se RECHAZAN (|desviacion| > CALIB_BAND_DEG) y la
+        desviacion queda CONGELADA en su ultimo valor estable; las creibles se
+        suavizan con EMA. Asi la consigna compensada NO puede realimentarse hacia
+        el tope: antes, al recalcular la desviacion en crudo cada ciclo, la sonda
+        subia -> la consigna subia -> calentaba mas -> la sonda subia... hasta el
+        tope (runaway real: rampa 23->30 a ~1C/min)."""
         attrs = (state or {}).get("attributes") or {}
         delegate_temp = attrs.get("current_temperature")
-        if delegate_temp is None or current_temp is None:
-            self._delegate_deviations.pop(entity_id, None)
-            return target_temp
-        try:
-            deviation = float(delegate_temp) - float(current_temp)
-        except (TypeError, ValueError):
-            self._delegate_deviations.pop(entity_id, None)
-            return target_temp
-
-        self._delegate_deviations[entity_id] = round(deviation, 2)
+        if delegate_temp is not None and current_temp is not None:
+            try:
+                raw = float(delegate_temp) - float(current_temp)
+            except (TypeError, ValueError):
+                raw = None
+            if raw is not None and abs(raw) <= CALIB_BAND_DEG:
+                prev = self._delegate_deviations.get(entity_id)
+                dev = raw if prev is None else (1 - DEVIATION_EMA_ALPHA) * prev + DEVIATION_EMA_ALPHA * raw
+                self._delegate_deviations[entity_id] = round(dev, 2)
+        deviation = self._delegate_deviations.get(entity_id, 0.0)
         compensated = target_temp + deviation
         min_t = attrs.get("min_temp")
         max_t = attrs.get("max_temp")
