@@ -174,8 +174,15 @@ class TuyaClimateHandle:
     def set_temperature(self, value: float) -> None:
         if not self._tset:
             return
+        # El DP es entero (raw = value * 10**scale). Hay que REDONDEAR siempre
+        # a esa resolucion: en escala 0 (div==1) la rama vieja mandaba el float
+        # crudo (p.ej. 22.58) a un DP de grados enteros y el equipo lo truncaba
+        # a 22 -> se perdia TODA la compensacion de offset de sonda por debajo
+        # de 1 grado entero (bug real: Climate calculaba 22.58 para que la
+        # habitacion llegara a 22, el radiador se quedaba en 22, su sonda lo
+        # daba por alcanzado y no calentaba). round() aqui manda 23.
         div = _scale_div(self._codes, self._tset)
-        self._ctl.set_dp(self._tset, round(value * div) if div != 1 else value)
+        self._ctl.set_dp(self._tset, round(value * div))
 
     def set_hvac_mode(self, hvac_mode: str) -> None:
         if self._sw is not None:
