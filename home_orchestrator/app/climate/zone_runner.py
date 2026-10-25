@@ -1840,14 +1840,14 @@ class ZoneRunner:
         if mode not in ("heat", "cool") or mode not in supported:
             return "idle"
 
-        # Temperatura que lee el PROPIO equipo (no el sensor de zona): es la que el
-        # equipo usa para su demanda, asi que es la que hay que neutralizar.
-        delegate_temp = _safe_float(attrs.get("current_temperature"))
-        if delegate_temp is None:
-            return "idle"
-        step = 0.5
-        parked = (math.floor(delegate_temp / step) if mode == "heat"
-                  else math.ceil(delegate_temp / step)) * step
+        # 'A tope', SIN fiarnos de la sonda interna del equipo (se contamina con su
+        # propia operacion): aparcar la consigna en el LIMITE de NUESTRO termostato
+        # de zona -> calor al minimo de zona, frio al maximo de zona. Asi, lea lo
+        # que lea su sonda, NUNCA genera demanda. El handle recorta al rango real
+        # del equipo si el limite de zona cae fuera (ver TuyaClimateHandle.set_temperature).
+        zone_min = float(self.zone.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP))
+        zone_max = float(self.zone.get(CONF_MAX_TEMP, DEFAULT_MAX_TEMP))
+        parked = zone_min if mode == "heat" else zone_max
 
         if simulate:
             return "idle"
