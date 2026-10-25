@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import math
+import re
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
@@ -165,6 +166,16 @@ _PASSTHROUGH_MODES = {"dry": "dry", "fan_only": "fan_only"}  # hvac_mode -> acti
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Un entity_id de HA es `dominio.objeto`. Los delegados pueden venir como refs de
+# puente internas (`tuya:<id>`, etc.), que NO son entidades de HA y que HA rechaza
+# en `subscribe_entities`. Solo lo que casa esto puede ir al WebSocket de HA.
+_HA_ENTITY_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+
+
+def _is_ha_entity_id(value) -> bool:
+    return isinstance(value, str) and bool(_HA_ENTITY_RE.match(value))
 
 
 # BUG REAL, confirmado por fuzzing adversarial: `_read_current_temp` solo
@@ -541,7 +552,15 @@ class ZoneRunner:
 
     def watched_entities(self) -> set[str]:
         """Sensores que este runner necesita escuchar por el WebSocket
-        reactivo — ver ha_websocket.py set_watched_entities."""
+        reactivo — ver ha_websocket.py set_watched_entities.
+
+        SOLO entidades reales de HA (`dominio.objeto`). Los delegados pueden ser
+        refs de puente internas (`tuya:<id>`, etc.) que NO son entidades de HA:
+        su estado se lee por el propio puente, no por el WebSocket. Si se cuelan
+        aqui, HA RECHAZA la llamada `subscribe_entities` entera por `invalid_format`
+        y el runner se queda SIN eventos -> no dispara el ciclo reactivo y deja de
+        conducir los equipos (bug real: zonas cuyo delegado es `tuya:...` no
+        aparcaban ni calentaban tras un reinicio)."""
         watched = {e for e in [
             self.zone.get(CONF_CURRENT_TEMP_SENSOR),
             self.zone.get(CONF_OUTDOOR_TEMP_SENSOR),
@@ -552,7 +571,7 @@ class ZoneRunner:
             *(self.zone.get(CONF_HUMIDIFIER_ENTITIES) or []),
             *(c.get("sensor") for c in (self.zone.get(CONF_ACTUATOR_POWER) or {}).values() if c.get("sensor")),
             grid_signal.GRID_SIGNAL_ENTITY_ID,
-        ] if e}
+        ] if e and _is_ha_entity_id(e)}
         return watched
 
     # ---------------------------------------------------- estado extra ----
