@@ -167,6 +167,24 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _fit_to_delegate(attrs: dict, value: float) -> float:
+    """Ajusta una consigna al rango y paso que DECLARA el propio delegado
+    (min_temp/max_temp/target_temp_step, igual en un climate.* de HA que en un
+    handle de puente). Unico punto de recorte para idle y para activo, para que
+    lo que se compara con la consigna actual sea lo que el equipo de verdad
+    puede tener."""
+    step = _safe_float(attrs.get("target_temp_step"))
+    if step and step > 0:
+        value = round(value / step) * step
+    min_t = _safe_float(attrs.get("min_temp"))
+    max_t = _safe_float(attrs.get("max_temp"))
+    if min_t is not None:
+        value = max(value, min_t)
+    if max_t is not None:
+        value = min(value, max_t)
+    return value
+
+
 # BUG REAL, confirmado por fuzzing adversarial: `_read_current_temp` solo
 # excluia "unknown"/"unavailable"/None, sin ningun filtro de rango fisico
 # -- una lectura parseable pero disparatada (-50 C, 200 C: glitch de
@@ -1001,6 +1019,11 @@ class ZoneRunner:
                     # ofrece (no es un fallo). Sin acoplar a ninguna marca.
                     "swing_mode": getattr(handle, "swing_mode", None),
                     "swing_modes": getattr(handle, "swing_modes", []),
+                    # Rango/paso de consigna que declara el propio equipo, igual
+                    # que los expone un climate.* de HA (ver _fit_to_delegate).
+                    "min_temp": getattr(handle, "min_temp", None),
+                    "max_temp": getattr(handle, "max_temp", None),
+                    "target_temp_step": getattr(handle, "target_temp_step", None),
                 },
             }
         try:
@@ -1660,8 +1683,6 @@ class ZoneRunner:
                     real_cool = True
 
         for entity_id in self.zone.get(CONF_CLIMATE_ENTITIES) or []:
-            _LOGGER.info("[diag %s] entity=%s action=%s idle_keep=%s hvac_mode=%s force_off=%s",
-                         self.zone.get("name"), entity_id, action, climate_idle_keep, self.hvac_mode, force_off)
             if climate_idle_keep:
                 result = self._drive_climate_idle(entity_id, current_temp, deadband, simulate, safety_emergency=safety_emergency)
             else:
@@ -1838,14 +1859,12 @@ class ZoneRunner:
         supported = list(attrs.get("hvac_modes") or [])
 
         if not simulate and self._respect_delegate_override(entity_id, state, safety_emergency):
-            _LOGGER.info("[diag-idle %s] %s: BAIL override", self.zone.get("name"), entity_id)
             return "idle"
 
         cur_state = (state or {}).get("state")
         # Apagado manual del usuario: no lo encendemos nosotros (nunca encendemos/
         # apagamos para idle). Sin estado utilizable, tampoco tocamos.
         if cur_state in (None, "off", "unavailable", "unknown"):
-            _LOGGER.info("[diag-idle %s] %s: BAIL cur_state=%r state_none=%s", self.zone.get("name"), entity_id, cur_state, state is None)
             return "idle"
 
         # Modo termico en el que aparcar: el ultimo activo (heat/cool); si no hay,
@@ -1853,7 +1872,6 @@ class ZoneRunner:
         last = self._delegate_last_active.get(entity_id)
         mode = last[0] if last else (cur_state if cur_state in ("heat", "cool") else None)
         if mode not in ("heat", "cool") or mode not in supported:
-            _LOGGER.info("[diag-idle %s] %s: BAIL mode=%r supported=%s last_active=%s", self.zone.get("name"), entity_id, mode, supported, last)
             return "idle"
 
         # 'A tope', SIN fiarnos de la sonda interna del equipo (se contamina con su
@@ -1863,7 +1881,11 @@ class ZoneRunner:
         # del equipo si el limite de zona cae fuera (ver TuyaClimateHandle.set_temperature).
         zone_min = float(self.zone.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP))
         zone_max = float(self.zone.get(CONF_MAX_TEMP, DEFAULT_MAX_TEMP))
-        parked = zone_min if mode == "heat" else zone_max
+        # Recortado al rango/paso que declara el propio delegado: un AC con minimo
+        # 16 rechaza un 15 entero y se queda con la consigna anterior (bug real:
+        # salon en idle clavado en 23). Con el valor ya ajustado, la comparacion de
+        # abajo tampoco reenvia en bucle algo que el equipo nunca puede aceptar.
+        parked = _fit_to_delegate(attrs, zone_min if mode == "heat" else zone_max)
 
         if simulate:
             return "idle"
@@ -1874,10 +1896,6 @@ class ZoneRunner:
             self._call_climate_service(entity_id, "set_hvac_mode", {"hvac_mode": mode})
             self._note_delegate_command(entity_id, now, hvac_mode=mode)
         current_target = _safe_float(attrs.get("temperature"))
-        _sa = self._delegate_send_allowed(entity_id, now)
-        _LOGGER.info("[diag-idle %s] %s: mode=%s parked=%s current_target=%s send_allowed=%s -> %s",
-                     self.zone.get("name"), entity_id, mode, parked, current_target, _sa,
-                     "SEND" if (current_target is None or abs(current_target - parked) > TEMP_SEND_TOLERANCE_DEG) and _sa else "noop")
         if current_target is None or abs(current_target - parked) > TEMP_SEND_TOLERANCE_DEG:
             if self._delegate_send_allowed(entity_id, now):
                 self._call_climate_service(entity_id, "set_temperature", {"temperature": parked})
@@ -1911,17 +1929,7 @@ class ZoneRunner:
                 dev = raw if prev is None else (1 - DEVIATION_EMA_ALPHA) * prev + DEVIATION_EMA_ALPHA * raw
                 self._delegate_deviations[entity_id] = round(dev, 2)
         deviation = self._delegate_deviations.get(entity_id, 0.0)
-        compensated = target_temp + deviation
-        min_t = attrs.get("min_temp")
-        max_t = attrs.get("max_temp")
-        try:
-            if min_t is not None:
-                compensated = max(compensated, float(min_t))
-            if max_t is not None:
-                compensated = min(compensated, float(max_t))
-        except (TypeError, ValueError):
-            pass
-        return compensated
+        return _fit_to_delegate(attrs, target_temp + deviation)
 
     def _tpi_desired_on(self, side: str, on_percent: float, cycle_minutes: float, now: datetime) -> bool:
         cycle_seconds = max(60.0, cycle_minutes * 60)

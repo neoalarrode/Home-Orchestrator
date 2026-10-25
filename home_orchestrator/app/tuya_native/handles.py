@@ -81,6 +81,12 @@ def _scale_div(codes: dict, code: str | None) -> float:
         return 1.0
 
 
+def _value_spec(codes: dict, code: str | None) -> dict:
+    if not code:
+        return {}
+    return (codes.get(code) or {}).get("spec") or {}
+
+
 def _enum_range(codes: dict, code: str | None) -> list:
     if not code:
         return []
@@ -126,6 +132,29 @@ class TuyaClimateHandle:
             return None
         raw = self._state().get(self._tset)
         return raw / _scale_div(self._codes, self._tset) if raw is not None else None
+
+    # Rango y paso de consigna que DECLARA el propio termostato (spec del DP de
+    # consigna), en grados reales. Climate los usa igual que el min_temp/max_temp/
+    # target_temp_step de un climate.* de HA: sin ellos aparcaba en el minimo de
+    # zona (15) en un AC cuyo minimo es 16 y el equipo rechazaba la orden entera.
+    def _tset_bound(self, key: str) -> float | None:
+        raw = _value_spec(self._codes, self._tset).get(key)
+        try:
+            return float(raw) / _scale_div(self._codes, self._tset) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @property
+    def min_temp(self) -> float | None:
+        return self._tset_bound("min")
+
+    @property
+    def max_temp(self) -> float | None:
+        return self._tset_bound("max")
+
+    @property
+    def target_temp_step(self) -> float | None:
+        return self._tset_bound("step")
 
     @property
     def hvac_mode(self) -> str:
@@ -182,7 +211,21 @@ class TuyaClimateHandle:
         # habitacion llegara a 22, el radiador se quedaba en 22, su sonda lo
         # daba por alcanzado y no calentaba). round() aqui manda 23.
         div = _scale_div(self._codes, self._tset)
-        self._ctl.set_dp(self._tset, round(value * div))
+        raw = round(value * div)
+        # Nunca fuera del rango/paso que declara el equipo: un valor fuera hace que
+        # el AC rechace la orden entera y se quede con la consigna anterior.
+        spec = _value_spec(self._codes, self._tset)
+        try:
+            step = int(spec.get("step") or 1)
+            if step > 1:
+                raw = round(raw / step) * step
+            if spec.get("min") is not None:
+                raw = max(raw, int(spec["min"]))
+            if spec.get("max") is not None:
+                raw = min(raw, int(spec["max"]))
+        except (TypeError, ValueError):
+            pass
+        self._ctl.set_dp(self._tset, raw)
 
     def set_hvac_mode(self, hvac_mode: str) -> None:
         if self._sw is not None:

@@ -72,5 +72,34 @@ class Setpoint(unittest.TestCase):
         self.assertEqual(ctl.sets, [("temp_set", 226)])
 
 
+def _kt_real_codes():
+    # Spec real del AirClima del salon (nube Tuya): 16.0-88.0, paso 0.5, escala 1.
+    return {
+        "switch": {"spec": {}},
+        "mode": {"spec": {"range": ["cold", "hot", "wet", "wind", "auto"]}},
+        "temp_set": {"spec": {"scale": 1, "min": 160, "max": 880, "step": 5}},
+        "temp_current": {"spec": {"scale": 0}},
+    }
+
+
+class RangeAndStep(unittest.TestCase):
+    def test_exposes_declared_range_and_step(self):
+        codes = _kt_real_codes()
+        h = TuyaClimateHandle(_Ctl({"switch": True, "temp_set": 230}, codes), codes)
+        self.assertEqual((h.min_temp, h.max_temp, h.target_temp_step), (16.0, 88.0, 0.5))
+
+    def test_below_min_is_clamped_not_rejected(self):
+        codes = _kt_real_codes()
+        ctl = _Ctl({"switch": True, "temp_set": 230}, codes)
+        TuyaClimateHandle(ctl, codes).set_temperature(15.0)
+        self.assertEqual(ctl.sets, [("temp_set", 160)])  # 16.0, no 150
+
+    def test_snaps_to_step(self):
+        codes = _kt_real_codes()
+        ctl = _Ctl({"switch": True, "temp_set": 230}, codes)
+        TuyaClimateHandle(ctl, codes).set_temperature(22.58)
+        self.assertEqual(ctl.sets, [("temp_set", 225)])  # 22.5
+
+
 if __name__ == "__main__":
     unittest.main()

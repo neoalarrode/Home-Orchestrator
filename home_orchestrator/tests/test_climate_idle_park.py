@@ -23,9 +23,9 @@ class _Stub:
     def _note_delegate_command(self, *a, **k): pass
 
 
-def _st(mode, cur, target, modes=("off","heat","cool","dry","fan_only")):
+def _st(mode, cur, target, modes=("off","heat","cool","dry","fan_only"), **extra):
     return {"state": mode, "attributes": {"hvac_modes": list(modes),
-            "current_temperature": cur, "temperature": target}}
+            "current_temperature": cur, "temperature": target, **extra}}
 
 
 class IdlePark(unittest.TestCase):
@@ -62,6 +62,20 @@ class IdlePark(unittest.TestCase):
         s = _Stub(_st("cool", 23.2, 21.0), last_active={"e": ("cool", 21.0)}, override=True)
         s._drive_climate_idle("e", 23.0, 0.3, False)
         self.assertEqual(s.calls, [])
+
+    def test_park_respects_delegate_declared_minimum(self):
+        # Zona con minimo 15, AC con minimo 16: aparcar en 16 (un 15 lo rechaza).
+        s = _Stub(_st("heat", 28.0, 23.0, min_temp=16.0, max_temp=88.0, target_temp_step=0.5),
+                  last_active={"e": ("heat", 23.0)}, zmin=15.0, zmax=30.0)
+        s._drive_climate_idle("e", 23.4, 0.3, False)
+        temps = [d["temperature"] for sv, d in s.calls if sv == "set_temperature"]
+        self.assertEqual(temps, [16.0])
+
+    def test_already_at_device_minimum_does_not_resend(self):
+        s = _Stub(_st("heat", 28.0, 16.0, min_temp=16.0, max_temp=88.0),
+                  last_active={"e": ("heat", 23.0)}, zmin=15.0, zmax=30.0)
+        s._drive_climate_idle("e", 23.4, 0.3, False)
+        self.assertEqual([c for c in s.calls if c[0] == "set_temperature"], [])
 
 
 if __name__ == "__main__":
