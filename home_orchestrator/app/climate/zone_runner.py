@@ -139,6 +139,11 @@ DRY_HEAT_MARGIN_DEG = 0.5
 # de su consigna (URGENT_TEMP_DEVIATION_DEG), si no hay AC utilizable, o si tras
 # HEAT_BACKUP_AFTER_SECONDS calentando la zona no ha subido HEAT_BACKUP_MIN_RISE_DEG.
 HEAT_BACKUP_AFTER_SECONDS = 1800
+# Humidificador gobernado por NUESTRO sensor de humedad de zona, con histeresis:
+# se enciende por debajo de objetivo - HUMIDIFY_HYSTERESIS_PCT y se apaga al
+# llegar al objetivo. Antes se dejaba siempre encendido fiandose de su propio
+# higrostato (31-oct: encendido con la zona al 67% y objetivo 45%).
+HUMIDIFY_HYSTERESIS_PCT = 3.0
 HEAT_BACKUP_MIN_RISE_DEG = 0.2
 DRY_FORCE_HUMIDITY_PCT = 70.0
 HUMIDITY_SEND_TOLERANCE_PCT = 1
@@ -464,6 +469,7 @@ class ZoneRunner:
         # Tramo de calefaccion en curso (inicio, temperatura inicial, apoyo activo)
         # para decidir cuando entra el radiador de reserva (ver _heat_reserve).
         self._heat_run: dict | None = None
+        self._humidifying: bool = False
         self._last_thermal_mode: str | None = None
         self._delegate_last_active: dict[str, tuple[str, float]] = {}
         # Debounce + deteccion de cambio manual del delegado -- ver
@@ -1138,6 +1144,19 @@ class ZoneRunner:
             known.append(state.get("state") in ("on", "home"))
         return any(known) if known else None
 
+    def _humidify_wanted(self) -> bool:
+        """Si hay que humidificar segun NUESTRO sensor de zona (ver
+        HUMIDIFY_HYSTERESIS_PCT). Sin sensor de humedad utilizable se mantiene el
+        comportamiento de antes: encendido y que decida su higrostato."""
+        humidity = self._read_humidity_now()
+        if humidity is None:
+            return True
+        if humidity >= self.target_humidity:
+            self._humidifying = False
+        elif humidity < self.target_humidity - HUMIDIFY_HYSTERESIS_PCT:
+            self._humidifying = True
+        return self._humidifying
+
     def _read_humidity_now(self) -> float | None:
         sensor = self.zone.get(CONF_HUMIDITY_SENSOR)
         if not sensor:
@@ -1583,7 +1602,11 @@ class ZoneRunner:
                 f"posible ventana abierta (pendiente {self._window_detector.slope_deg_h:.1f}°C/h en contra "
                 "de lo pedido, sin sensor dedicado)"
             )
-            can_fan = "fan_only" in self._last_full_capability and (
+            # Ventilar solo con ventiladores puros: en un AC/bomba de calor el ventilador
+            # interior gasta 60-500 W, no mete aire de fuera (un split recircula) y no
+            # aporta nada con la ventana abierta -- se aparca (ver rama de abajo).
+            is_ac = "cool" in self._last_full_capability or "dry" in self._last_full_capability
+            can_fan = "fan_only" in self._last_full_capability and not is_ac and (
                 self.hvac_mode == "fan_only" or self.hvac_mode == self._default_hvac_mode(self._last_full_capability)
             )
             if can_fan:
@@ -1612,8 +1635,10 @@ class ZoneRunner:
             else:
                 action = "idle"
                 heat_target, cool_target = preset_heat, preset_cool
+                # En pausa = APARCADO (cada equipo en su modo, consigna al limite de
+                # zona: no calienta ni enfria), no apagado: misma pausa, sin el
+                # encendido/apagado y sin dejar nada que restaurar al cerrar.
                 self.reason = f"{window_reason}: en pausa"
-                force_off = True
         elif self.hvac_mode in _PASSTHROUGH_MODES:
             action = _PASSTHROUGH_MODES[self.hvac_mode]
             heat_target = cool_target = None
@@ -1728,7 +1753,7 @@ class ZoneRunner:
         if self.hvac_action == "fan" and self.hvac_mode in ("heat", "cool", "heat_cool"):
             self.hvac_action = "idle"
 
-        humidify_active = self.hvac_mode != "off" and not force_off
+        humidify_active = self.hvac_mode != "off" and not force_off and real_action != "dry" and self._humidify_wanted()
         self._drive_humidifiers(humidify_active)
         # El extractor ya se evaluo mas arriba, ANTES incluso de saber si
         # hay temperatura disponible -- ver el comentario junto a esa
