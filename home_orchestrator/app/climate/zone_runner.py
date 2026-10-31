@@ -124,6 +124,13 @@ ACTIVATION_MIN_ZONE_MOVE_DEG = 0.1
 ACTIVATION_MIN_DEVICE_MOVE_DEG = 0.3
 ACTIVATION_MARGIN_STEP_DEG = 0.5
 ACTIVATION_MARGIN_MAX_DEG = 3.0
+# Con medidor de potencia propio la verdad es si CONSUME: por encima de esto esta
+# actuando; si mandado a calentar/enfriar no lo supera en ningun momento durante
+# ACTIVATION_POWER_PROBE_SECONDS, no arranca (no confunde el ciclado normal de su
+# termostato, basta con que consuma un rato dentro de la ventana).
+ACTIVATION_FIRING_W = 50.0
+ACTIVATION_POWER_PROBE_SECONDS = 600
+RUNNING_POWER_EMA_ALPHA = 0.2
 # Una puerta/ventana solo pausa la climatizacion si lleva abierta al menos esto:
 # abrir y cerrar al pasar no debe tocar los equipos (la puerta del patio se abrio
 # y cerro 4 veces en un minuto el 31-oct y dejo el AC del salon en ventilador).
@@ -459,6 +466,10 @@ class ZoneRunner:
         self._delegate_deviations: dict[str, float] = {}
         # Margen de arranque aprendido por delegado (persistido) y sonda en curso.
         self._delegate_activation_margin: dict[str, float] = {}
+        # Potencia EN MARCHA de cada actuador con medidor (EMA de lecturas >=
+        # ACTIVATION_FIRING_W), persistida: la lectura en vivo de un equipo parado
+        # (~1 W) no sirve como "lo que gasta la zona".
+        self._running_power: dict[str, float] = {}
         self._activation_probe: dict[str, dict] = {}
         # Modo de equipo impuesto por la zona y desde cuando (ver _apply_mode_dwell).
         self._mode_hold: tuple[str, datetime] | None = None
@@ -470,6 +481,10 @@ class ZoneRunner:
         # para decidir cuando entra el radiador de reserva (ver _heat_reserve).
         self._heat_run: dict | None = None
         self._humidifying: bool = False
+        # Idle MODULANDO de las bombas de calor (ver _drive_climate_idle): por
+        # delegado, si esta parado por haberse pasado de la consigna.
+        self._hold_overshoot: dict[str, bool] = {}
+        self._maintain_ok: bool = False
         self._last_thermal_mode: str | None = None
         self._delegate_last_active: dict[str, tuple[str, float]] = {}
         # Debounce + deteccion de cambio manual del delegado -- ver
@@ -586,11 +601,17 @@ class ZoneRunner:
         if isinstance(saved_log, list):
             for entry in saved_log:
                 if (isinstance(entry, (list, tuple)) and len(entry) == 2
-                        and isinstance(entry[0], (int, float)) and entry[1] in ("heat", "cool", "off")):
+                        and isinstance(entry[0], (int, float)) and entry[1] in ("heat", "cool", "off", "hold")):
                     self._action_log.append((float(entry[0]), entry[1]))
 
         # Margen de arranque aprendido por delegado: sin persistirlo, cada
         # reinicio volveria a dejar un radiador sin arrancar hasta re-aprenderlo.
+        saved_running = state.get("running_power")
+        if isinstance(saved_running, dict):
+            for entity_id, watts in saved_running.items():
+                value = _safe_float(watts)
+                if isinstance(entity_id, str) and value is not None and value > 0:
+                    self._running_power[entity_id] = value
         saved_margins = state.get("activation_margins")
         if isinstance(saved_margins, dict):
             for entity_id, margin in saved_margins.items():
@@ -614,6 +635,7 @@ class ZoneRunner:
         return {
             "action_log": [[ts, act] for ts, act in self._action_log],
             "activation_margins": dict(self._delegate_activation_margin),
+            "running_power": dict(self._running_power),
             "hvac_mode": self.hvac_mode,
             "preset_mode": self._preset_mode,
             "manual_heat": self._manual_heat,
@@ -1171,6 +1193,46 @@ class ZoneRunner:
             return None
         return _safe_float(state.get("state"))
 
+    def _side_target(self, mode: str) -> float | None:
+        """Consigna de la zona para el lado `mode` (la que se reporta a HA)."""
+        if getattr(self, "hvac_mode", None) == "heat_cool":
+            return getattr(self, "target_temperature_low" if mode == "heat" else "target_temperature_high", None)
+        return getattr(self, "target_temperature", None)
+
+    def _maintain_heat_pump(self, entity_id: str, state: dict | None, attrs: dict, mode: str,
+                            current_temp: float | None, deadband: float, cur_state: str | None) -> bool:
+        """Idle MODULANDO de una bomba de calor (decision del usuario, 31-oct):
+        con la zona en banda, en vez de aparcarla al minimo/maximo (el compresor
+        para y vuelve a arrancar en cada ciclo), se la deja en su modo con la
+        consigna de la ZONA compensada con la desviacion estable de su sonda, para
+        que el inverter module al minimo y sostenga la temperatura -- mas
+        eficiente que arrancar y parar, y mas estable. Si la zona se pasa de la
+        consigna (+deadband en calor, -deadband en frio) se aparca como siempre, y
+        se vuelve a mantener cuando la zona regresa a la consigna (histeresis).
+        Devuelve False si toca aparcar."""
+        target = self._side_target(mode)
+        if target is None or current_temp is None:
+            return False
+        heating = mode == "heat"
+        overshoot = current_temp >= target + deadband if heating else current_temp <= target - deadband
+        back = current_temp <= target if heating else current_temp >= target
+        stopped = self._hold_overshoot.get(entity_id, False)
+        stopped = True if overshoot else (False if back else stopped)
+        self._hold_overshoot[entity_id] = stopped
+        if stopped:
+            return False
+        now = _utcnow()
+        if cur_state != mode and self._delegate_send_allowed(entity_id, now):
+            self._send_delegate_once(entity_id, "hvac_mode", mode, "set_hvac_mode", {"hvac_mode": mode}, now)
+        setpoint = self._compensate_delegate_target(entity_id, state, target, current_temp)
+        current_sp = _safe_float(attrs.get("temperature"))
+        if current_sp is None or abs(current_sp - setpoint) > TEMP_SEND_TOLERANCE_DEG:
+            if self._delegate_send_allowed(entity_id, now):
+                self._send_delegate_once(entity_id, "temperature", setpoint, "set_temperature",
+                                         {"temperature": setpoint}, now)
+        self._drive_delegate_fan_mode(entity_id, state, urgent=False)
+        return True
+
     def _heat_reserve(self, action: str, current_temp: float | None, urgent: bool, safety_emergency: bool) -> set[str]:
         """Delegados resistivos (solo calor) que quedan EN RESERVA mientras la
         zona calienta, porque hay una bomba de calor (admite frio) que lo hace
@@ -1413,20 +1475,46 @@ class ZoneRunner:
             any_known = True
         return (total if any_known else None), breakdown
 
+    def _measured_power_w(self, entity_id: str) -> float | None:
+        """Lectura EN VIVO del medidor declarado para este actuador, o None."""
+        sensor = ((self.zone.get(CONF_ACTUATOR_POWER) or {}).get(entity_id) or {}).get("sensor")
+        if not sensor:
+            return None
+        state = self._get_state(sensor)
+        if state is None or state.get("state") in ("unknown", "unavailable", None):
+            return None
+        return _safe_float(state.get("state"))
+
     def _zone_estimated_power_w(self) -> float | None:
-        total = 0.0
-        any_known = False
+        """Lo que gasta la zona CUANDO ACTUA (para comparar con el excedente
+        solar). Con medidor: su potencia en marcha aprendida, no la lectura en
+        vivo (un equipo parado marca ~1 W). Si algun actuador no se conoce, la
+        potencia de zona aprendida de sus arranques (refleja la zona tal como
+        funciona de verdad)."""
+        total, unknown = 0.0, False
+        actuator_power = self.zone.get(CONF_ACTUATOR_POWER) or {}
         for entity_id in self._climate_actuators():
+            if (actuator_power.get(entity_id) or {}).get("sensor"):
+                live = self._measured_power_w(entity_id)
+                if live is not None and live >= ACTIVATION_FIRING_W:
+                    prev = self._running_power.get(entity_id)
+                    self._running_power[entity_id] = round(
+                        live if prev is None else (1 - RUNNING_POWER_EMA_ALPHA) * prev + RUNNING_POWER_EMA_ALPHA * live, 0)
+                running = self._running_power.get(entity_id)
+                if running is None:
+                    unknown = True
+                else:
+                    total += running
+                continue
             watts, _source = self._actuator_power_w(entity_id)
             if watts is None:
-                continue
-            total += watts
-            any_known = True
-        if any_known:
-            return total
-        if self._zone_power.get("reliable") and self._zone_power.get("learned_power_w"):
-            return float(self._zone_power["learned_power_w"])
-        return None
+                unknown = True
+            else:
+                total += watts
+        zone_learned = self._zone_power.get("learned_power_w") if self._zone_power.get("reliable") else None
+        if unknown and zone_learned:
+            return float(zone_learned)
+        return total if total > 0 else (float(zone_learned) if zone_learned else None)
 
     def _preset_value(self, preset_name: str, side: str) -> float | None:
         """Consigna del preset — a diferencia del original (entidad
@@ -1618,6 +1706,10 @@ class ZoneRunner:
         # control, que es el caso normal.
         reported_targets: tuple[float | None, float | None] | None = None
 
+        # Idle modulando (bombas de calor) SOLO cuando la zona esta en banda por
+        # decision normal: ni apagada, ni con la ventana abierta, ni en dry/ventilar
+        # fijado a mano (ver _drive_climate_idle).
+        self._maintain_ok = False
         if self.hvac_mode == "off":
             action = "idle"
             heat_target, cool_target = preset_heat, preset_cool
@@ -1725,6 +1817,7 @@ class ZoneRunner:
                     action = smart_action
                     self.reason += f" — {smart_reason}"
             action = self._apply_mode_dwell(action, safety_emergency)
+            self._maintain_ok = True
 
         if self._sensor_stale:
             self.reason += " — aviso: sensor externo sin lectura nueva, usando la última suavizada"
@@ -1760,7 +1853,7 @@ class ZoneRunner:
         # Registro de accion propia para el aprendizaje de inercia (ver _action_log /
         # thermal_model). Para el modelo solo importa si se estuvo CALENTANDO,
         # ENFRIANDO o ninguna (ventilar/secar/idle = "off", no condiciona pasivamente).
-        self._record_action("heat" if real_action == "heat" else "cool" if real_action == "cool" else "off")
+        self._record_action(real_action if real_action in ("heat", "cool", "hold") else "off")
         # Ventilar es un RESPALDO, no la accion de un termostato de temperatura.
         # Estando en un modo de temperatura (calor/frio/ambos) la zona puede
         # acabar ventilando -- porque hay una ventana abierta y el calor/frio
@@ -1876,7 +1969,7 @@ class ZoneRunner:
         safety_emergency: bool = False,
     ) -> str:
         simulate = bool(self.zone.get(CONF_SIMULATE, True))
-        real_heat = real_cool = False
+        real_heat = real_cool = real_hold = False
         real_other: str | None = None
         # `or 20.0` trataba una lectura real de 0.0C como "sin dato" y la
         # sustituia por 20.0 -- justo lo contrario de "fallar seguro con
@@ -1912,7 +2005,11 @@ class ZoneRunner:
         for entity_id in self.zone.get(CONF_CLIMATE_ENTITIES) or []:
             if climate_idle_keep or entity_id in reserve:
                 # En reserva = aparcado como en idle (calor al minimo): no calienta.
-                result = self._drive_climate_idle(entity_id, current_temp, deadband, simulate, safety_emergency=safety_emergency)
+                # En idle normal (zona en banda) las bombas de calor MODULAN.
+                result = self._drive_climate_idle(
+                    entity_id, current_temp, deadband, simulate, safety_emergency=safety_emergency,
+                    maintain=climate_idle_keep and entity_id not in reserve and self._maintain_ok,
+                )
             else:
                 result = self._drive_climate_actuator(
                     entity_id, action, target_temp, current_temp, simulate, urgent, safety_emergency=safety_emergency,
@@ -1923,6 +2020,8 @@ class ZoneRunner:
                 real_cool = True
             elif result in ("dry", "fan_only"):
                 real_other = result
+            elif result == "hold":
+                real_hold = True
 
         if real_heat:
             return "heat"
@@ -1930,6 +2029,9 @@ class ZoneRunner:
             return "cool"
         if real_other:
             return real_other
+        if real_hold:
+            self.reason += " — bomba de calor modulando para sostener la consigna"
+            return "hold"
         return "idle"
 
     def _drive_climate_actuator(
@@ -2122,6 +2224,7 @@ class ZoneRunner:
 
     def _drive_climate_idle(
         self, entity_id: str, current_temp: float | None, deadband: float, simulate: bool, safety_emergency: bool = False,
+        maintain: bool = False,
     ) -> str:
         # IDLE de un equipo de climatizacion: NUNCA se apaga ni se cambia de modo
         # para quedarse quieto (todo equipo se autorregula). Se le deja en SU modo
@@ -2189,6 +2292,10 @@ class ZoneRunner:
 
         if simulate:
             return "idle"
+        if maintain and "cool" in supported and "heat" in supported:
+            held = self._maintain_heat_pump(entity_id, state, attrs, mode, current_temp, deadband, cur_state)
+            if held:
+                return "hold"
         now = _utcnow()
         # Mantener el modo termico (solo se envia si no esta ya en el: p.ej. al
         # volver de 'dry'); NUNCA se apaga.
@@ -2217,6 +2324,30 @@ class ZoneRunner:
         Quien decide cuando parar sigue siendo Climate con el sensor de zona,
         asi que el margen solo hace que el equipo arranque, no que se pase."""
         margin = self._delegate_activation_margin.get(entity_id, 0.0)
+        live_w = self._measured_power_w(entity_id) if hasattr(self, "_measured_power_w") else None
+        if live_w is not None:
+            # Con medidor: la verdad es si CONSUME (ver ACTIVATION_FIRING_W).
+            probe = self._activation_probe.get(entity_id)
+            if probe is None or probe["action"] != action or probe.get("kind") != "power":
+                self._activation_probe[entity_id] = {"action": action, "since": now, "fired": False, "kind": "power"}
+                probe = self._activation_probe[entity_id]
+            if live_w >= ACTIVATION_FIRING_W:
+                probe["fired"] = True
+            if (now - probe["since"]).total_seconds() < ACTIVATION_POWER_PROBE_SECONDS:
+                return margin
+            if not probe["fired"]:
+                step = max(ACTIVATION_MARGIN_STEP_DEG, _safe_float(attrs.get("target_temp_step")) or 0.0)
+                new_margin = min(ACTIVATION_MARGIN_MAX_DEG, margin + step)
+                if new_margin != margin:
+                    _LOGGER.info(
+                        "%s: %s mandado a %s %d min sin consumir (<%.0f W) -- margen de arranque %.1f -> %.1fC",
+                        self.zone.get("name"), entity_id, action, ACTIVATION_POWER_PROBE_SECONDS // 60,
+                        ACTIVATION_FIRING_W, margin, new_margin,
+                    )
+                    self._delegate_activation_margin[entity_id] = new_margin
+                    margin = new_margin
+            self._activation_probe[entity_id] = {"action": action, "since": now, "fired": False, "kind": "power"}
+            return margin
         device_temp = _safe_float(attrs.get("current_temperature"))
         if zone_temp is None or device_temp is None:
             self._activation_probe.pop(entity_id, None)
