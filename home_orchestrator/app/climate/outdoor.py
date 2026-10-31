@@ -35,6 +35,11 @@ MIN_SAMPLES_PER_HOUR = 3
 PLAUSIBLE_OUTDOOR_TEMP_RANGE_C = (-40.0, 55.0)
 
 
+# Diferencia maxima entre el sensor exterior propio y la previsión de la hora
+# actual para fiarse del sensor (ver get_outdoor_forecast).
+OUTDOOR_SENSOR_MAX_DEVIATION_DEG = 5.0
+
+
 def _plausible_temp(value: float | None) -> float | None:
     if value is None or not math.isfinite(value):
         return None
@@ -128,8 +133,19 @@ def get_outdoor_forecast(ws, zone: dict, weather_entity: str, horizon_hours: int
                     corrected = _plausible_temp(float(state["state"]))
                 except (ValueError, TypeError, KeyError):
                     corrected = None
+                # El sensor propio corrige la hora actual de la previsión... salvo
+                # que discrepe tanto que lo raro sea el sensor: uno al sol marcaba
+                # 35.2 C con la previsión en 21-23 (31-oct), y ese dato falso bajaba
+                # la consigna de calor por "modulación" y hacía entrar y salir la
+                # anticipación, con el compresor cambiando de modo detrás.
                 if corrected is not None:
-                    forecast[0] = corrected
+                    if abs(corrected - forecast[0]) <= OUTDOOR_SENSOR_MAX_DEVIATION_DEG:
+                        forecast[0] = corrected
+                    else:
+                        _LOGGER.debug(
+                            "Sensor exterior %s = %.1f C descartado: se aparta %.1f C de la previsión (%.1f C)",
+                            outdoor_sensor, corrected, abs(corrected - forecast[0]), forecast[0],
+                        )
         return forecast
 
     if outdoor_sensor:

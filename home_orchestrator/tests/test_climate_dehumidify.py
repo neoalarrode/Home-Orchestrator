@@ -21,10 +21,26 @@ class _Stub:
 
 
 class SmartIdle(unittest.TestCase):
-    def test_ac_dries_when_humid(self):
+    def test_ac_dries_when_humid_with_heat_margin(self):
         s = _Stub({"cool", "dry", "fan_only"}, 50, 60.0)
-        action, reason = s._smart_idle_action(18.0, 21.0, 0.3)  # temp baja: ya no bloquea
+        action, reason = s._smart_idle_action(21.6, 21.0, 0.3)  # 0.6 por encima del calor
         self.assertEqual(action, "dry"); self.assertIn("60", reason)
+
+    def test_no_dry_on_the_edge_of_heating(self):
+        # Eficiencia (31-oct): secar enfria y obligaria a calentar -> no se seca.
+        s = _Stub({"cool", "dry", "fan_only"}, 50, 61.0)
+        action, reason = s._smart_idle_action(20.7, 21.0, 0.3)
+        self.assertEqual(action, "idle"); self.assertIn("no se deshumidifica", reason)
+
+    def test_very_humid_dries_anyway(self):
+        s = _Stub({"cool", "dry", "fan_only"}, 50, 72.0)
+        action, _ = s._smart_idle_action(20.7, 21.0, 0.3)
+        self.assertEqual(action, "dry")
+
+    def test_cooling_only_zone_dries_without_heat_margin(self):
+        s = _Stub({"cool", "dry", "fan_only"}, 50, 60.0)
+        action, _ = s._smart_idle_action(24.0, None, 0.3)
+        self.assertEqual(action, "dry")
 
     def test_ac_in_band_not_humid_goes_idle_not_fan(self):
         # AC (soporta dry/cool): en banda y seco -> idle al ralentí, NO ventilar

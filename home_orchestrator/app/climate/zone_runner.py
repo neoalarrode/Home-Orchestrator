@@ -128,6 +128,12 @@ ACTIVATION_MARGIN_MAX_DEG = 3.0
 # abrir y cerrar al pasar no debe tocar los equipos (la puerta del patio se abrio
 # y cerro 4 veces en un minuto el 31-oct y dejo el AC del salon en ventilador).
 DOOR_OPEN_MIN_SECONDS = 60
+# Deshumidificar con un AC es hacer frio: si la zona esta en el borde de pedir
+# calor, el dry la enfria, salta la calefaccion y se paga dos veces (dormitorio:
+# 58 cambios calor<->dry en 24 h). Solo se seca con este margen sobre la consigna
+# de calor... salvo humedad alta de verdad (riesgo de moho), que manda siempre.
+DRY_HEAT_MARGIN_DEG = 0.5
+DRY_FORCE_HUMIDITY_PCT = 70.0
 HUMIDITY_SEND_TOLERANCE_PCT = 1
 EQUIPMENT_FAILURE_DETECTION_MINUTES = 30
 EQUIPMENT_FAILURE_MIN_DELTA_DEG = 0.3
@@ -1175,15 +1181,24 @@ class ZoneRunner:
 
     def _smart_idle_action(self, current_temp: float | None, heat_target: float | None, deadband: float) -> tuple[str, str | None]:
         # Este metodo SOLO se llama cuando la accion seria 'idle' (la zona esta en
-        # banda, ni calentando ni enfriando). Por eso deshumidificar aqui cumple la
-        # regla del usuario: secar SIEMPRE que la zona este parada o fuese a ventilar,
-        # NUNCA mientras calienta/enfria (ese caso ni llega aqui). Antes habia un
-        # guard `heat_margin_ok` que, en la mitad baja de la banda de confort,
-        # prefería ventilar a secar; se retira para que la humedad mande en reposo.
+        # banda, ni calentando ni enfriando): se seca en reposo, NUNCA mientras
+        # calienta/enfria (ese caso ni llega aqui). Por eficiencia (decision del
+        # usuario, 31-oct) no se seca en el borde de pedir calor -- el dry enfria y
+        # obligaria a calentar --, salvo humedad >= DRY_FORCE_HUMIDITY_PCT.
         if "dry" in self._last_full_capability:
             humidity = self._read_humidity_now()
             threshold = float(self.zone.get(CONF_DRY_HUMIDITY_THRESHOLD, DEFAULT_DRY_HUMIDITY_THRESHOLD))
             if humidity is not None and humidity >= threshold:
+                near_heat = (
+                    heat_target is not None and current_temp is not None
+                    and current_temp < heat_target + max(DRY_HEAT_MARGIN_DEG, deadband)
+                )
+                if near_heat and humidity < DRY_FORCE_HUMIDITY_PCT:
+                    return "idle", (
+                        f"humedad {humidity:.0f}% ≥ {threshold:.0f}%, pero a menos de "
+                        f"{max(DRY_HEAT_MARGIN_DEG, deadband):.1f}°C de pedir calor: no se deshumidifica "
+                        "(secar enfriaría y obligaría a calentar)"
+                    )
                 return "dry", f"humedad {humidity:.0f}% ≥ {threshold:.0f}%: deshumidificando (en reposo/ventilando)"
         # Ventilar como respaldo del idle SOLO en equipos que NO son AC (un
         # ventilador puro, sin compresor). En un AC/bomba de calor con compresor
