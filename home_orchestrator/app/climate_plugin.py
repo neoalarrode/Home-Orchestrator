@@ -389,6 +389,21 @@ class ClimatePlugin(Plugin):
     def _on_entity_change(self, entity_id: str, new_state: dict) -> None:
         self._reactive.trigger()
 
+    def zone_action_starts(self, exclude_zone_id: str) -> list[float]:
+        """Instantes (epoch) en que las DEMAS zonas arrancaron a calentar/enfriar,
+        para que el aprendizaje de potencia de una zona descarte los arranques
+        que coinciden con el de otra (ver power_model.learn_zone_power)."""
+        starts: list[float] = []
+        for zone_id, runner in list(self._runners.items()):
+            if zone_id == exclude_zone_id:
+                continue
+            prev = "off"
+            for ts, act in list(getattr(runner, "_action_log", [])):
+                if act in ("heat", "cool") and prev not in ("heat", "cool"):
+                    starts.append(ts)
+                prev = act
+        return starts
+
     def _run_reactive_cycle(self) -> None:
         self._actuator_cycle_claims = {}
         for zone_id, runner in list(self._runners.items()):

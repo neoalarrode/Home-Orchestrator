@@ -493,6 +493,10 @@ class ZoneRunner:
         self._equipment_run: tuple[str, datetime, float] | None = None
         self._equipment_failure_suspected = False
         self._power_model: dict = {}
+        # Potencia de la ZONA aprendida de sus arranques + consumo de la casa
+        # (ver power_model.learn_zone_power): la unica forma de conocerla con
+        # delegados de puente (tuya:<id>), que no tienen historico en HA.
+        self._zone_power: dict = {}
         # Estado persistido que no se pudo aplicar todavia porque la capacidad
         # real de la zona aun no se conoce -- se reaplica en
         # `_reconcile_hvac_mode`. Ver el comentario extenso en `_restore`.
@@ -661,6 +665,7 @@ class ZoneRunner:
             "outdoor_forecast": [round(t, 1) for t in self._outdoor_forecast] if self._outdoor_forecast else [],
             "delegate_temperature_deviations": dict(self._delegate_deviations),
             "delegate_activation_margins": dict(self._delegate_activation_margin),
+            "zone_learned_power_w": self._zone_power.get("learned_power_w"),
             "sensor_stale": self._sensor_stale,
             "window_slope_deg_h": self._window_detector.slope_deg_h,
             "equipment_failure_suspected": self._equipment_failure_suspected,
@@ -1417,7 +1422,11 @@ class ZoneRunner:
                 continue
             total += watts
             any_known = True
-        return total if any_known else None
+        if any_known:
+            return total
+        if self._zone_power.get("reliable") and self._zone_power.get("learned_power_w"):
+            return float(self._zone_power["learned_power_w"])
+        return None
 
     def _preset_value(self, preset_name: str, side: str) -> float | None:
         """Consigna del preset — a diferencia del original (entidad
@@ -1445,10 +1454,18 @@ class ZoneRunner:
 
         home_power_sensor = self.zone.get(CONF_HOME_POWER_SENSOR, "") or grid_signal.read(self.ws).get("home_power_sensor") or ""
         actuator_power = self.zone.get(CONF_ACTUATOR_POWER) or {}
+        # Los delegados de puente no tienen historico propio en HA: por entidad no
+        # aprenderian nunca (y el modelo no se daria por asentado, recalculando
+        # dias de historico cada 10 min). Se aprenden a nivel de ZONA (abajo).
         entities_to_learn = [
             e for e in self._climate_actuators()
             if not actuator_power.get(e, {}).get("sensor") and not actuator_power.get(e, {}).get("estimated_w")
+            and not self._is_bridge_ref(e)
         ]
+        learn_zone = home_power_sensor and any(
+            self._is_bridge_ref(e) and not actuator_power.get(e, {}).get("estimated_w")
+            for e in self._climate_actuators()
+        )
 
         now_ts = _utcnow().timestamp()
         if not self._models_settled(entities_to_learn) or self._model_last_computed_ts is None or (
@@ -1464,6 +1481,14 @@ class ZoneRunner:
                 int(self.zone.get(CONF_HISTORY_DAYS_FOR_INERTIA, DEFAULT_HISTORY_DAYS_FOR_INERTIA)),
                 fallback=self._power_model,
             ) if home_power_sensor and entities_to_learn else {}
+            if learn_zone:
+                starts_of = getattr(self.bridges, "zone_action_starts", None)
+                self._zone_power = power_model.learn_zone_power(
+                    self.ws, list(self._action_log), home_power_sensor,
+                    int(self.zone.get(CONF_HISTORY_DAYS_FOR_INERTIA, DEFAULT_HISTORY_DAYS_FOR_INERTIA)),
+                    other_starts=starts_of(self.zone_id) if starts_of else [],
+                    fallback=self._zone_power,
+                )
             # Mismo cadencia que el modelo termico (no en cada decision
             # reactiva, ver decide_and_act) -- barato para leer despues
             # (occupancy.forecast_likely es solo lectura de diccionario,
@@ -2173,6 +2198,10 @@ class ZoneRunner:
         if current_target is None or abs(current_target - parked) > TEMP_SEND_TOLERANCE_DEG:
             if self._delegate_send_allowed(entity_id, now):
                 self._send_delegate_once(entity_id, "temperature", parked, "set_temperature", {"temperature": parked}, now)
+        # Aparcado = sin urgencia: el ventilador vuelve a automatico (o al que haya
+        # elegido el usuario). Antes se quedaba en "fuerte" desde el ultimo calentado
+        # urgente, gastando y haciendo ruido sin hacer nada.
+        self._drive_delegate_fan_mode(entity_id, state, urgent=False)
         return "idle"
 
     def _learn_activation_margin(self, entity_id: str, action: str, attrs: dict,

@@ -26,6 +26,7 @@ class _Stub:
     def _delegate_send_allowed(self, e, now): return True
     def _call_climate_service(self, e, service, data=None): self.calls.append((service, data))
     def _note_delegate_command(self, *a, **k): pass
+    def _drive_delegate_fan_mode(self, *a, **k): pass
 
 
 def _st(mode, cur, target, modes=("off","heat","cool","dry","fan_only"), **extra):

@@ -268,6 +268,25 @@ def decide_action(
             if action != "idle":
                 return action, reason
 
+    if priority == "confort":
+        # Sol GRATIS en confort: solo si el excedente solar AHORA cubre lo que gasta
+        # la zona, y solo dentro de la banda (consigna +/- deadband escalado por
+        # retencion, ver _opportunistic_preheat): ni pierde confort ni cuesta red.
+        # Precio y bateria siguen siendo cosa de "ahorro" (la bateria ya cubre la
+        # punta; banquear para ella seria pagar perdidas sin ganar nada).
+        if heating:
+            action, reason = _opportunistic_preheat(True, current_temp, heat_target, deadband,
+                                                      solar_surplus_now_w, zone_estimated_power_w,
+                                                      max_temp, min_temp, idle_loss_coeff)
+            if action != "idle":
+                return action, reason
+        if cooling:
+            action, reason = _opportunistic_preheat(False, current_temp, cool_target, deadband,
+                                                      solar_surplus_now_w, zone_estimated_power_w,
+                                                      max_temp, min_temp, idle_loss_coeff)
+            if action != "idle":
+                return action, reason
+
     if heating:
         action, reason = _anticipate(True, current_temp, heat_target, deadband, outdoor_forecast, idle_loss_coeff, heating_rate_deg_h)
         if action != "idle":

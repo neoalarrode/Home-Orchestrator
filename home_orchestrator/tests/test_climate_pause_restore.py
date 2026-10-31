@@ -99,6 +99,19 @@ class PauseRestore(unittest.TestCase):
         self.assertNotIn("e", s._delegate_pre_temp)
 
 
+class IdleFanBackToAuto(unittest.TestCase):
+    def test_parked_ac_fan_returns_to_auto(self):
+        st = _st("heat", temp=16.0)
+        st["attributes"].update(fan_mode="strong", fan_modes=["auto", "low", "middle", "strong"])
+        s = _Stub(st)
+        s._manual_fan_mode = None
+        s._manual_swing_mode = None
+        s._drive_delegate_fan_mode = zr.ZoneRunner._drive_delegate_fan_mode.__get__(s)
+        s._delegate_last_active["e"] = ("heat", 21.0)
+        s._drive_climate_idle("e", 22.0, 0.3, False)
+        self.assertIn(("set_fan_mode", {"fan_mode": "auto"}), s.calls)
+
+
 class _DoorStub:
     def __init__(self, state):
         self.zone = {zr.CONF_DOOR_WINDOW_ENTITIES: ["binary_sensor.puerta"]}

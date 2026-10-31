@@ -308,3 +308,145 @@ def get_power_model(
     except Exception:
         _LOGGER.debug("No se pudo aprender la potencia de %s actuadores todavia", len(entities), exc_info=True)
     return fallback if fallback is not None else {}
+
+
+# ---------------------------------------------------------------------------
+# Potencia por ZONA a partir del registro de acciones propio de Climate
+# ---------------------------------------------------------------------------
+#
+# Los delegados de puente (tuya:<id>) no tienen historico en HA, asi que el
+# aprendizaje por entidad de arriba nunca aprende nada para ellos. Pero Climate
+# SI sabe cuando arranca cada zona a calentar/enfriar (su `_action_log`,
+# persistido), y el consumo total de la casa esta en HA. El salto del consumo
+# de la casa justo al arrancar la zona es la potencia real de la zona.
+ZONE_SAMPLE_BEFORE_MINUTES = 3   # base: media de los 3 min previos al arranque
+ZONE_SAMPLE_SETTLE_MINUTES = 1   # el inverter tarda en subir: se salta el 1er minuto
+ZONE_SAMPLE_AFTER_MINUTES = 6    # ...y se promedia hasta el minuto 6
+ZONE_OTHER_START_GUARD_MINUTES = 7  # arranque de OTRA zona tan cerca: muestra contaminada
+ZONE_LEARN_DAYS = 14             # el registro de acciones cubre semanas; una zona puede no arrancar en dias
+ZONE_MAX_SAMPLES = 30            # los arranques mas recientes: 30 consultas pequenas cada recalculo
+
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _power_window(ws, sensor: str, t0: datetime, t1: datetime) -> list:
+    """Consumo de la casa SOLO entre t0 y t1, a resolucion completa (sin el
+    recorte a MAX_STATES_PER_ENTITY que sufre un historico de dias de un sensor
+    tan parlanchin). Incluye el valor vigente en t0."""
+    try:
+        result = ws.call(
+            "history/history_during_period",
+            start_time=_iso(t0), end_time=_iso(t1), entity_ids=[sensor],
+            minimal_response=True, no_attributes=True, significant_changes_only=False,
+        )
+    except Exception:
+        _LOGGER.debug("Sin historico de %s entre %s y %s", sensor, t0, t1, exc_info=True)
+        return []
+    points = []
+    for p in (result or {}).get(sensor) or []:
+        lu = p.get("lu", p.get("last_updated"))
+        if lu is None:
+            continue
+        points.append(_SyntheticState(p.get("s", p.get("state")), _to_dt(float(lu))))
+    return sorted(points, key=lambda s: s.last_changed)
+
+
+def _avg_between(power_states: list, t0: datetime, t1: datetime, include_end: bool = True) -> float | None:
+    """Media del consumo entre t0 y t1 PONDERADA POR TIEMPO: un sensor que
+    informa al cambiar deja pocos puntos, y cada valor vale mientras dura."""
+    total = weight = 0.0
+    current = None
+    for s in power_states:
+        if s.last_changed <= t0:
+            current = s
+            continue
+        if s.last_changed > t1 or (not include_end and s.last_changed >= t1):
+            break
+        if current is not None:
+            try:
+                v = float(current.state)
+                seg = (s.last_changed - max(current.last_changed, t0)).total_seconds()
+                total += v * seg; weight += seg
+            except (TypeError, ValueError):
+                pass
+        current = s
+    if current is not None:
+        try:
+            v = float(current.state)
+            seg = (t1 - max(current.last_changed, t0)).total_seconds()
+            if seg > 0:
+                total += v * seg; weight += seg
+        except (TypeError, ValueError):
+            pass
+    return total / weight if weight > 0 else None
+
+
+def _zone_starts(action_log: list, days: int) -> list[datetime]:
+    """Instantes en que la zona pasa de no actuar a calentar/enfriar."""
+    since = _utcnow() - timedelta(days=days)
+    starts, prev = [], "off"
+    for ts, act in action_log:
+        when = _to_dt(ts)
+        if act in ("heat", "cool") and prev not in ("heat", "cool") and when >= since:
+            starts.append(when)
+        prev = act
+    return starts
+
+
+def _learn_zone_power_sync(ws, action_log: list, home_power_sensor: str, days: int,
+                           other_starts: list[float]) -> dict:
+    model = {"learned_power_w": None, "reliable": False, "samples_used": 0, "samples_discarded_other_zone": 0}
+    starts = _zone_starts(action_log, max(days, ZONE_LEARN_DAYS))
+    if len(starts) < MIN_VALID_SAMPLES or not home_power_sensor:
+        return model
+    others = [_to_dt(t) for t in other_starts]
+    guard = timedelta(minutes=ZONE_OTHER_START_GUARD_MINUTES)
+    deltas, discarded = [], 0
+    for start in starts[-ZONE_MAX_SAMPLES:]:
+        if any(abs(o - start) <= guard for o in others):
+            discarded += 1
+            continue
+        t0 = start - timedelta(minutes=ZONE_SAMPLE_BEFORE_MINUTES)
+        t_end = start + timedelta(minutes=ZONE_SAMPLE_AFTER_MINUTES)
+        window = _power_window(ws, home_power_sensor, t0, t_end)
+        # Base estrictamente ANTES del arranque (el instante del arranque ya puede
+        # llevar la potencia de la zona y falsearia la base).
+        before = _avg_between(window, t0, start, include_end=False)
+        after = _avg_between(window, start + timedelta(minutes=ZONE_SAMPLE_SETTLE_MINUTES), t_end)
+        if before is None or after is None:
+            continue
+        delta = after - before
+        if delta >= MIN_DELTA_W:
+            deltas.append(delta)
+    model["samples_discarded_other_zone"] = discarded
+    if len(deltas) >= MIN_VALID_SAMPLES:
+        model["learned_power_w"] = round(statistics.median(deltas), 0)
+        model["reliable"] = True
+        model["samples_used"] = len(deltas)
+    return model
+
+
+def learn_zone_power(ws, action_log: list, home_power_sensor: str, days: int,
+                     other_starts: list[float] | None = None, fallback: dict | None = None) -> dict:
+    """Potencia tipica de la ZONA al calentar/enfriar, aprendida del salto del
+    consumo de la casa en cada arranque registrado por Climate (mediana, minimo
+    MIN_VALID_SAMPLES arranques limpios). Mismo hilo/timeout que get_power_model."""
+    if not action_log or not home_power_sensor:
+        return fallback or {}
+    future = _power_executor.submit(_learn_zone_power_sync, ws, list(action_log), home_power_sensor, days,
+                                    list(other_starts or []))
+    try:
+        result = future.result(timeout=POWER_MODEL_COMPUTE_TIMEOUT_SECONDS)
+    except FutureTimeoutError:
+        _LOGGER.warning("Aprendizaje de potencia de zona superó %ss, se sigue con lo ya aprendido",
+                        POWER_MODEL_COMPUTE_TIMEOUT_SECONDS)
+        return fallback or {}
+    except Exception:
+        _LOGGER.debug("No se pudo aprender la potencia de la zona todavia", exc_info=True)
+        return fallback or {}
+    # No perder un aprendizaje fiable por una ventana de historico peor.
+    if not result.get("reliable") and (fallback or {}).get("reliable"):
+        return fallback
+    return result
