@@ -110,6 +110,24 @@ TEMP_SEND_TOLERANCE_DEG = 0.1
 # que la calibracion sea estable.
 CALIB_BAND_DEG = 2.0
 DEVIATION_EMA_ALPHA = 0.25
+# Tiempo minimo en un modo de equipo (calor/frio/dry/ventilar) antes de que una
+# decision AUTOMATICA lo cambie por otro: sin esto, la anticipacion entrando y
+# saliendo + la deshumidificacion en reposo hacian saltar un AC calor<->dry cada
+# 3-15 min (dormitorio, 25-oct). Seguridad y ordenes del usuario no esperan.
+MIN_MODE_DWELL_SECONDS = 900
+# Margen de arranque aprendido por delegado (ver _learn_activation_margin): hay
+# equipos (radiadores con histeresis amplia) que no arrancan hasta que su consigna
+# supera a su propia sonda en ~2C. Si mandado a calentar/enfriar ni la zona ni su
+# sonda se mueven en ACTIVATION_PROBE_SECONDS, se le sube el margen un paso.
+ACTIVATION_PROBE_SECONDS = 1200
+ACTIVATION_MIN_ZONE_MOVE_DEG = 0.1
+ACTIVATION_MIN_DEVICE_MOVE_DEG = 0.3
+ACTIVATION_MARGIN_STEP_DEG = 0.5
+ACTIVATION_MARGIN_MAX_DEG = 3.0
+# Una puerta/ventana solo pausa la climatizacion si lleva abierta al menos esto:
+# abrir y cerrar al pasar no debe tocar los equipos (la puerta del patio se abrio
+# y cerro 4 veces en un minuto el 31-oct y dejo el AC del salon en ventilador).
+DOOR_OPEN_MIN_SECONDS = 60
 HUMIDITY_SEND_TOLERANCE_PCT = 1
 EQUIPMENT_FAILURE_DETECTION_MINUTES = 30
 EQUIPMENT_FAILURE_MIN_DELTA_DEG = 0.3
@@ -140,6 +158,12 @@ EQUIPMENT_FAILURE_MIN_DELTA_DEG = 0.3
 # SIEMPRE la salta, nunca se deja una zona real sin calor/frio por
 # respetar un cambio manual antiguo.
 DELEGATE_COMMAND_DEBOUNCE_SECONDS = 8.0
+# No reenviar la MISMA orden (mismo modo/consigna/ventilador/oscilacion) a un
+# delegado mientras se espera a que la refleje: primer reintento a los 5 min si
+# sigue sin reflejarla, despues cada 30 min (con aviso en el log). Lo que el equipo
+# ya tiene aplicado no se manda nunca (eso ya lo filtran los llamadores).
+DELEGATE_CONFIRM_WAIT_SECONDS = 300
+DELEGATE_RETRY_BACKOFF_SECONDS = 1800
 DELEGATE_OVERRIDE_CONFIRM_SECONDS = 25.0
 DELEGATE_MANUAL_OVERRIDE_GRACE_SECONDS = 1800.0  # 30 min
 
@@ -415,6 +439,16 @@ class ZoneRunner:
         self._last_heat_on_percent: float | None = None
         self._last_cool_on_percent: float | None = None
         self._delegate_deviations: dict[str, float] = {}
+        # Margen de arranque aprendido por delegado (persistido) y sonda en curso.
+        self._delegate_activation_margin: dict[str, float] = {}
+        self._activation_probe: dict[str, dict] = {}
+        # Modo de equipo impuesto por la zona y desde cuando (ver _apply_mode_dwell).
+        self._mode_hold: tuple[str, datetime] | None = None
+        # Estado que tenia cada delegado ANTES de que Climate lo pusiera en
+        # ventilar/dry/off por una causa pasajera (ver _drive_climate_actuator):
+        # al acabar esa causa se le devuelve (ver _drive_climate_idle).
+        self._delegate_pre_temp: dict[str, str] = {}
+        self._last_thermal_mode: str | None = None
         self._delegate_last_active: dict[str, tuple[str, float]] = {}
         # Debounce + deteccion de cambio manual del delegado -- ver
         # DELEGATE_COMMAND_DEBOUNCE_SECONDS mas arriba.
@@ -529,6 +563,15 @@ class ZoneRunner:
                         and isinstance(entry[0], (int, float)) and entry[1] in ("heat", "cool", "off")):
                     self._action_log.append((float(entry[0]), entry[1]))
 
+        # Margen de arranque aprendido por delegado: sin persistirlo, cada
+        # reinicio volveria a dejar un radiador sin arrancar hasta re-aprenderlo.
+        saved_margins = state.get("activation_margins")
+        if isinstance(saved_margins, dict):
+            for entity_id, margin in saved_margins.items():
+                value = _safe_float(margin)
+                if isinstance(entity_id, str) and value is not None:
+                    self._delegate_activation_margin[entity_id] = max(0.0, min(ACTIVATION_MARGIN_MAX_DEG, value))
+
     def _record_action(self, act: str) -> None:
         """Anota una transicion de accion propia (heat/cool/off) con marca de
         tiempo, SOLO si cambia respecto a la ultima anotada -- el modelo termico
@@ -544,6 +587,7 @@ class ZoneRunner:
         ver zone_store.py."""
         return {
             "action_log": [[ts, act] for ts, act in self._action_log],
+            "activation_margins": dict(self._delegate_activation_margin),
             "hvac_mode": self.hvac_mode,
             "preset_mode": self._preset_mode,
             "manual_heat": self._manual_heat,
@@ -594,6 +638,7 @@ class ZoneRunner:
             "outdoor_now": self._outdoor_now,
             "outdoor_forecast": [round(t, 1) for t in self._outdoor_forecast] if self._outdoor_forecast else [],
             "delegate_temperature_deviations": dict(self._delegate_deviations),
+            "delegate_activation_margins": dict(self._delegate_activation_margin),
             "sensor_stale": self._sensor_stale,
             "window_slope_deg_h": self._window_detector.slope_deg_h,
             "equipment_failure_suspected": self._equipment_failure_suspected,
@@ -1086,6 +1131,48 @@ class ZoneRunner:
             return None
         return _safe_float(state.get("state"))
 
+    def _fallback_thermal_mode(self, current_temp: float | None, supported: list) -> str | None:
+        """Modo termico de la zona para aparcar un equipo que se ha quedado en
+        ventilar/dry sin registro de como estaba: el de la zona si es de un solo
+        sentido; en calor+frio, el lado cuya consigna esta mas cerca."""
+        zone_mode = getattr(self, "hvac_mode", None)
+        mode = None
+        if zone_mode in ("heat", "cool"):
+            mode = zone_mode
+        elif zone_mode == "heat_cool":
+            low = getattr(self, "target_temperature_low", None)
+            high = getattr(self, "target_temperature_high", None)
+            if current_temp is not None and low is not None and high is not None:
+                mode = "heat" if (current_temp - low) <= (high - current_temp) else "cool"
+        return mode if mode in supported else None
+
+    def _apply_mode_dwell(self, action: str, safety_emergency: bool) -> str:
+        """Tiempo minimo en un modo de equipo antes de que una decision
+        AUTOMATICA lo cambie (ver MIN_MODE_DWELL_SECONDS). Si toca cambiar y el
+        modo actual lleva menos de ese tiempo, se mantiene: un modo termico
+        (calor/frio) queda aparcado en idle en ese mismo modo; dry/ventilar
+        siguen. Seguridad (min/max de zona) nunca espera; las ordenes del
+        usuario borran la espera (ver set_temperature/set_hvac_mode/set_preset_mode)."""
+        now = _utcnow()
+        # Modo en que quedaria el equipo: idle lo deja en su ultimo modo termico.
+        intended = action if action in ("heat", "cool", "dry", "fan_only") else self._last_thermal_mode
+        held = self._mode_hold
+        if held and intended and intended != held[0] and not safety_emergency:
+            remaining = MIN_MODE_DWELL_SECONDS - (now - held[1]).total_seconds()
+            if remaining > 0:
+                keep = held[0]
+                action = "idle" if keep in ("heat", "cool") else keep
+                intended = keep
+                self.reason += (
+                    f" — se mantiene en {keep} {math.ceil(remaining / 60)} min más "
+                    "(evita cambios de modo seguidos)"
+                )
+        if intended and (held is None or held[0] != intended):
+            self._mode_hold = (intended, now)
+        if action in ("heat", "cool"):
+            self._last_thermal_mode = action
+        return action
+
     def _smart_idle_action(self, current_temp: float | None, heat_target: float | None, deadband: float) -> tuple[str, str | None]:
         # Este metodo SOLO se llama cuando la accion seria 'idle' (la zona esta en
         # banda, ni calentando ni enfriando). Por eso deshumidificar aqui cumple la
@@ -1110,9 +1197,27 @@ class ZoneRunner:
         return "idle", None
 
     def _real_door_window_open(self) -> bool:
+        """Abierta = 'on' de forma SOSTENIDA (DOOR_OPEN_MIN_SECONDS). Si HA no da
+        la marca de tiempo del cambio, se considera abierta (como antes). El ciclo
+        periodico re-evalua, asi que una puerta que sigue abierta acaba pausando."""
+        now = _utcnow()
         for e in self.zone.get(CONF_DOOR_WINDOW_ENTITIES) or []:
             state = self._get_state(e)
-            if state is not None and state.get("state") == "on":
+            if state is None or state.get("state") != "on":
+                continue
+            since = None
+            raw = state.get("last_changed") or state.get("last_updated")
+            if isinstance(raw, (int, float)):
+                # Formato comprimido de subscribe_entities: segundos epoch.
+                since = datetime.fromtimestamp(float(raw), tz=timezone.utc)
+            elif raw:
+                try:
+                    since = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    if since.tzinfo is None:
+                        since = since.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    since = None
+            if since is None or (now - since).total_seconds() >= DOOR_OPEN_MIN_SECONDS:
                 return True
         return False
 
@@ -1499,6 +1604,7 @@ class ZoneRunner:
                 if smart_reason:
                     action = smart_action
                     self.reason += f" — {smart_reason}"
+            action = self._apply_mode_dwell(action, safety_emergency)
 
         if self._sensor_stale:
             self.reason += " — aviso: sensor externo sin lectura nueva, usando la última suavizada"
@@ -1717,24 +1823,43 @@ class ZoneRunner:
             reported = (state or {}).get("state")
             return reported if reported in ("heat", "cool") else "idle"
 
+        if action not in ("heat", "cool"):
+            self._activation_probe.pop(entity_id, None)
+        # Ventilar/dry, o apagar porque el equipo no admite lo que pide la zona
+        # (ventana abierta, radiador mientras se deshumidifica...), con la zona
+        # ENCENDIDA, es pasajero: se apunta como estaba el equipo para
+        # devolverselo despues. Antes no se apuntaba y, al acabar, el idle no
+        # sabia a que modo volver: el AC del salon se quedo 20 h en ventilador
+        # tras abrirse un instante la puerta del patio (31-oct).
+        if state is not None and getattr(self, "hvac_mode", None) != "off" and (action in ("dry", "fan_only") or not can_do):
+            prior = state.get("state")
+            if prior in ("off", "heat", "cool"):
+                self._delegate_pre_temp.setdefault(entity_id, prior)
+        elif can_do and action in ("heat", "cool"):
+            self._delegate_pre_temp.pop(entity_id, None)
         if can_do:
             if action in ("heat", "cool"):
                 self._delegate_last_active[entity_id] = (action, target_temp)
             if not simulate:
                 now = _utcnow()
                 if (state is None or state.get("state") != action) and self._delegate_send_allowed(entity_id, now):
-                    self._call_climate_service(entity_id, "set_hvac_mode", {"hvac_mode": action})
-                    self._note_delegate_command(entity_id, now, hvac_mode=action)
+                    self._send_delegate_once(entity_id, "hvac_mode", action, "set_hvac_mode", {"hvac_mode": action}, now)
                 if action in ("heat", "cool"):
                     # Camino ACTIVO: aqui SI se usa la sonda interna, y SOLO para la
                     # desviacion de calibracion contra NUESTRO sensor de zona, que
                     # compensa la consigna que mandamos al equipo. En idle no se usa.
-                    compensated = self._compensate_delegate_target(entity_id, state, target_temp, current_temp)
+                    # Mas el margen de arranque aprendido de ESTE equipo (radiadores
+                    # que no arrancan sin ~2C de hueco sobre su propia sonda).
+                    margin = self._learn_activation_margin(entity_id, action, attrs, current_temp, now)
+                    compensated = self._compensate_delegate_target(
+                        entity_id, state, target_temp, current_temp,
+                        extra=margin if action == "heat" else -margin,
+                    )
                     current_target = _safe_float(attrs.get("temperature"))
                     if current_target is None or abs(current_target - compensated) > TEMP_SEND_TOLERANCE_DEG:
                         if self._delegate_send_allowed(entity_id, now):
-                            self._call_climate_service(entity_id, "set_temperature", {"temperature": compensated})
-                            self._note_delegate_command(entity_id, now, temperature=compensated)
+                            self._send_delegate_once(entity_id, "temperature", compensated, "set_temperature",
+                                                     {"temperature": compensated}, now)
                     self._drive_delegate_fan_mode(entity_id, state, urgent)
             elif action in ("heat", "cool"):
                 # En simulacion, mantener al dia la desviacion aprendida sin mandar nada.
@@ -1744,8 +1869,7 @@ class ZoneRunner:
         if not simulate and "off" in supported and state is not None and state.get("state") != "off":
             now = _utcnow()
             if self._delegate_send_allowed(entity_id, now):
-                self._call_climate_service(entity_id, "set_hvac_mode", {"hvac_mode": "off"})
-                self._note_delegate_command(entity_id, now, hvac_mode="off")
+                self._send_delegate_once(entity_id, "hvac_mode", "off", "set_hvac_mode", {"hvac_mode": "off"}, now)
         return "idle"
 
     def _delegate_send_allowed(self, entity_id: str, now: datetime) -> bool:
@@ -1759,13 +1883,46 @@ class ZoneRunner:
             return True
         return (now - last["sent_at"]).total_seconds() >= DELEGATE_COMMAND_DEBOUNCE_SECONDS
 
-    def _note_delegate_command(self, entity_id: str, now: datetime, hvac_mode: str | None = None, temperature: float | None = None) -> None:
+    def _note_delegate_command(self, entity_id: str, now: datetime, **sent) -> None:
+        """Anota lo ultimo mandado a un delegado: por tipo de orden (hvac_mode,
+        temperature, fan_mode, swing_mode) el valor y cuando, mas `sent_at`
+        global (debounce y deteccion de cambio manual)."""
         entry = self._delegate_last_command.setdefault(entity_id, {})
-        if hvac_mode is not None:
-            entry["hvac_mode"] = hvac_mode
-        if temperature is not None:
-            entry["temperature"] = temperature
+        for kind, value in sent.items():
+            if value is None:
+                continue
+            if entry.get(kind) != value:
+                entry[f"{kind}_tries"] = 0
+            entry[kind] = value
+            entry[f"{kind}_at"] = now
+            entry[f"{kind}_tries"] = entry.get(f"{kind}_tries", 0) + 1
         entry["sent_at"] = now
+
+    def _send_delegate_once(self, entity_id: str, kind: str, value, service: str, data: dict, now: datetime) -> bool:
+        """Manda `service` SOLO si no se ha mandado ya este mismo valor y se esta
+        esperando a que el equipo lo refleje (ver DELEGATE_CONFIRM_WAIT_SECONDS).
+        Los llamadores ya solo llegan aqui cuando lo que reporta el equipo NO
+        coincide con lo deseado; esto evita ademas repetir la misma orden ciclo
+        tras ciclo mientras la lectura (nube) aun no la refleja."""
+        entry = self._delegate_last_command.get(entity_id) or {}
+        prev, at = entry.get(kind), entry.get(f"{kind}_at")
+        if kind == "temperature":
+            same = prev is not None and value is not None and abs(float(prev) - float(value)) <= TEMP_SEND_TOLERANCE_DEG
+        else:
+            same = prev == value
+        if same and at is not None:
+            tries = entry.get(f"{kind}_tries", 1)
+            wait = DELEGATE_CONFIRM_WAIT_SECONDS if tries <= 1 else DELEGATE_RETRY_BACKOFF_SECONDS
+            elapsed = (now - at).total_seconds()
+            if elapsed < wait:
+                return False
+            _LOGGER.warning(
+                "%s: %s sigue sin reflejar %s=%s %d min despues de mandarlo -- se reintenta",
+                self.zone.get("name"), entity_id, kind, value, int(elapsed // 60),
+            )
+        self._call_climate_service(entity_id, service, data)
+        self._note_delegate_command(entity_id, now, **{kind: value})
+        return True
 
     def _respect_delegate_override(self, entity_id: str, state: dict | None, safety_emergency: bool) -> bool:
         """True si hay que dejar este delegado tranquilo este ciclo
@@ -1830,7 +1987,7 @@ class ZoneRunner:
         fan_modes = list(attrs.get("fan_modes") or [])
         desired_fan = _pick_fan_mode(fan_modes, urgent, self._manual_fan_mode)
         if desired_fan and desired_fan != attrs.get("fan_mode"):
-            self._call_climate_service(entity_id, "set_fan_mode", {"fan_mode": desired_fan})
+            self._send_delegate_once(entity_id, "fan_mode", desired_fan, "set_fan_mode", {"fan_mode": desired_fan}, _utcnow())
 
         # Oscilacion: solo si el usuario la ha pedido y el delegado la soporta.
         # No hay politica automatica (a diferencia del ventilador en urgencia):
@@ -1838,7 +1995,8 @@ class ZoneRunner:
         if self._manual_swing_mode:
             swing_modes = [str(m) for m in (attrs.get("swing_modes") or [])]
             if self._manual_swing_mode in swing_modes and self._manual_swing_mode != str(attrs.get("swing_mode")):
-                self._call_climate_service(entity_id, "set_swing_mode", {"swing_mode": self._manual_swing_mode})
+                self._send_delegate_once(entity_id, "swing_mode", self._manual_swing_mode, "set_swing_mode",
+                                         {"swing_mode": self._manual_swing_mode}, _utcnow())
 
     def _drive_climate_idle(
         self, entity_id: str, current_temp: float | None, deadband: float, simulate: bool, safety_emergency: bool = False,
@@ -1854,6 +2012,9 @@ class ZoneRunner:
         # que se respeta via _respect_delegate_override. Volver de 'dry' al modo
         # termico tambien ocurre aqui (set_hvac_mode al modo base), que es una
         # demanda real, no un cambio "para idle".
+        # Fuera de calor/frio activo: la sonda de arranque se reinicia (ver
+        # _learn_activation_margin), para no comparar luego contra un tramo viejo.
+        self._activation_probe.pop(entity_id, None)
         state = self._get_state(entity_id)
         attrs = (state or {}).get("attributes") or {}
         supported = list(attrs.get("hvac_modes") or [])
@@ -1862,15 +2023,32 @@ class ZoneRunner:
             return "idle"
 
         cur_state = (state or {}).get("state")
+        # Si sigue en el estado que le impuso Climate por una causa pasajera ya
+        # terminada (ventana, dry...), se le devuelve el que tenia antes.
+        restore = None
+        pre = self._delegate_pre_temp.pop(entity_id, None)
+        if pre is not None and cur_state in ("off", "dry", "fan_only"):
+            if pre == "off":
+                if cur_state != "off" and not simulate:
+                    now = _utcnow()
+                    if self._delegate_send_allowed(entity_id, now):
+                        self._send_delegate_once(entity_id, "hvac_mode", "off", "set_hvac_mode", {"hvac_mode": "off"}, now)
+                return "idle"
+            restore = pre
         # Apagado manual del usuario: no lo encendemos nosotros (nunca encendemos/
         # apagamos para idle). Sin estado utilizable, tampoco tocamos.
-        if cur_state in (None, "off", "unavailable", "unknown"):
+        if restore is None and cur_state in (None, "off", "unavailable", "unknown"):
             return "idle"
 
-        # Modo termico en el que aparcar: el ultimo activo (heat/cool); si no hay,
-        # el estado actual si ya es heat/cool. Sin modo termico claro, no se toca.
+        # Modo termico en el que aparcar: el que tenia antes de la pausa; si no,
+        # el ultimo activo (heat/cool); si no, el actual si ya es heat/cool.
         last = self._delegate_last_active.get(entity_id)
-        mode = last[0] if last else (cur_state if cur_state in ("heat", "cool") else None)
+        mode = restore or (last[0] if last else (cur_state if cur_state in ("heat", "cool") else None))
+        if mode is None and cur_state in ("dry", "fan_only"):
+            # En ventilar/dry sin ningun registro (p.ej. tras un reinicio): solo
+            # Climate maneja estos equipos, asi que es un resto nuestro -- se
+            # aparca en el modo termico de la zona mas cercano a su consigna.
+            mode = self._fallback_thermal_mode(current_temp, supported)
         if mode not in ("heat", "cool") or mode not in supported:
             return "idle"
 
@@ -1893,16 +2071,55 @@ class ZoneRunner:
         # Mantener el modo termico (solo se envia si no esta ya en el: p.ej. al
         # volver de 'dry'); NUNCA se apaga.
         if cur_state != mode and self._delegate_send_allowed(entity_id, now):
-            self._call_climate_service(entity_id, "set_hvac_mode", {"hvac_mode": mode})
-            self._note_delegate_command(entity_id, now, hvac_mode=mode)
+            self._send_delegate_once(entity_id, "hvac_mode", mode, "set_hvac_mode", {"hvac_mode": mode}, now)
         current_target = _safe_float(attrs.get("temperature"))
         if current_target is None or abs(current_target - parked) > TEMP_SEND_TOLERANCE_DEG:
             if self._delegate_send_allowed(entity_id, now):
-                self._call_climate_service(entity_id, "set_temperature", {"temperature": parked})
-                self._note_delegate_command(entity_id, now, temperature=parked)
+                self._send_delegate_once(entity_id, "temperature", parked, "set_temperature", {"temperature": parked}, now)
         return "idle"
 
-    def _compensate_delegate_target(self, entity_id: str, state: dict | None, target_temp: float, current_temp: float | None) -> float:
+    def _learn_activation_margin(self, entity_id: str, action: str, attrs: dict,
+                                 zone_temp: float | None, now: datetime) -> float:
+        """Margen extra de consigna que necesita ESTE equipo para arrancar de
+        verdad. Mientras esta mandado a `action` (calor/frio), cada
+        ACTIVATION_PROBE_SECONDS se mira si se ha movido algo: la zona (NUESTRO
+        sensor) o la propia sonda del equipo, en el sentido pedido. Si nada se
+        ha movido, el equipo no esta actuando aunque se lo pidamos -- se sube el
+        margen un paso (0.5C, o el paso propio del equipo si es mayor: un
+        radiador de grados enteros sube de 1 en 1), con tope
+        ACTIVATION_MARGIN_MAX_DEG. Lo aprendido se conserva (y se persiste).
+        Quien decide cuando parar sigue siendo Climate con el sensor de zona,
+        asi que el margen solo hace que el equipo arranque, no que se pase."""
+        margin = self._delegate_activation_margin.get(entity_id, 0.0)
+        device_temp = _safe_float(attrs.get("current_temperature"))
+        if zone_temp is None or device_temp is None:
+            self._activation_probe.pop(entity_id, None)
+            return margin
+        probe = self._activation_probe.get(entity_id)
+        if probe is None or probe["action"] != action:
+            self._activation_probe[entity_id] = {"action": action, "since": now, "zone0": zone_temp, "dev0": device_temp}
+            return margin
+        if (now - probe["since"]).total_seconds() < ACTIVATION_PROBE_SECONDS:
+            return margin
+        sign = 1.0 if action == "heat" else -1.0
+        zone_moved = sign * (zone_temp - probe["zone0"])
+        device_moved = sign * (device_temp - probe["dev0"])
+        if zone_moved < ACTIVATION_MIN_ZONE_MOVE_DEG and device_moved < ACTIVATION_MIN_DEVICE_MOVE_DEG:
+            step = max(ACTIVATION_MARGIN_STEP_DEG, _safe_float(attrs.get("target_temp_step")) or 0.0)
+            new_margin = min(ACTIVATION_MARGIN_MAX_DEG, margin + step)
+            if new_margin != margin:
+                _LOGGER.info(
+                    "%s: %s mandado a %s %d min sin efecto (zona %+.2fC, su sonda %+.2fC) -- margen de arranque %.1f -> %.1fC",
+                    self.zone.get("name"), entity_id, action, ACTIVATION_PROBE_SECONDS // 60,
+                    zone_moved, device_moved, margin, new_margin,
+                )
+                self._delegate_activation_margin[entity_id] = new_margin
+                margin = new_margin
+        self._activation_probe[entity_id] = {"action": action, "since": now, "zone0": zone_temp, "dev0": device_temp}
+        return margin
+
+    def _compensate_delegate_target(self, entity_id: str, state: dict | None, target_temp: float,
+                                    current_temp: float | None, extra: float = 0.0) -> float:
         """Compensa la consigna que se manda al delegado con la DESVIACION de
         calibracion de SU sonda interna frente a NUESTRO sensor de zona
         (desviacion = sonda_equipo - sensor_zona). La sonda interna se usa SOLO
@@ -1929,7 +2146,7 @@ class ZoneRunner:
                 dev = raw if prev is None else (1 - DEVIATION_EMA_ALPHA) * prev + DEVIATION_EMA_ALPHA * raw
                 self._delegate_deviations[entity_id] = round(dev, 2)
         deviation = self._delegate_deviations.get(entity_id, 0.0)
-        return _fit_to_delegate(attrs, target_temp + deviation)
+        return _fit_to_delegate(attrs, target_temp + deviation + extra)
 
     def _tpi_desired_on(self, side: str, on_percent: float, cycle_minutes: float, now: datetime) -> bool:
         cycle_seconds = max(60.0, cycle_minutes * 60)
@@ -2053,6 +2270,7 @@ class ZoneRunner:
     def set_temperature(self, single: float | None = None, low: float | None = None, high: float | None = None) -> None:
         if single is None and low is None and high is None:
             return
+        self._mode_hold = None  # orden del usuario: no espera al tiempo minimo de modo
         if self._preset_mode != presets_module.PRESET_MANUAL:
             self._manual_heat = self.target_temperature_low if self.hvac_mode == "heat_cool" \
                 else (self.target_temperature if self.hvac_mode == "heat" else None)
@@ -2140,6 +2358,7 @@ class ZoneRunner:
                 "Zona climate %s: modo cambiado por orden EXTERNA: '%s' -> '%s'",
                 self.zone_id, self.hvac_mode, hvac_mode,
             )
+        self._mode_hold = None  # orden del usuario: no espera al tiempo minimo de modo
         self.hvac_mode = hvac_mode
         if hvac_mode != "off":
             self._last_active_hvac_mode = hvac_mode
@@ -2179,6 +2398,7 @@ class ZoneRunner:
             self._manual_cool = self.target_temperature_high if self.hvac_mode == "heat_cool" \
                 else (self.target_temperature if self.hvac_mode == "cool" else None)
         self._preset_mode = preset_mode
+        self._mode_hold = None  # orden del usuario: no espera al tiempo minimo de modo
         self.decide_and_act()
 
     def set_fan_mode(self, fan_mode: str) -> None:

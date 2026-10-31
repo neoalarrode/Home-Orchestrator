@@ -20,7 +20,14 @@ class _Stub:
         self._delegate_last_active = {}
         self._delegate_deviations = {}
         self._drive_climate_actuator = zr.ZoneRunner._drive_climate_actuator.__get__(self)
+        self._delegate_last_command = {}
+        self._delegate_pre_temp = {}
+        self._fallback_thermal_mode = zr.ZoneRunner._fallback_thermal_mode.__get__(self)
+        self._send_delegate_once = zr.ZoneRunner._send_delegate_once.__get__(self)
         self._compensate_delegate_target = zr.ZoneRunner._compensate_delegate_target.__get__(self)
+        self._activation_probe = {}
+        self._delegate_activation_margin = {}
+        self._learn_activation_margin = zr.ZoneRunner._learn_activation_margin.__get__(self)
     def _get_state(self, e): return self._state
     def _respect_delegate_override(self, e, s, se): return self._override
     def _delegate_send_allowed(self, e, now): return True

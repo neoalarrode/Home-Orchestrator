@@ -15,7 +15,12 @@ class _Stub:
         self._override = override
         self.calls = []
         self.zone = {"name": "Z", "min_temp": zmin, "max_temp": zmax}
+        self._activation_probe = {}
         self._drive_climate_idle = zr.ZoneRunner._drive_climate_idle.__get__(self)
+        self._delegate_last_command = {}
+        self._delegate_pre_temp = {}
+        self._fallback_thermal_mode = zr.ZoneRunner._fallback_thermal_mode.__get__(self)
+        self._send_delegate_once = zr.ZoneRunner._send_delegate_once.__get__(self)
     def _get_state(self, e): return self._state
     def _respect_delegate_override(self, e, s, se): return self._override
     def _delegate_send_allowed(self, e, now): return True

@@ -27,6 +27,9 @@ class _Stub:
             pass
         self._available_swing_modes = zr.ZoneRunner._available_swing_modes.__get__(self)
         self._drive_delegate_fan_mode = zr.ZoneRunner._drive_delegate_fan_mode.__get__(self)
+        self._delegate_last_command = {}
+        self._send_delegate_once = zr.ZoneRunner._send_delegate_once.__get__(self)
+        self._note_delegate_command = zr.ZoneRunner._note_delegate_command.__get__(self)
         self.set_swing_mode = zr.ZoneRunner.set_swing_mode.__get__(self)
 
     # colaboradores que los metodos reales usan

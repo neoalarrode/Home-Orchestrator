@@ -58,10 +58,23 @@ class Setpoint(unittest.TestCase):
 
     def test_integer_dp_rounds_down_when_below_half(self):
         codes = _qn_codes()
-        ctl = _Ctl({"Switch": True, "Temp_set": 22, "Temp_current": 22}, codes)
+        ctl = _Ctl({"Switch": True, "Temp_set": 25, "Temp_current": 22}, codes)
         h = TuyaClimateHandle(ctl, codes)
         h.set_temperature(22.2)
         self.assertEqual(ctl.sets, [("Temp_set", 22)])
+
+    def test_already_applied_value_is_not_resent(self):
+        # El equipo ya esta en 22: 22.2 redondea a 22 -> no se manda nada.
+        codes = _qn_codes()
+        ctl = _Ctl({"Switch": True, "Temp_set": 22, "Temp_current": 22}, codes)
+        TuyaClimateHandle(ctl, codes).set_temperature(22.2)
+        self.assertEqual(ctl.sets, [])
+
+    def test_mode_change_does_not_resend_power_if_already_on(self):
+        codes = _ac_codes()
+        ctl = _Ctl({"switch": True, "mode": "cold", "temp_set": 220}, codes)
+        TuyaClimateHandle(ctl, codes).set_hvac_mode("heat")
+        self.assertEqual(ctl.sets, [("mode", "hot")])  # sin ("switch", True)
 
     def test_scale_one_dp_keeps_tenths(self):
         codes = _ac_codes()

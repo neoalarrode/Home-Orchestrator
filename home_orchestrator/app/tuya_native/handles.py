@@ -115,6 +115,14 @@ class TuyaClimateHandle:
         except Exception:
             return {}
 
+    def _set_if_changed(self, code: str, value) -> None:
+        """Escribe el DP solo si el equipo no lo tiene ya en ese valor: no se
+        reenvia lo que ya esta aplicado (p.ej. el encendido al cambiar de modo
+        con el equipo ya encendido)."""
+        if self._state().get(code) == value:
+            return
+        self._ctl.set_dp(code, value)
+
     @property
     def available(self) -> bool:
         return bool(self._state())
@@ -225,11 +233,11 @@ class TuyaClimateHandle:
                 raw = min(raw, int(spec["max"]))
         except (TypeError, ValueError):
             pass
-        self._ctl.set_dp(self._tset, raw)
+        self._set_if_changed(self._tset, raw)
 
     def set_hvac_mode(self, hvac_mode: str) -> None:
         if self._sw is not None:
-            self._ctl.set_dp(self._sw, hvac_mode != "off")
+            self._set_if_changed(self._sw, hvac_mode != "off")
         if hvac_mode == "off":
             return
         if self._mode is not None:
@@ -243,7 +251,7 @@ class TuyaClimateHandle:
                     reverse[ha] = v
             raw = reverse.get(hvac_mode)
             if raw is not None:
-                self._ctl.set_dp(self._mode, raw)
+                self._set_if_changed(self._mode, raw)
 
     def set_fan_mode(self, fan_mode: str) -> None:
         if not self._fan:
@@ -251,7 +259,7 @@ class TuyaClimateHandle:
         # El enum del thing-model puede ser string o numero -- casar contra el rango.
         for v in _enum_range(self._codes, self._fan):
             if str(v) == str(fan_mode):
-                self._ctl.set_dp(self._fan, v)
+                self._set_if_changed(self._fan, v)
                 return
 
     def set_swing_mode(self, swing_mode: str) -> None:
@@ -260,7 +268,7 @@ class TuyaClimateHandle:
         # Igual que el fan: el enum puede ser string o numero, se casa por str().
         for v in _enum_range(self._codes, self._swing):
             if str(v) == str(swing_mode):
-                self._ctl.set_dp(self._swing, v)
+                self._set_if_changed(self._swing, v)
                 return
 
 
