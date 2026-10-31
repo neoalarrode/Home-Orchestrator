@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import unicodedata
 
@@ -278,10 +279,14 @@ class MqttClimateZone:
 
     def _as_float(self, msg, what: str) -> float | None:
         try:
-            return float(msg.payload.decode(errors="replace"))
+            value = float(msg.payload.decode(errors="replace"))
         except ValueError:
+            value = None
+        # float("nan")/float("inf") NO lanzan ValueError: se rechazan aqui tambien.
+        if value is None or not math.isfinite(value):
             log.warning("Zona climate %s: payload de %s invalido: %r", self.zone_id, what, msg.payload)
             return None
+        return value
 
     def _on_mode(self, client, userdata, msg) -> None:
         mode = msg.payload.decode(errors="replace").strip()

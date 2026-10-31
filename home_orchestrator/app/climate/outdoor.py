@@ -85,14 +85,14 @@ def weather_hourly_forecast(ws, weather_entity: str, horizon_hours: int) -> list
     return temps[:horizon_hours]
 
 
-def _hourly_average_sync(ws, entity_id: str, horizon_hours: int, days: int, default: float) -> list[float]:
+def _hourly_average_sync(ws, entity_id: str, horizon_hours: int, days: int) -> list[float]:
     try:
         raw = ws.get_history(entity_id, _start_iso(days), with_attributes=False)
     except Exception:
         _LOGGER.debug("Sin historico (via WebSocket) de %s todavia", entity_id, exc_info=True)
         raw = []
     if not raw:
-        return [default] * horizon_hours
+        return []
 
     buckets: dict[int, list[float]] = {h: [] for h in range(24)}
     for point in raw:
@@ -108,7 +108,9 @@ def _hourly_average_sync(ws, entity_id: str, horizon_hours: int, days: int, defa
     for h, vals in buckets.items():
         hourly_avg[h] = statistics.mean(vals) if len(vals) >= MIN_SAMPLES_PER_HOUR else None
     known = [v for v in hourly_avg.values() if v is not None]
-    fallback = statistics.mean(known) if known else default
+    if not known:
+        return []
+    fallback = statistics.mean(known)
     for h in range(24):
         if hourly_avg[h] is None:
             hourly_avg[h] = fallback
@@ -118,8 +120,11 @@ def _hourly_average_sync(ws, entity_id: str, horizon_hours: int, days: int, defa
 
 
 def get_outdoor_forecast(ws, zone: dict, weather_entity: str, horizon_hours: int) -> list[float]:
+    # Sin ningun dato real se devuelve [] -- el motor cae a reactivo puro. Antes se
+    # inventaba un exterior constante de 5 C (o 28 C en frio): con eso la
+    # anticipacion podia ponerse a calentar antes de tiempo para nada (hallazgo
+    # R2#F de la revision; el propio scheduler dice "nunca se inventa una previsión").
     outdoor_sensor = zone.get("outdoor_temp_sensor")
-    default = 5.0 if zone.get("hvac_capability") != "cool" else 28.0
 
     forecast = weather_hourly_forecast(ws, weather_entity, horizon_hours)
     if forecast:
@@ -150,7 +155,9 @@ def get_outdoor_forecast(ws, zone: dict, weather_entity: str, horizon_hours: int
 
     if outdoor_sensor:
         try:
-            return _hourly_average_sync(ws, outdoor_sensor, horizon_hours, 14, default)
+            history_avg = _hourly_average_sync(ws, outdoor_sensor, horizon_hours, 14)
+            if history_avg:
+                return history_avg
         except Exception:
             _LOGGER.debug("No se pudo calcular la previsión exterior por historico para %s", outdoor_sensor, exc_info=True)
 
@@ -165,5 +172,5 @@ def get_outdoor_forecast(ws, zone: dict, weather_entity: str, horizon_hours: int
     except (ValueError, TypeError, KeyError):
         current = None
     if current is None:
-        current = default
+        return []
     return [current] * horizon_hours

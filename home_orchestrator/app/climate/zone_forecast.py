@@ -134,6 +134,11 @@ def build_forecast(runner, hours_back: int = 24, hours_fwd: int = 24) -> list[di
     min_temp = float(zone.get("min_temp", DEFAULT_MIN_TEMP))
     max_temp = float(zone.get("max_temp", DEFAULT_MAX_TEMP))
     thermal = runner.thermal_model_snapshot()
+    # Misma regla que el motor real (ver ZoneRunner.decide_and_act): la inercia
+    # solo se usa si el modelo es FIABLE; si no, None (sin anticipar). Antes la
+    # grafica usaba el valor por defecto (0.08, ~6x la real) y mostraba
+    # anticipaciones/modulaciones que la zona nunca hacia (hallazgo R2#D).
+    idle_loss = thermal.get("idle_loss_coeff") if thermal.get("reliable") else None
     zone_power_w = runner.zone_estimated_power_w()
     temp = runner.current_temperature
 
@@ -163,7 +168,7 @@ def build_forecast(runner, hours_back: int = 24, hours_fwd: int = 24) -> list[di
                 outdoor_now=outdoor_now_i, outdoor_forecast=outdoor_rest,
                 heating_rate_deg_h=thermal.get("heating_rate_deg_h", 0.0) or 0.0,
                 cooling_rate_deg_h=thermal.get("cooling_rate_deg_h", 0.0) or 0.0,
-                idle_loss_coeff=thermal.get("idle_loss_coeff", 0.0) or 0.0,
+                idle_loss_coeff=idle_loss,
                 grid_tier=grid_i.get("tier") if grid_i else None,
                 solar_surplus_now_w=grid_i.get("solar_surplus_w") if grid_i else None,
                 zone_estimated_power_w=zone_power_w, grid_forecast=grid_rest,
@@ -171,12 +176,20 @@ def build_forecast(runner, hours_back: int = 24, hours_fwd: int = 24) -> list[di
             reason = f"preset «{preset_name}» (patrón histórico): {reason}"
 
         if temp is not None:
+            # Una hora calentando/enfriando NO pasa de la consigna: al llegar, la zona
+            # para (o modula a la consigna). Antes se sumaba la tasa entera y la
+            # grafica dibujaba la zona pasandose de la consigna.
+            prev = temp
             if action == "heat":
                 temp = temp + (thermal.get("heating_rate_deg_h") or 0.0)
+                if heat_target is not None:
+                    temp = min(temp, max(heat_target, prev))
             elif action == "cool":
                 temp = temp - (thermal.get("cooling_rate_deg_h") or 0.0)
-            elif outdoor_now_i is not None:
-                temp = temp + (thermal.get("idle_loss_coeff") or 0.0) * (outdoor_now_i - temp)
+                if cool_target is not None:
+                    temp = max(temp, min(cool_target, prev))
+            elif outdoor_now_i is not None and idle_loss is not None:
+                temp = temp + idle_loss * (outdoor_now_i - temp)
 
         target_now = heat_target if action == "heat" else cool_target if action == "cool" else (heat_target or cool_target)
         points.append({

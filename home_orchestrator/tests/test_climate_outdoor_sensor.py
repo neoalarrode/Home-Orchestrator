@@ -28,5 +28,17 @@ class OutdoorSensor(unittest.TestCase):
         self.assertEqual(f[0], 19.5)
 
 
+class _NoData:
+    def call_service(self, *a, **k): return {}
+    def get_state(self, e): return None
+    def get_history(self, *a, **k): return []
+
+
+class NoInventedOutdoor(unittest.TestCase):
+    def test_no_data_returns_empty_not_5C(self):
+        # hallazgo R2#F: antes devolvia [5.0, 5.0, 5.0] inventado
+        self.assertEqual(outdoor.get_outdoor_forecast(_NoData(), ZONE, "weather.casa", 3), [])
+
+
 if __name__ == "__main__":
     unittest.main()

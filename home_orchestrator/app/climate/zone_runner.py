@@ -102,6 +102,10 @@ TEMP_HISTORY_MAXLEN = 24  # puntos para el sparkline del dashboard, no una serie
 ACTION_LOG_MAXLEN = 2000
 WRITE_MIN_INTERVAL_SECONDS = 20
 MODEL_RECOMPUTE_MIN_INTERVAL_SECONDS = 21600  # 6 h
+# Mientras el modelo termico NO sea fiable (p.ej. el primer calculo agoto su tiempo
+# con HA cargado), se reintenta con esta cadencia en vez de esperar 6 h: la zona se
+# daba por "asentada" y se quedaba horas sin anticipacion (cuarto de juegos, 1-nov).
+THERMAL_RETRY_SECONDS = 1800
 TEMP_SEND_TOLERANCE_DEG = 0.1
 # Compensacion de la sonda del delegado (ver _compensate_delegate_target): maxima
 # |desviacion| que se acepta como CALIBRACION de sonda; por encima se considera
@@ -295,17 +299,40 @@ def _resolve_min_max_temp(min_raw, max_raw, default_min: float, default_max: flo
     return parsed_min, parsed_max
 
 
+_FAN_KEYWORD_STRENGTH = (("turbo", 6.0), ("boost", 6.0), ("max", 5.0), ("strong", 5.0), ("high", 4.0), ("fast", 4.0))
+
+
+def _fan_strength(mode: str) -> float | None:
+    """Fuerza relativa de un modo de ventilador, o None si no es de los fuertes.
+    Numericos ("1".."5"): su valor (en una lista numerica gana el mayor).
+    Con nombre: segun FAN_MODE_URGENT_KEYWORDS; "mid_*" cuenta menos ("mid_high"
+    por debajo de "high")."""
+    m = str(mode).strip().lower()
+    if m.isdigit():
+        return 100.0 + float(m)  # por encima de cualquier palabra: la escala numerica es la del propio equipo
+    score = None
+    for keyword, value in _FAN_KEYWORD_STRENGTH:
+        if keyword in m:
+            score = max(score or 0.0, value)
+    if score is not None and "mid" in m:
+        score -= 2.0
+    return score
+
+
 def _pick_fan_mode(fan_modes: list[str], urgent: bool, manual: str | None) -> str | None:
     if not fan_modes:
         return None
     if manual and manual in fan_modes:
         return manual
     if urgent:
-        # Urgencia: la velocidad mas fuerte declarada (lista de fabricante de
-        # mas fuerte a mas suave, se coge el PRIMER match fuerte).
-        for mode in fan_modes:
-            if any(k in mode.lower() for k in FAN_MODE_URGENT_KEYWORDS):
-                return mode
+        # Urgencia: la velocidad mas FUERTE declarada, por fuerza y no por posicion
+        # (antes se cogia el primer match dando por hecho que el fabricante ordena
+        # de fuerte a suave; con "low, mid_high, high, strong" acababa en mid_high,
+        # y con modos numericos "1".."5" sin auto cogia el "1", el mas flojo --
+        # hallazgo R1#2 de la revision).
+        best = max(fan_modes, key=lambda m: (_fan_strength(m) is not None, _fan_strength(m) or 0.0))
+        if _fan_strength(best) is not None:
+            return best
         for mode in fan_modes:
             if "auto" in mode.lower():
                 return mode
@@ -1004,10 +1031,19 @@ class ZoneRunner:
     def _resolve_preset_targets(self, preset_name: str, wants_heat: bool, wants_cool: bool) -> tuple[float | None, float | None]:
         if preset_name == presets_module.PRESET_MANUAL:
             return (self._manual_heat if wants_heat else None), (self._manual_cool if wants_cool else None)
-        return (
-            self._preset_value(preset_name, "heat") if wants_heat else None,
-            self._preset_value(preset_name, "cool") if wants_cool else None,
-        )
+        heat = self._preset_value(preset_name, "heat") if wants_heat else None
+        cool = self._preset_value(preset_name, "cool") if wants_cool else None
+        # Preset de un solo valor ("Confort: 21") o calor=frio en una zona calor+
+        # frio: sin banda entre las dos consignas el motor lo da por invalido y deja
+        # la zona en reposo PARA SIEMPRE (hallazgo R2#E). Misma solucion que las
+        # consignas manuales (_enforce_setpoint_deadband): separarlas lo justo
+        # alrededor del valor pedido, respetandolo.
+        if heat is not None and cool is not None:
+            minimo = max(0.2, float(self.zone.get(CONF_DEADBAND, DEFAULT_DEADBAND)) * 2)
+            if cool - heat < minimo:
+                centro = (heat + cool) / 2
+                heat, cool = round(centro - minimo / 2, 2), round(centro + minimo / 2, 2)
+        return heat, cool
 
     def thermal_model_snapshot(self) -> dict:
         return dict(self._thermal_model)
@@ -1556,9 +1592,10 @@ class ZoneRunner:
         )
 
         now_ts = _utcnow().timestamp()
-        if not self._models_settled(entities_to_learn) or self._model_last_computed_ts is None or (
-            now_ts - self._model_last_computed_ts >= MODEL_RECOMPUTE_MIN_INTERVAL_SECONDS
-        ):
+        since_last = None if self._model_last_computed_ts is None else now_ts - self._model_last_computed_ts
+        if not self._models_settled(entities_to_learn) or since_last is None or (
+            since_last >= MODEL_RECOMPUTE_MIN_INTERVAL_SECONDS
+        ) or (not self._thermal_model.get("reliable") and since_last >= THERMAL_RETRY_SECONDS):
             self._thermal_model = thermal_model.get_model(
                 self.ws, self.zone, int(self.zone.get(CONF_HISTORY_DAYS_FOR_INERTIA, DEFAULT_HISTORY_DAYS_FOR_INERTIA)),
                 fallback=self._thermal_model, bridges=self.bridges,
@@ -1695,7 +1732,16 @@ class ZoneRunner:
 
         window_alert = False
         if self.zone.get(CONF_AUTO_WINDOW_DETECTION):
-            window_alert = self._window_detector.update(current_temp, _utcnow(), wants_heat, wants_cool)
+            # En calor+frio, wants_heat y wants_cool son SIEMPRE ciertos: una bajada
+            # rapida porque el AC esta ENFRIANDO contaba como "en contra del calor"
+            # y pausaba el propio frio (hallazgo R2#B de la revision). Solo cuenta
+            # como en contra lo que NO explica lo que la zona ya esta haciendo.
+            doing = self.hvac_action
+            window_alert = self._window_detector.update(
+                current_temp, _utcnow(),
+                wants_heat and doing not in ("cooling", "drying"),
+                wants_cool and doing != "heating",
+            )
 
         real_door_open = self._real_door_window_open()
         urgent = False
@@ -2526,7 +2572,26 @@ class ZoneRunner:
 
     # ---------------------------------------------------------- comandos --
 
+    def _sane_setpoint(self, value) -> float | None:
+        """Consigna pedida desde fuera (MQTT, panel, HomeKit): numero FINITO y
+        dentro de los limites de la zona. float('nan')/float('inf') no lanzan
+        excepcion y se colaban en la zona (hallazgo R2#A de la revision); una
+        consigna fuera de rango (MQTT publicado a mano) se recorta al rango."""
+        if value is None:
+            return None
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(v):
+            _LOGGER.warning("Zona climate %s: consigna no finita %r ignorada", self.zone.get("name"), value)
+            return None
+        lo = float(self.zone.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP))
+        hi = float(self.zone.get(CONF_MAX_TEMP, DEFAULT_MAX_TEMP))
+        return max(lo, min(hi, v))
+
     def set_temperature(self, single: float | None = None, low: float | None = None, high: float | None = None) -> None:
+        single, low, high = self._sane_setpoint(single), self._sane_setpoint(low), self._sane_setpoint(high)
         if single is None and low is None and high is None:
             return
         self._mode_hold = None  # orden del usuario: no espera al tiempo minimo de modo
@@ -2591,7 +2656,15 @@ class ZoneRunner:
         )
 
     def set_humidity(self, humidity: float) -> None:
-        self.target_humidity = float(humidity)
+        # Mismo saneado que las consignas (ver _sane_setpoint): finito y en rango.
+        try:
+            value = float(humidity)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(value):
+            _LOGGER.warning("Zona climate %s: humedad objetivo no finita %r ignorada", self.zone.get("name"), humidity)
+            return
+        self.target_humidity = max(self._min_humidity, min(self._max_humidity, value))
         self.decide_and_act()
 
     def set_hvac_mode(self, hvac_mode: str) -> None:
