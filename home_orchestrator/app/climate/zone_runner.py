@@ -133,6 +133,13 @@ DOOR_OPEN_MIN_SECONDS = 60
 # 58 cambios calor<->dry en 24 h). Solo se seca con este margen sobre la consigna
 # de calor... salvo humedad alta de verdad (riesgo de moho), que manda siempre.
 DRY_HEAT_MARGIN_DEG = 0.5
+# Bomba de calor primero: en una zona con un AC (bomba de calor, ~3-4 kWh de calor
+# por kWh) y un radiador electrico (resistencia, 1 kWh por kWh), al calentar solo
+# trabaja el AC y el radiador queda en reserva. Entra de apoyo si la zona va lejos
+# de su consigna (URGENT_TEMP_DEVIATION_DEG), si no hay AC utilizable, o si tras
+# HEAT_BACKUP_AFTER_SECONDS calentando la zona no ha subido HEAT_BACKUP_MIN_RISE_DEG.
+HEAT_BACKUP_AFTER_SECONDS = 1800
+HEAT_BACKUP_MIN_RISE_DEG = 0.2
 DRY_FORCE_HUMIDITY_PCT = 70.0
 HUMIDITY_SEND_TOLERANCE_PCT = 1
 EQUIPMENT_FAILURE_DETECTION_MINUTES = 30
@@ -454,6 +461,9 @@ class ZoneRunner:
         # ventilar/dry/off por una causa pasajera (ver _drive_climate_actuator):
         # al acabar esa causa se le devuelve (ver _drive_climate_idle).
         self._delegate_pre_temp: dict[str, str] = {}
+        # Tramo de calefaccion en curso (inicio, temperatura inicial, apoyo activo)
+        # para decidir cuando entra el radiador de reserva (ver _heat_reserve).
+        self._heat_run: dict | None = None
         self._last_thermal_mode: str | None = None
         self._delegate_last_active: dict[str, tuple[str, float]] = {}
         # Debounce + deteccion de cambio manual del delegado -- ver
@@ -1137,6 +1147,51 @@ class ZoneRunner:
             return None
         return _safe_float(state.get("state"))
 
+    def _heat_reserve(self, action: str, current_temp: float | None, urgent: bool, safety_emergency: bool) -> set[str]:
+        """Delegados resistivos (solo calor) que quedan EN RESERVA mientras la
+        zona calienta, porque hay una bomba de calor (admite frio) que lo hace
+        mas barato. Vacio si no aplica (no calienta, un solo tipo de equipo) o si
+        hace falta apoyo: urgencia/seguridad, ninguna bomba utilizable, o la
+        bomba no consigue subir la zona (ver HEAT_BACKUP_*). Una vez entra el
+        apoyo, se mantiene hasta que acaba ese tramo de calefaccion."""
+        now = _utcnow()
+        if action != "heat":
+            self._heat_run = None
+            return set()
+        pumps, resistive, unknown = [], [], []
+        for entity_id in self.zone.get(CONF_CLIMATE_ENTITIES) or []:
+            state = self._get_state(entity_id)
+            modes = ((state or {}).get("attributes") or {}).get("hvac_modes") or []
+            if state is None:
+                unknown.append(entity_id)  # p.ej. una bomba de calor desconectada
+            elif "heat" in modes:
+                (pumps if "cool" in modes else resistive).append(entity_id)
+        # Solo aplica si conviven los dos tipos (o una bomba que ahora no responde).
+        if not resistive or not (pumps or unknown):
+            self._heat_run = None
+            return set()
+        if self._heat_run is None:
+            self._heat_run = {"since": now, "t0": current_temp, "backup": False}
+        run = self._heat_run
+        if not run["backup"]:
+            override = getattr(self, "_delegate_override_until", {})
+            usable = [e for e in pumps if not (override.get(e) and override[e] > now)]
+            stalled = (
+                current_temp is not None and run["t0"] is not None
+                and (now - run["since"]).total_seconds() >= HEAT_BACKUP_AFTER_SECONDS
+                and current_temp - run["t0"] < HEAT_BACKUP_MIN_RISE_DEG
+            )
+            if not usable or urgent or safety_emergency or stalled:
+                run["backup"] = True
+                why = ("lejos de la consigna" if urgent or safety_emergency
+                       else "la bomba de calor no sube la zona" if stalled else "sin bomba de calor disponible")
+                _LOGGER.info("%s: entra el apoyo de %s (%s)", self.zone.get("name"), ", ".join(resistive), why)
+        if run["backup"]:
+            self.reason += " — con apoyo del radiador"
+            return set()
+        self.reason += " — calienta la bomba de calor; radiador en reserva"
+        return set(resistive)
+
     def _fallback_thermal_mode(self, current_temp: float | None, supported: list) -> str | None:
         """Modo termico de la zona para aparcar un equipo que se ha quedado en
         ventilar/dry sin registro de como estaba: el de la zona si es de un solo
@@ -1803,8 +1858,10 @@ class ZoneRunner:
                 if self._drive_switch(sw, desired_cool_on, simulate, force=cool_force, urgent=urgent):
                     real_cool = True
 
+        reserve = self._heat_reserve(action, current_temp, urgent, safety_emergency)
         for entity_id in self.zone.get(CONF_CLIMATE_ENTITIES) or []:
-            if climate_idle_keep:
+            if climate_idle_keep or entity_id in reserve:
+                # En reserva = aparcado como en idle (calor al minimo): no calienta.
                 result = self._drive_climate_idle(entity_id, current_temp, deadband, simulate, safety_emergency=safety_emergency)
             else:
                 result = self._drive_climate_actuator(

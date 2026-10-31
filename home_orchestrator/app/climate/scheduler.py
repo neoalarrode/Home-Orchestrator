@@ -157,7 +157,7 @@ def decide_action(
     Mode estandar de Matter) tiene las dos a la vez, calienta si baja de
     `heat_target` y enfria si sube de `cool_target`; una zona de un solo
     sentido solo trae rellena la que le corresponde (la otra es None).
-    Se MODULAN antes que nada (ver `_modulate_target`): si la previsión
+    En prioridad "ahorro" se MODULAN antes que nada (ver `_modulate_target`): si la previsión
     exterior va a acercar la zona a la consigna por si sola, se pide algo
     menos de golpe activo y con mas antelacion — el numero que de verdad
     se persigue en el resto de esta funcion (y el que manda a los
@@ -212,11 +212,16 @@ def decide_action(
             "revisa las entidades number.* del preset activo"
         )
 
+    # Modular la consigna con la previsión (pedir menos porque "el exterior ayudará")
+    # deja que la zona flote por debajo/encima de lo pedido: ahorra a costa de
+    # confort, asi que SOLO en prioridad "ahorro". En "confort" la consigna del
+    # usuario se respeta tal cual (31-oct: un 22 a mano se quedaba en 20.8).
     heat_mod_note = cool_mod_note = ""
-    if heating:
-        heat_target, heat_mod_note = _modulate_target(True, heat_target, outdoor_now, outdoor_forecast, idle_loss_coeff)
-    if cooling:
-        cool_target, cool_mod_note = _modulate_target(False, cool_target, outdoor_now, outdoor_forecast, idle_loss_coeff)
+    if priority == "ahorro":
+        if heating:
+            heat_target, heat_mod_note = _modulate_target(True, heat_target, outdoor_now, outdoor_forecast, idle_loss_coeff)
+        if cooling:
+            cool_target, cool_mod_note = _modulate_target(False, cool_target, outdoor_now, outdoor_forecast, idle_loss_coeff)
 
     heat_deadband = cool_deadband = deadband
     heat_note, cool_note = heat_mod_note, cool_mod_note
