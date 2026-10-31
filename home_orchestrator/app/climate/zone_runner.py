@@ -139,6 +139,11 @@ RUNNING_POWER_EMA_ALPHA = 0.2
 # abrir y cerrar al pasar no debe tocar los equipos (la puerta del patio se abrio
 # y cerro 4 veces en un minuto el 31-oct y dejo el AC del salon en ventilador).
 DOOR_OPEN_MIN_SECONDS = 60
+# Presencia con margen de ausencia: la zona solo pasa a "sin presencia" (preset de
+# ausencia) tras este tiempo seguido sin detectar a nadie. Los mmWave tienen un
+# retardo de ausencia de segundos y la casa apenas se enfria en una ausencia corta:
+# cambiar de preset en cada salida corta subia y bajaba la consigna sin ahorrar.
+PRESENCE_ABSENCE_HOLD_SECONDS = 1800
 # Deshumidificar con un AC es hacer frio: si la zona esta en el borde de pedir
 # calor, el dry la enfria, salta la calefaccion y se paga dos veces (dormitorio:
 # 58 cambios calor<->dry en 24 h). Solo se seca con este margen sobre la consigna
@@ -218,6 +223,21 @@ _PASSTHROUGH_MODES = {"dry": "dry", "fan_only": "fan_only"}  # hvac_mode -> acti
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _ha_state_since(state: dict | None) -> datetime | None:
+    """Instante del ultimo cambio de una entidad de HA (`last_changed`, o
+    `last_updated`), en ISO o en epoch (formato comprimido de subscribe_entities)."""
+    raw = (state or {}).get("last_changed") or (state or {}).get("last_updated")
+    if isinstance(raw, (int, float)):
+        return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+    if not raw:
+        return None
+    try:
+        since = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return since if since.tzinfo else since.replace(tzinfo=timezone.utc)
 
 
 def _fit_to_delegate(attrs: dict, value: float) -> float:
@@ -1200,11 +1220,19 @@ class ZoneRunner:
         if not entities:
             return None
         known = []
+        now = _utcnow()
         for e in entities:
             state = self._get_state(e)
             if state is None or state.get("state") in ("unknown", "unavailable", None):
                 continue
-            known.append(state.get("state") in ("on", "home"))
+            present = state.get("state") in ("on", "home")
+            if not present:
+                # Recien vaciada: sigue contando como ocupada hasta PRESENCE_ABSENCE_HOLD_
+                # SECONDS (se mira cuando cambio en HA, asi vale tambien tras un reinicio).
+                since = _ha_state_since(state)
+                if since is not None and (now - since).total_seconds() < PRESENCE_ABSENCE_HOLD_SECONDS:
+                    present = True
+            known.append(present)
         return any(known) if known else None
 
     def _humidify_wanted(self) -> bool:
@@ -1397,18 +1425,7 @@ class ZoneRunner:
             state = self._get_state(e)
             if state is None or state.get("state") != "on":
                 continue
-            since = None
-            raw = state.get("last_changed") or state.get("last_updated")
-            if isinstance(raw, (int, float)):
-                # Formato comprimido de subscribe_entities: segundos epoch.
-                since = datetime.fromtimestamp(float(raw), tz=timezone.utc)
-            elif raw:
-                try:
-                    since = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-                    if since.tzinfo is None:
-                        since = since.replace(tzinfo=timezone.utc)
-                except ValueError:
-                    since = None
+            since = _ha_state_since(state)
             if since is None or (now - since).total_seconds() >= DOOR_OPEN_MIN_SECONDS:
                 return True
         return False
@@ -2736,6 +2753,9 @@ class ZoneRunner:
     def set_fan_mode(self, fan_mode: str) -> None:
         self._manual_fan_mode = None if fan_mode == "auto" else fan_mode
         self._fan_mode = fan_mode
+        # Aplicarlo YA al equipo, como set_swing_mode/set_temperature: antes se
+        # quedaba esperando al siguiente ciclo (hasta 10 min) sin que pasara nada.
+        self.decide_and_act()
 
     def set_swing_mode(self, swing_mode: str) -> None:
         if self._swing_modes and swing_mode not in self._swing_modes:
