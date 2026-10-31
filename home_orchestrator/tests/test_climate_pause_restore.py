@@ -22,12 +22,13 @@ class _Stub:
         self.target_temperature_low, self.target_temperature_high = low, high
         self.zone = {"name": "Salón", "min_temp": 16.0, "max_temp": 30.0}
         self.calls = []
+        self._deviation_at_rest = set()
         for attr in ("_delegate_last_command", "_delegate_last_active", "_delegate_deviations",
-                     "_activation_probe", "_delegate_activation_margin", "_delegate_pre_temp"):
+                     "_activation_probe", "_delegate_activation_margin", "_delegate_pre_temp", "_park_since"):
             setattr(self, attr, {})
         for name in ("_drive_climate_actuator", "_drive_climate_idle", "_send_delegate_once",
                      "_note_delegate_command", "_compensate_delegate_target", "_learn_activation_margin",
-                     "_fallback_thermal_mode"):
+                     "_fallback_thermal_mode", "_learn_rest_deviation"):
             setattr(self, name, getattr(zr.ZoneRunner, name).__get__(self))
 
     def _get_state(self, e): return self.state

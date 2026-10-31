@@ -21,6 +21,8 @@ class _Stub:
         self._delegate_deviations = {}
         self._drive_climate_actuator = zr.ZoneRunner._drive_climate_actuator.__get__(self)
         self._delegate_last_command = {}
+        self._park_since = {}; self._deviation_at_rest = set()
+        self._learn_rest_deviation = zr.ZoneRunner._learn_rest_deviation.__get__(self)
         self._delegate_pre_temp = {}
         self._fallback_thermal_mode = zr.ZoneRunner._fallback_thermal_mode.__get__(self)
         self._send_delegate_once = zr.ZoneRunner._send_delegate_once.__get__(self)

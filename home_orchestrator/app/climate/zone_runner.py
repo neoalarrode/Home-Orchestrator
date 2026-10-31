@@ -114,6 +114,15 @@ TEMP_SEND_TOLERANCE_DEG = 0.1
 # que la calibracion sea estable.
 CALIB_BAND_DEG = 2.0
 DEVIATION_EMA_ALPHA = 0.25
+# Desviacion de sonda aprendida EN REPOSO: solo cuando el delegado lleva este
+# tiempo aparcado (sin calentar ni enfriar) su sonda refleja su desfase real y no
+# el calor que el mismo genera. Mientras actua, la desviacion se congela (sin
+# runaway posible). Un AC en lo alto de la pared lee ~3.8 C sobre la sala: con la
+# banda de 2 C se rechazaba siempre, la compensacion quedaba en 0, el AC veia su
+# sonda por encima de la consigna y no calentaba (dormitorio, 1-nov).
+DEVIATION_REST_SETTLE_SECONDS = 1800
+DEVIATION_REST_MAX_DEG = 8.0
+DEVIATION_REST_EMA_ALPHA = 0.1
 # Tiempo minimo en un modo de equipo (calor/frio/dry/ventilar) antes de que una
 # decision AUTOMATICA lo cambie por otro: sin esto, la anticipacion entrando y
 # saliendo + la deshumidificacion en reposo hacian saltar un AC calor<->dry cada
@@ -511,6 +520,10 @@ class ZoneRunner:
         self._last_heat_on_percent: float | None = None
         self._last_cool_on_percent: float | None = None
         self._delegate_deviations: dict[str, float] = {}
+        # Delegados cuya desviacion se ha aprendido EN REPOSO (fiable, persistida) y
+        # desde cuando esta aparcado cada uno (ver _learn_rest_deviation).
+        self._deviation_at_rest: set[str] = set()
+        self._park_since: dict[str, datetime] = {}
         # Margen de arranque aprendido por delegado (persistido) y sonda en curso.
         self._delegate_activation_margin: dict[str, float] = {}
         # Potencia EN MARCHA de cada actuador con medidor (EMA de lecturas >=
@@ -653,6 +666,13 @@ class ZoneRunner:
 
         # Margen de arranque aprendido por delegado: sin persistirlo, cada
         # reinicio volveria a dejar un radiador sin arrancar hasta re-aprenderlo.
+        saved_dev = state.get("rest_deviations")
+        if isinstance(saved_dev, dict):
+            for entity_id, dev in saved_dev.items():
+                value = _safe_float(dev)
+                if isinstance(entity_id, str) and value is not None and abs(value) <= DEVIATION_REST_MAX_DEG:
+                    self._delegate_deviations[entity_id] = value
+                    self._deviation_at_rest.add(entity_id)
         saved_running = state.get("running_power")
         if isinstance(saved_running, dict):
             for entity_id, watts in saved_running.items():
@@ -683,6 +703,8 @@ class ZoneRunner:
             "action_log": [[ts, act] for ts, act in self._action_log],
             "activation_margins": dict(self._delegate_activation_margin),
             "running_power": dict(self._running_power),
+            "rest_deviations": {e: self._delegate_deviations[e] for e in self._deviation_at_rest
+                                if e in self._delegate_deviations},
             "hvac_mode": self.hvac_mode,
             "preset_mode": self._preset_mode,
             "manual_heat": self._manual_heat,
@@ -1256,6 +1278,26 @@ class ZoneRunner:
         if state is None or state.get("state") in ("unknown", "unavailable", None):
             return None
         return _safe_float(state.get("state"))
+
+    def _learn_rest_deviation(self, entity_id: str, attrs: dict, current_temp: float | None) -> None:
+        """Llamar en cada ciclo en que el delegado esta APARCADO (ni calentando,
+        ni enfriando, ni modulando). Tras DEVIATION_REST_SETTLE_SECONDS seguidos,
+        su sonda menos la de la zona es su desfase real: se suaviza (EMA) y se
+        guarda como desviacion fiable."""
+        now = _utcnow()
+        since = self._park_since.setdefault(entity_id, now)
+        if (now - since).total_seconds() < DEVIATION_REST_SETTLE_SECONDS:
+            return
+        device_temp = _safe_float(attrs.get("current_temperature"))
+        if device_temp is None or current_temp is None:
+            return
+        raw = device_temp - current_temp
+        if abs(raw) > DEVIATION_REST_MAX_DEG:
+            return
+        prev = self._delegate_deviations.get(entity_id) if entity_id in self._deviation_at_rest else None
+        dev = raw if prev is None else (1 - DEVIATION_REST_EMA_ALPHA) * prev + DEVIATION_REST_EMA_ALPHA * raw
+        self._delegate_deviations[entity_id] = round(dev, 2)
+        self._deviation_at_rest.add(entity_id)
 
     def _side_target(self, mode: str) -> float | None:
         """Consigna de la zona para el lado `mode` (la que se reporta a HA)."""
@@ -2127,6 +2169,8 @@ class ZoneRunner:
         elif can_do and action in ("heat", "cool"):
             self._delegate_pre_temp.pop(entity_id, None)
         if can_do:
+            self._park_since.pop(entity_id, None)  # actua: ya no esta en reposo
+        if can_do:
             if action in ("heat", "cool"):
                 self._delegate_last_active[entity_id] = (action, target_temp)
             if not simulate:
@@ -2360,7 +2404,10 @@ class ZoneRunner:
         if maintain and "cool" in supported and "heat" in supported:
             held = self._maintain_heat_pump(entity_id, state, attrs, mode, current_temp, deadband, cur_state)
             if held:
+                self._park_since.pop(entity_id, None)
                 return "hold"
+        # Aparcado de verdad: momento de aprender su desfase de sonda en reposo.
+        self._learn_rest_deviation(entity_id, attrs, current_temp)
         now = _utcnow()
         # Mantener el modo termico (solo se envia si no esta ya en el: p.ej. al
         # volver de 'dry'); NUNCA se apaga.
@@ -2458,7 +2505,10 @@ class ZoneRunner:
         tope (runaway real: rampa 23->30 a ~1C/min)."""
         attrs = (state or {}).get("attributes") or {}
         delegate_temp = attrs.get("current_temperature")
-        if delegate_temp is not None and current_temp is not None:
+        at_rest = entity_id in getattr(self, "_deviation_at_rest", set())
+        # Con desviacion aprendida en reposo se usa tal cual (congelada mientras
+        # actua). Sin ella, respaldo: muestras en vivo dentro de CALIB_BAND_DEG.
+        if not at_rest and delegate_temp is not None and current_temp is not None:
             try:
                 raw = float(delegate_temp) - float(current_temp)
             except (TypeError, ValueError):
