@@ -601,7 +601,7 @@ class ZoneRunner:
         if isinstance(saved_log, list):
             for entry in saved_log:
                 if (isinstance(entry, (list, tuple)) and len(entry) == 2
-                        and isinstance(entry[0], (int, float)) and entry[1] in ("heat", "cool", "off", "hold")):
+                        and isinstance(entry[0], (int, float)) and entry[1] in ("heat", "cool", "off", "hold", "dry", "fan_only")):
                     self._action_log.append((float(entry[0]), entry[1]))
 
         # Margen de arranque aprendido por delegado: sin persistirlo, cada
@@ -1853,7 +1853,9 @@ class ZoneRunner:
         # Registro de accion propia para el aprendizaje de inercia (ver _action_log /
         # thermal_model). Para el modelo solo importa si se estuvo CALENTANDO,
         # ENFRIANDO o ninguna (ventilar/secar/idle = "off", no condiciona pasivamente).
-        self._record_action(real_action if real_action in ("heat", "cool", "hold") else "off")
+        # dry/ventilar con nombre propio: el dry enfria y contaminaba la perdida
+        # pasiva si se registraba como "off" (thermal_model solo usa "off" como reposo).
+        self._record_action(real_action if real_action in ("heat", "cool", "hold", "dry", "fan_only") else "off")
         # Ventilar es un RESPALDO, no la accion de un termostato de temperatura.
         # Estando en un modo de temperatura (calor/frio/ambos) la zona puede
         # acabar ventilando -- porque hay una ventana abierta y el calor/frio

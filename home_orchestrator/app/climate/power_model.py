@@ -391,7 +391,7 @@ def _zone_starts(action_log: list, days: int) -> list[datetime]:
         when = _to_dt(ts)
         # "hold" (bomba de calor modulando en banda) ya esta consumiendo: pasar de
         # hold a calentar no es un arranque.
-        if act in ("heat", "cool") and prev not in ("heat", "cool", "hold") and when >= since:
+        if act in ("heat", "cool") and prev not in ("heat", "cool", "hold", "dry") and when >= since:
             starts.append(when)
         prev = act
     return starts

@@ -24,16 +24,18 @@ class _FakeWS:
 class LearnFromActionLog(unittest.TestCase):
     def test_learns_rate_and_idle_from_own_action_log(self):
         now = datetime.now(timezone.utc)
-        base = now - timedelta(hours=6)
+        base = now - timedelta(hours=12)
         OUT = 10.0            # exterior constante
         RATE = 1.0            # °C/h calentando
         IDLE = 0.03           # coef de pérdida pasiva real (pequeño, bien aislado)
-        # transiciones cada 30 min: off, heat, off, heat, ... (>= MIN_RUN_MINUTES=20)
+        # transiciones cada 30 min: off, heat, off, heat, ... (>= MIN_RUN_MINUTES=20).
+        # 24 tramos = 6 h de reposo agregado, el minimo del estimador agregado de
+        # perdida pasiva (thermal_model.IDLE_POOL_MIN_HOURS).
         log = []
         temp = [(base.timestamp(), 20.0)]
         t = base
         T = 20.0
-        for i in range(12):
+        for i in range(24):
             act = "heat" if i % 2 == 1 else "off"
             log.append((t.timestamp(), act))
             for _ in range(6):  # 6 pasos de 5 min = 30 min

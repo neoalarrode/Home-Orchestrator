@@ -137,7 +137,11 @@ def _value_at_or_before(states: list, ts: datetime) -> float | None:
     return best
 
 
-def _learn_rate(temp_states: list, runs: list[_Run]) -> tuple[float | None, int]:
+def _learn_rate(temp_states: list, runs: list[_Run], sign: int = 0) -> tuple[float | None, int]:
+    """Tasa tipica (C/h) de los tramos "on". `sign`: +1 calentando (la zona tiene
+    que SUBIR), -1 enfriando (BAJAR); 0 = cualquiera (comportamiento antiguo). Con
+    abs() sin signo, un tramo de calor en que la zona bajaba (equipo que no
+    puede) contaba como que calentaba."""
     slopes = []
     for start, end, state in runs:
         if state != "on":
@@ -150,6 +154,8 @@ def _learn_rate(temp_states: list, runs: list[_Run]) -> tuple[float | None, int]
         if t0 is None or t1 is None:
             continue
         slope = (t1 - t0) / duration_h
+        if sign and slope * sign <= 0:
+            continue
         if 0.05 <= abs(slope) <= 5.0:
             slopes.append(abs(slope))
     if len(slopes) < MIN_VALID_RUNS:
@@ -157,11 +163,38 @@ def _learn_rate(temp_states: list, runs: list[_Run]) -> tuple[float | None, int]
     return statistics.median(slopes), len(slopes)
 
 
+IDLE_POOL_MIN_HOURS = 6.0   # horas de reposo agregadas minimas para fiarse del coeficiente
+IDLE_MIN_OUTDOOR_GAP = 1.0   # el exterior tiene que estar al menos esto MAS FRIO que dentro
+IDLE_CHUNK_HOURS = 3.0       # un reposo largo se trocea: cada trozo con el exterior de SU franja
+
+
 def _learn_idle_loss_coeff(temp_states: list, runs: list[_Run], outdoor_states: list) -> tuple[float | None, int]:
-    coeffs = []
+    """Coeficiente de perdida pasiva k (dT/dt = k * (exterior - interior)),
+    AGREGADO sobre todos los tramos en reposo: k = sum(dT) / sum(diferencia
+    media * horas). Antes era la mediana de un k por tramo, y con un sensor que
+    solo informa al cambiar 0.2 C la mayoria de tramos de 20-30 min salian con
+    dT = 0 -> mediana 0 -> "retiene perfectamente" (falso; dormitorio, 31-oct).
+    Agregando, la cuantizacion se compensa entre tramos. Solo tramos con el
+    exterior MAS FRIO que dentro (>= IDLE_MIN_OUTDOOR_GAP): descarta los picos de
+    un sensor exterior al sol. Los tramos se recortan a la ventana de historico
+    disponible en vez de descartarse (un reposo de dias, como el del salon, si
+    cuenta)."""
+    if not temp_states:
+        return None, 0
+    window_start = temp_states[0].last_changed
+    sum_dt = sum_w = hours = 0.0
+    used = 0
+    chunks = []
     for start, end, state in runs:
         if state != "off":
             continue
+        start = max(start, window_start)
+        while (end - start).total_seconds() / 3600 > IDLE_CHUNK_HOURS:
+            cut = start + timedelta(hours=IDLE_CHUNK_HOURS)
+            chunks.append((start, cut))
+            start = cut
+        chunks.append((start, end))
+    for start, end in chunks:
         duration_h = (end - start).total_seconds() / 3600
         if duration_h * 60 < MIN_RUN_MINUTES:
             continue
@@ -170,15 +203,18 @@ def _learn_idle_loss_coeff(temp_states: list, runs: list[_Run], outdoor_states: 
         if None in (t0, t1, out0, out1):
             continue
         avg_delta = ((out0 - t0) + (out1 - t1)) / 2
-        if abs(avg_delta) < 1.0:
+        if avg_delta > -IDLE_MIN_OUTDOOR_GAP:
             continue
-        slope = (t1 - t0) / duration_h
-        coeff = slope / avg_delta
-        if 0.0 <= coeff <= 0.6:
-            coeffs.append(coeff)
-    if len(coeffs) < MIN_VALID_RUNS:
-        return None, len(coeffs)
-    return statistics.median(coeffs), len(coeffs)
+        sum_dt += t1 - t0
+        sum_w += avg_delta * duration_h
+        hours += duration_h
+        used += 1
+    if used < MIN_VALID_RUNS or hours < IDLE_POOL_MIN_HOURS or sum_w == 0:
+        return None, used
+    coeff = sum_dt / sum_w
+    if not 0.0 <= coeff <= 0.6:
+        return None, used
+    return coeff, used
 
 
 def _history_for(ws, entity_id: str, days: int, bridges=None) -> list:
@@ -324,13 +360,13 @@ def _compute_model_sync(ws, zone: dict, days: int, bridges=None, action_log: lis
         idle_runs = heat_runs + cool_runs
 
     if heat_runs:
-        rate, n = _learn_rate(temp_states, heat_runs)
+        rate, n = _learn_rate(temp_states, heat_runs, sign=+1)
         if rate is not None:
             model["heating_rate_deg_h"] = rate
             runs_used += n
 
     if cool_runs:
-        rate, n = _learn_rate(temp_states, cool_runs)
+        rate, n = _learn_rate(temp_states, cool_runs, sign=-1)
         if rate is not None:
             model["cooling_rate_deg_h"] = rate
             runs_used += n

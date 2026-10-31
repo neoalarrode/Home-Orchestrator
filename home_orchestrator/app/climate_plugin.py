@@ -399,7 +399,7 @@ class ClimatePlugin(Plugin):
                 continue
             prev = "off"
             for ts, act in list(getattr(runner, "_action_log", [])):
-                if act in ("heat", "cool") and prev not in ("heat", "cool", "hold"):
+                if act in ("heat", "cool") and prev not in ("heat", "cool", "hold", "dry"):
                     starts.append(ts)
                 prev = act
         return starts
