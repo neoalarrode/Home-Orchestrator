@@ -1,35 +1,12 @@
 """Runtime del plugin: por dispositivo, perfil dinamico -> entidades HA nativas,
 discovery+estado por MQTT, y comandos HA -> DPs / encoders de kit."""
 from __future__ import annotations
-import json, logging, os, time
+import json, logging, time
 from typing import Any, Dict, Mapping
 from . import entities as ent_gen, controller as ctrl, mqtt_transport, ha_aux
 from .kits import light as lightkit
 HA_DISCOVERY_PREFIX="homeassistant"
 log=logging.getLogger("tuya_native")
-# Ultimas habitaciones que dijo el propio robot (`roomPropertyQry`), por devId. El
-# robot solo contesta esa consulta mientras la app del movil tiene el mapa abierto
-# (VERIFICADO 2026-10-03): se guarda lo que pasa por el canal para tenerlo siempre.
-ROBOT_ROOMS_PATH=os.environ.get("TUYA_ROBOT_ROOMS_PATH","/data/tuya_robot_rooms.json")
-def _load_robot_rooms(device_id):
-    import json_store
-    return dict(((json_store.load(ROBOT_ROOMS_PATH) or {}).get(device_id) or {}).get("rooms") or {})
-def _save_robot_rooms(device_id,rooms):
-    import json_store
-    data=json_store.load(ROBOT_ROOMS_PATH) or {}
-    data[device_id]={"rooms":dict(rooms),"ts":int(time.time())}
-    json_store.save(ROBOT_ROOMS_PATH,data)
-def _rooms_from_property_reply(r):
-    """{id: nombre} de una respuesta `roomPropertyQry`; {} si no trae habitaciones."""
-    ids=(r or {}).get("ids")
-    if not isinstance(ids,list) or r.get("success") is False:
-        return {}
-    names=r.get("names") if isinstance(r.get("names"),list) else []
-    rooms={}
-    for i,rid in enumerate(ids):
-        nm=names[i].strip() if i<len(names) and isinstance(names[i],str) and names[i].strip() else ""
-        rooms[str(rid)]=nm or "Habitación %s"%rid
-    return rooms
 # Cada cuanto se comprueba si hay habitaciones nuevas (un cambio hecho desde la
 # app del movil se adelanta a este plazo: ver `TuyaDevice.on_app_message`).
 ROOMS_REFRESH_SECONDS=300
@@ -50,15 +27,11 @@ class TuyaDevice:
         self._map_file=None       # ...y de que fichero salieron
         self._live_names={}       # nombres vistos pasar por el canal de la app (mas recientes que el mapa)
         self._rooms_ts=0.0; self._rooms_dirty=False
-        self._robot_known=None    # ultimas habitaciones que dijo el robot (ver _robot_rooms)
     def refresh_rooms(self,force=False):
         """Pone al dia `self.rooms`. BUG REAL: las habitaciones se leian UNA vez al
         arrancar y nunca mas; una habitacion creada despues en la app no aparecia
         hasta reiniciar el add-on (y ni asi, si el mapa de la nube aun era el de la
-        ultima limpieza).
-        Fuente principal: el propio robot (`roomPropertyQry`, ver _robot_rooms), que
-        da ids y nombres del mapa ACTUAL, tambien los recien creados o renombrados.
-        Si no contesta, se combinan tres fuentes:
+        ultima limpieza). Ahora se combinan tres fuentes:
           1. el mapa mas reciente de la nube (ids + nombres) -- se vuelve a mirar
              cada ROOMS_REFRESH_SECONDS, y solo se descarga si es un fichero nuevo;
           2. los nombres vistos pasar por el canal de la app cuando se editan;
@@ -72,22 +45,18 @@ class TuyaDevice:
             return self.rooms
         self._rooms_ts=now; self._rooms_dirty=False
         try:
-            merged=self._robot_rooms()
-            if merged:
-                self._live_names={}           # el robot ya da los nombres al dia
-            else:
-                from . import sweeper_map
-                latest=sweeper_map.latest_map_file(self.api,self.device_id)
-                if latest and (latest!=self._map_file or not self._map_rooms):
-                    rooms=sweeper_map.fetch_rooms(self.api,self.device_id,latest)
-                    if rooms:
-                        if self._map_file is not None and latest!=self._map_file:
-                            self._live_names={}   # el mapa nuevo ya trae lo que se edito
-                        self._map_rooms=rooms; self._map_file=latest
-                merged=dict(self._map_rooms)
-                merged.update(self._live_names)
-                for rid in self._robot_room_ids():
-                    merged.setdefault(str(rid),"Habitación %s"%rid)
+            from . import sweeper_map
+            latest=sweeper_map.latest_map_file(self.api,self.device_id)
+            if latest and (latest!=self._map_file or not self._map_rooms):
+                rooms=sweeper_map.fetch_rooms(self.api,self.device_id,latest)
+                if rooms:
+                    if self._map_file is not None and latest!=self._map_file:
+                        self._live_names={}   # el mapa nuevo ya trae lo que se edito
+                    self._map_rooms=rooms; self._map_file=latest
+            merged=dict(self._map_rooms)
+            merged.update(self._live_names)
+            for rid in self._robot_room_ids():
+                merged.setdefault(str(rid),"Habitación %s"%rid)
             merged.update(self.pinned_rooms)
             if merged and merged!=self.rooms:
                 log.info("tuya_native: habitaciones de %s actualizadas: %s",self.name,merged)
@@ -95,36 +64,6 @@ class TuyaDevice:
         except Exception:
             log.exception("tuya_native: fallo refrescando las habitaciones de %s",self.device_id)
         return self.rooms
-    def _robot_rooms(self):
-        """{id: nombre} del mapa actual segun el propio robot: `roomPropertyQry` por
-        el canal de la app, lo mismo que pide la app del movil al abrir el mapa.
-        VERIFICADO en vivo (Conga X80, 2026-10-03): trae "Entrada", que el mapa de
-        la nube aun no tenia. El robot solo contesta con la app abierta; si no
-        contesta, lo ULTIMO que dijo (por esta consulta o por el canal, ver
-        on_app_message), guardado en disco. {} si nunca lo ha dicho."""
-        try:
-            rooms=_rooms_from_property_reply(self.ctl.request("roomPropertyQry"))
-        except Exception:
-            rooms={}
-        if rooms:
-            self._remember_robot_rooms(rooms)
-            return rooms
-        return dict(self._known_robot_rooms())
-    def _known_robot_rooms(self):
-        if getattr(self,"_robot_known",None) is None:
-            try: self._robot_known=_load_robot_rooms(self.device_id)
-            except Exception:
-                log.debug("tuya_native: no se pudieron leer las habitaciones guardadas",exc_info=True)
-                self._robot_known={}
-        return self._robot_known
-    def _remember_robot_rooms(self,rooms):
-        """Guarda lo que dijo el robot. True si cambia algo."""
-        if rooms==self._known_robot_rooms():
-            return False
-        self._robot_known=dict(rooms)
-        try: _save_robot_rooms(self.device_id,rooms)
-        except Exception: log.exception("tuya_native: no se pudieron guardar las habitaciones de %s",self.device_id)
-        return True
     def _robot_room_ids(self):
         """Ids de habitacion que el robot usa en sus programaciones (consulta
         `scheduleQry` por el canal de la app). [] si no hay canal o no contesta."""
@@ -143,15 +82,7 @@ class TuyaDevice:
         app->robot, tambien lo que manda la app del movil). Solo anota; el
         refresco de verdad lo hace el siguiente ciclo de estado."""
         rt=data.get("reqType")
-        if rt=="roomPropertyQry":
-            # Respuesta del robot (a nosotros o a la app del movil al abrir el mapa).
-            # Solo marca refresco si trae algo nuevo: nuestro propio refresco la
-            # provoca, y si no se entraria en bucle.
-            rooms=_rooms_from_property_reply(data) if direction=="in" else {}
-            if not (rooms and self._remember_robot_rooms(rooms)):
-                return
-            self._rooms_dirty=True
-        elif rt in _ROOM_EVENTS_RENAME:
+        if rt in _ROOM_EVENTS_RENAME:
             ids=data.get("ids"); names=data.get("names")
             if isinstance(ids,list) and isinstance(names,list):
                 for i,rid in enumerate(ids):

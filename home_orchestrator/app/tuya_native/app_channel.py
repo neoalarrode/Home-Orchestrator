@@ -36,7 +36,6 @@ class AppChannel:
         self._lock = threading.Lock()
         self._devices: dict[str, dict] = {}      # devId -> {"key": bytes, "cb": callable|None}
         self._pending: dict[str, dict] = {}      # taskId -> {"event": Event, "reply": dict|None}
-        self._listeners: dict[str, list] = {}    # devId -> [fn(direction, doc)] (ver add_listener)
         self._client = None
         self._connected = threading.Event()
         self._paused = False
@@ -47,19 +46,6 @@ class AppChannel:
             self._devices[device_id] = {"key": local_key, "cb": on_message}
         if self.connected:
             self._subscribe(device_id)
-
-    def add_listener(self, device_id: str, fn) -> None:
-        """Escucha extra y temporal: `fn(direction, doc)` recibe el mensaje
-        descifrado ENTERO ({"protocol","t","data"}), de cualquier protocolo.
-        Lo usa la senalizacion P2P (protocolo 302, ver p2p_map.py)."""
-        with self._lock:
-            self._listeners.setdefault(device_id, []).append(fn)
-
-    def remove_listener(self, device_id: str, fn) -> None:
-        with self._lock:
-            fns = self._listeners.get(device_id) or []
-            if fn in fns:
-                fns.remove(fn)
 
     @property
     def connected(self) -> bool:
@@ -160,13 +146,6 @@ class AppChannel:
             if raw is None:
                 return
             doc = json.loads(raw)
-            with self._lock:
-                listeners = list(self._listeners.get(device_id) or [])
-            for fn in listeners:
-                try:
-                    fn(direction, doc)
-                except Exception:
-                    log.exception("tuya_native: fallo en una escucha del canal de la app")
             data = doc.get("data")
             if not isinstance(data, dict):
                 return

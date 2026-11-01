@@ -101,7 +101,7 @@ FOOTER_SIZE_HMAC = 36  # hmac-sha256(32)+suffix(4) - protocol 3.4 only
 # Same sanity bound the reference's parse_header() uses - real Tuya packets
 # top out somewhere around 300 bytes, so anything past this is corruption
 # or a desynced stream, not a big legitimate frame.
-MAX_PAYLOAD_LEN = 4096
+MAX_PAYLOAD_LEN = 1000
 
 # ---------------------------------------------------------------------------
 # Protocol 3.5 -- a COMPLETELY DIFFERENT wire frame, not just a different
@@ -135,7 +135,6 @@ CMD_SESS_KEY_NEG_FINISH = 0x05
 CMD_CONTROL_NEW = 0x0D  # protocol 3.4's CONTROL, and type_0d's DP_QUERY
 CMD_DP_QUERY_NEW = 0x10  # protocol 3.4's DP_QUERY
 CMD_UPDATEDPS = 0x12  # ask the device to refresh/re-report the given DPs
-CMD_IPC_LAN_302 = 0x20  # IPC LAN signaling (P2P offers/answers, FrameTypeEnum.IPC_LAN_302)
 
 # Commands that do NOT get the 3.3/3.4 plaintext version header prepended.
 _NO_HEADER_CMDS = frozenset(
@@ -147,7 +146,6 @@ _NO_HEADER_CMDS = frozenset(
         CMD_SESS_KEY_NEG_START,
         CMD_SESS_KEY_NEG_RESP,
         CMD_SESS_KEY_NEG_FINISH,
-        CMD_IPC_LAN_302,
     }
 )
 
@@ -269,7 +267,6 @@ class TuyaLocalDevice:
         # handshake, where the reference itself doesn't trust seqno
         # matching yet (see _negotiate_session_key's docstring).
         self._pending_cmd: dict[int, asyncio.Future] = {}
-        self._cmd_queues: dict[int, asyncio.Queue] = {}
         self._lock = asyncio.Lock()
         # 3.5-only: real bug, confirmed against live hardware -- protocol
         # 3.5 replies with the DEVICE's own global incrementing sequence
@@ -961,14 +958,6 @@ class TuyaLocalDevice:
             self._writer.write(packet)
             await self._writer.drain()
 
-    def subscribe_command(self, command: int) -> "asyncio.Queue[TuyaMessage]":
-        q: asyncio.Queue[TuyaMessage] = asyncio.Queue()
-        self._cmd_queues[command] = q
-        return q
-
-    def unsubscribe_command(self, command: int) -> None:
-        self._cmd_queues.pop(command, None)
-
     async def _send_receive_json(self, command: int, obj: dict[str, Any]) -> TuyaMessage:
         # For CONTROL/CONTROL_NEW, which DPs are being WRITTEN is exactly
         # the question when something is writing far more often than any
@@ -1106,11 +1095,6 @@ class TuyaLocalDevice:
                         "rx", frame.seq, frame.command, frame.payload,
                         f"{route}; decoded={'yes' if obj else 'no'}",
                     )
-
-                    cmd_queue = self._cmd_queues.get(frame.command)
-                    if cmd_queue is not None:
-                        cmd_queue.put_nowait(TuyaMessage(frame.seq, frame.command, obj if obj is not None else frame.payload))
-                        continue
 
                     # Command-sentinel waiters (3.4 handshake) take
                     # priority - matches the reference's own dispatch order

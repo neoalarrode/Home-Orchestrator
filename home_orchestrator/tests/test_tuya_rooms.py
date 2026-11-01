@@ -3,7 +3,6 @@ en vez de leerse una sola vez al arrancar."""
 import json
 import os
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
@@ -15,15 +14,10 @@ class _Ctl:
     def __init__(self):
         self.schedule_ids = []
         self.answers = True
-        self.robot_rooms = None      # (ids, names) que contesta a roomPropertyQry; None = no lo sabe
 
     def request(self, req_type, message=None, **kw):
         if not self.answers:
             return None
-        if req_type == "roomPropertyQry" and self.robot_rooms is not None:
-            ids, names = self.robot_rooms
-            return {"reqType": req_type, "success": True, "errCode": 0, "mapId": 3, "num": len(ids),
-                    "ids": list(ids), "names": list(names)}
         return {"reqType": req_type, "list": [{"ids": list(self.schedule_ids)}]}
 
 
@@ -32,7 +26,7 @@ def _device(cloud):
     d = dm.TuyaDevice.__new__(dm.TuyaDevice)
     d.api = None; d.device_id = "dev"; d.name = "Robot"; d.ctl = _Ctl(); d.plan = {"main_domain": "vacuum"}
     d.rooms = {}; d.pinned_rooms = {}; d._map_rooms = {}; d._map_file = None; d._live_names = {}
-    d._rooms_ts = 0.0; d._rooms_dirty = False; d._robot_known = None
+    d._rooms_ts = 0.0; d._rooms_dirty = False
     return d
 
 
@@ -51,14 +45,9 @@ class TuyaRoomsStayInSync(unittest.TestCase):
             return {} if self.cloud["fail"] else dict(self.cloud["rooms"])
 
         sweeper_map.latest_map_file, sweeper_map.fetch_rooms = latest, fetch
-        self._tmp = tempfile.TemporaryDirectory()
-        self._orig_path = dm.ROBOT_ROOMS_PATH
-        dm.ROBOT_ROOMS_PATH = os.path.join(self._tmp.name, "robot_rooms.json")
 
     def tearDown(self):
         sweeper_map.latest_map_file, sweeper_map.fetch_rooms, dm.time.time = self._orig
-        dm.ROBOT_ROOMS_PATH = self._orig_path
-        self._tmp.cleanup()
 
     def test_new_room_known_only_to_the_robot_is_exposed(self):
         """El caso real: el robot ya usa la habitacion 5 y el mapa de la nube aun no la trae."""
@@ -119,71 +108,6 @@ class TuyaRoomsStayInSync(unittest.TestCase):
         d.refresh_rooms(force=True)
         self.assertEqual(d.rooms["0"], "Aseo")
         self.assertIn("5", d.rooms)
-
-    def test_robot_rooms_are_the_main_source_and_skip_the_cloud(self):
-        """El caso real (2026-10-03): el robot ya conoce "Entrada"; el mapa de la nube no."""
-        d = _device(self.cloud)
-        d.ctl.robot_rooms = ([0, 1, 5], ["Baño", "Despacho", "Entrada"])
-        d.refresh_rooms(force=True)
-        self.assertEqual(d.rooms, {"0": "Baño", "1": "Despacho", "5": "Entrada"})
-        self.assertEqual(self.cloud["fetches"], 0)
-
-    def test_robot_rename_is_picked_up_on_the_next_refresh(self):
-        d = _device(self.cloud)
-        d.ctl.robot_rooms = ([0, 1], ["Baño", "Despacho"])
-        d.refresh_rooms(force=True)
-        d.ctl.robot_rooms = ([0, 1], ["Baño", "Oficina"])
-        d.on_app_message("out", {"reqType": "roomPropertySet", "ids": [1], "names": ["Oficina"]})
-        self.now[0] += 30
-        d.refresh_rooms()
-        self.assertEqual(d.rooms["1"], "Oficina")
-
-    def test_robot_room_without_name_gets_a_placeholder_and_pinned_still_wins(self):
-        d = _device(self.cloud)
-        d.pinned_rooms = {"0": "Aseo"}
-        d.ctl.robot_rooms = ([0, 7], ["Baño", ""])
-        d.refresh_rooms(force=True)
-        self.assertEqual(d.rooms, {"0": "Aseo", "7": "Habitación 7"})
-
-    def test_robot_silent_keeps_what_it_last_said_even_after_a_restart(self):
-        """El robot solo contesta con la app abierta: al cerrarla no se pierde "Entrada"."""
-        d = _device(self.cloud)
-        d.ctl.robot_rooms = ([0, 5], ["Baño", "Entrada"])
-        d.refresh_rooms(force=True)
-        d.ctl.answers = False
-        self.now[0] += dm.ROOMS_REFRESH_SECONDS + 1
-        d.refresh_rooms()
-        self.assertEqual(d.rooms, {"0": "Baño", "5": "Entrada"})
-        import json_store; json_store.flush_all()
-        again = _device(self.cloud)                        # reinicio del add-on
-        again.ctl.answers = False
-        again.refresh_rooms(force=True)
-        self.assertEqual(again.rooms, {"0": "Baño", "5": "Entrada"})
-        self.assertEqual(self.cloud["fetches"], 0)
-
-    def test_robot_never_answered_falls_back_to_the_cloud(self):
-        d = _device(self.cloud)
-        d.refresh_rooms(force=True)
-        self.assertEqual(d.rooms, {"0": "Baño", "1": "Despacho"})
-
-    def test_names_pushed_while_the_phone_app_is_open_are_learned(self):
-        """La app del movil abre el mapa -> el robot publica roomPropertyQry por el canal."""
-        d = _device(self.cloud)
-        d.refresh_rooms(force=True)
-        d.on_app_message("in", {"reqType": "roomPropertyQry", "success": True, "taskId": "0000000000000",
-                                "ids": [0, 1, 5], "names": ["Baño", "Despacho", "Entrada"]})
-        self.assertTrue(d._rooms_dirty)
-        self.now[0] += 30
-        d.refresh_rooms()
-        self.assertEqual(d.rooms["5"], "Entrada")
-
-    def test_repeated_identical_reply_does_not_force_refreshes(self):
-        d = _device(self.cloud)
-        msg = {"reqType": "roomPropertyQry", "success": True, "ids": [0], "names": ["Baño"]}
-        d.on_app_message("in", msg)
-        d._rooms_dirty = False
-        d.on_app_message("in", msg)
-        self.assertFalse(d._rooms_dirty)
 
     def test_segments_are_published_in_the_vacuum_state(self):
         d = _device(self.cloud)
