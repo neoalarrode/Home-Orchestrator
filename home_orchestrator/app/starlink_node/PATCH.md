@@ -71,6 +71,15 @@ cada entrada -- verificado localmente decodificando la petición
 construida contra el esquema real antes de desplegar (sin tocar el
 dispositivo).
 
+## `collector/historian.mts` -- log de "unreachable" solo en los flancos
+
+Con la antena caída, el historiador escribía `dish unreachable` en cada
+sondeo (cada 15 s): 531 líneas en un corte de 2 h el 1-nov, que tapaban el
+resto del log del add-on. Ahora `reachabilityLogger` avisa una vez al
+caerse y otra al volver (con los minutos caído); igual para el histórico
+del router. El corte ya queda registrado en eventos y episodios de alerta.
+Reaplicar si se actualiza Dishylink.
+
 ## Como se ejecutan
 
 `starlink_plugin.py` (`start_background_threads`) lanza dos procesos:

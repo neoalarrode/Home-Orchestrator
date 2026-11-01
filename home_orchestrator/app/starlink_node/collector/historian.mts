@@ -924,14 +924,41 @@ function nonOverlapping(run: () => Promise<void>): () => Promise<void> {
   };
 }
 
+/**
+ * Log a device going unreachable once, on the edge, and once more when it comes
+ * back — not every poll. A two-hour outage on 1-nov wrote "dish unreachable"
+ * 531 times (every 15 s), burying everything else in the add-on log; the
+ * outage itself is already recorded as events and alert episodes.
+ */
+function reachabilityLogger(what: string) {
+  let downSinceMs: number | null = null;
+  return {
+    down(error: unknown): void {
+      if (downSinceMs !== null) return;
+      downSinceMs = Date.now();
+      console.warn(`[historian] ${what} unreachable: ${(error as Error).message} (silenced until it is back)`);
+    },
+    up(): void {
+      if (downSinceMs === null) return;
+      const minutes = Math.round((Date.now() - downSinceMs) / 60000);
+      downSinceMs = null;
+      console.log(`[historian] ${what} reachable again after ${minutes} min`);
+    },
+  };
+}
+
+const dishReachability = reachabilityLogger("dish");
+const routerHistoryReachability = reachabilityLogger("router history");
+
 async function poll(): Promise<void> {
   await pollAlerts();
 
   let history: Awaited<ReturnType<typeof getHistory>>;
   try {
     history = await getHistory();
+    dishReachability.up();
   } catch (error) {
-    console.warn(`[historian] dish unreachable: ${(error as Error).message}`);
+    dishReachability.down(error);
     return;
   }
 
@@ -944,11 +971,12 @@ async function poll(): Promise<void> {
   // in wifi_get_history — same rolling/reset behaviour, so persist it the same way.
   try {
     const wifiHistory = await getWifiHistory();
+    routerHistoryReachability.up();
     const newRouterEvents = eventStore.upsert(decodeWifiHistoryEvents(wifiHistory));
     if (newRouterEvents > 0)
       console.log(`[historian] recorded ${newRouterEvents} event(s) from the router log`);
   } catch (error) {
-    console.warn(`[historian] router history unreachable: ${(error as Error).message}`);
+    routerHistoryReachability.down(error);
   }
 
   // Stamped onto the samples this poll appends, from the status pollAlerts read
