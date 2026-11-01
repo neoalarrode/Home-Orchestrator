@@ -3536,6 +3536,11 @@ def _load_follow_context() -> dict:
 
 
 _load_follow_prepared: set[str] = set()
+# Cuando se preparo cada equipo: la comprobacion periodica (cache BLE, hasta 10 s
+# de antiguedad) no lo vuelve a preparar justo despues -- la cache aun muestra
+# las tareas de antes y lo preparaba dos veces.
+_load_follow_prepared_at: dict[str, float] = {}
+LOAD_FOLLOW_ENSURE_GRACE_SECONDS = 15
 
 
 def _load_follow_send(b: dict, watts: float) -> bool:
@@ -3564,6 +3569,7 @@ def _load_follow_prepare(b: dict) -> bool:
         log.warning(f"[{b.get('name')}] seguimiento: no se pudo preparar (carga off {ok_off}, descarga on {ok_on})")
         return False
     _load_follow_prepared.add(b["id"])
+    _load_follow_prepared_at[b["id"]] = time.time()
     log.info(f"[{b.get('name')}] seguimiento: carga desactivada y descarga activada")
     return True
 
@@ -3571,6 +3577,8 @@ def _load_follow_prepare(b: dict) -> bool:
 def _load_follow_ensure(b: dict) -> None:
     """Un equipo que tiene que descargar con la carga activada o sin la tarea de
     descarga (segun la cache BLE): se vuelve a preparar."""
+    if time.time() - _load_follow_prepared_at.get(b["id"], 0.0) < LOAD_FOLLOW_ENSURE_GRACE_SECONDS:
+        return
     cfg = config_store.load_config()
     state = ecoflow_ble.get_state(b["ecoflow_ble_address"], cfg.get("ecoflow_user_id")) or {}
     if state.get("charging_task_enabled") is False and state.get("discharging_task_enabled") is True:
