@@ -143,6 +143,13 @@ class UnreachableAndBack(unittest.TestCase):
         sent = {c[1].get("transition") for c in self.ha.calls if c[0] == "turn_on"}
         self.assertEqual(sent, {0.0, 2.0})
 
+    def test_stale_lights_are_pruned_from_state(self):
+        state = {"commanded": {L: {"brightness_pct": 1}, "tplink:7bf176f7": {"brightness_pct": 100}},
+                 "manual_override": {"tplink:13766db2": True}}
+        z = zr.ZoneRunner("0df2d936", dict(CFG), self.ha, state=state)
+        self.assertEqual(set(z._state["commanded"]), {L})
+        self.assertEqual(z._state["manual_override"], {})
+
     def test_manual_off_still_respected(self):
         self.cycle(); self.cycle()
         self.ha.states[L]["state"] = "off"                        # la apaga alguien

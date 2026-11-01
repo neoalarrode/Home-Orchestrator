@@ -162,6 +162,17 @@ class ZoneRunner:
             log.warning("Zona lighting %s: rules_text invalido, sin reglas activas", zone_id, exc_info=True)
             self._rules = []
 
+        # Ordenes/marcas guardadas de luces que ya no estan en la zona (p.ej. las
+        # barras TP-Link de la cocina, sustituidas por Aqara): no se miran nunca y
+        # se arrastraban en el estado para siempre. Con reglas invalidas no se
+        # poda nada, para no perder lo de luces que siguen existiendo.
+        if self._rules:
+            keep = set(rules.all_lights(self._rules)) | {e for e in (cfg.get("plant_mode_lights") or []) if e}
+            for key in ("commanded", "manual_override"):
+                stored = self._state.get(key)
+                if isinstance(stored, dict):
+                    self._state[key] = {e: v for e, v in stored.items() if e in keep}
+
         # Snapshot en vivo, recalculado cada ciclo -- lo que expone
         # `/api/zones` para pintar la interfaz.
         self.occupied: bool = bool(self._state.get("occupied", False))
