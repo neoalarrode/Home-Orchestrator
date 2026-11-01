@@ -165,12 +165,23 @@ class Follower(unittest.TestCase):
 
     def test_estimate_waits_for_the_ramp(self):
         f = lf.LoadFollower(lambda: {}, lambda b, w: True)
-        f._orders["u"] = (0.0, 1200.0, 100.0)
-        f._advance_estimates(101.0); self.assertEqual(f._estimate["u"], 0.0)        # aun sin respuesta
-        f._advance_estimates(103.0); self.assertEqual(f._estimate["u"], 300.0)      # 1 s de rampa
-        f._advance_estimates(110.0); self.assertEqual(f._estimate["u"], 1200.0)
-        f._orders["u"] = (1200.0, 200.0, 200.0)
-        f._advance_estimates(203.0); self.assertEqual(f._estimate["u"], 200.0)      # bajada de golpe
+        f._orders["u"] = [(100.0, 1200.0)]
+        for t in (100.0, 101.0): f._advance_estimates(t)
+        self.assertEqual(f._estimate.get("u", 0.0), 0.0)          # aun sin respuesta
+        f._advance_estimates(102.0); self.assertEqual(f._estimate["u"], 300.0)
+        f._advance_estimates(103.0); self.assertEqual(f._estimate["u"], 600.0)
+        for t in range(104, 110): f._advance_estimates(float(t))
+        self.assertEqual(f._estimate["u"], 1200.0)
+        f._orders["u"].append((120.0, 200.0))
+        f._advance_estimates(122.0); self.assertEqual(f._estimate["u"], 200.0)   # bajada de golpe
+
+    def test_orders_every_second_do_not_freeze_the_estimate(self):
+        f = lf.LoadFollower(lambda: {}, lambda b, w: True)
+        f._orders["u"] = []
+        for t in range(100, 110):
+            f._orders["u"].append((float(t), 600.0 + (t % 2) * 30))   # cambia cada segundo
+            f._advance_estimates(float(t))
+        self.assertGreater(f._estimate["u"], 500.0)               # sigue a lo pedido
 
     def test_shadow_sends_nothing(self):
         sent = []

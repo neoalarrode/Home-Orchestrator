@@ -197,10 +197,11 @@ class LoadFollower:
         self._last_shadow_log = 0.0
         self._active: list[str] = []
         self._last_swap = 0.0
-        # Estimacion de lo entregado de verdad por cada equipo: {id: (valor, ts)}
-        # y las ordenes en curso {id: (desde, hacia, ts_orden)}.
+        # Estimacion de lo entregado de verdad por cada equipo, y el historial de
+        # ordenes [(ts, vatios)] con el que se calcula (ver _advance_estimates).
         self._estimate: dict[str, float] = {}
-        self._orders: dict[str, tuple[float, float, float]] = {}
+        self._orders: dict[str, list[tuple[float, float]]] = {}
+        self._last_advance = None
         self._stop = threading.Event()
         self.status: dict = {"mode": "off"}
 
@@ -298,7 +299,7 @@ class LoadFollower:
             if b is None:
                 continue
             if self._send(b, w):
-                self._orders[bid] = (self._estimate.get(bid, self._current.get(bid, 0.0)), w, time.monotonic())
+                self._orders.setdefault(bid, []).append((time.monotonic(), w))
                 self._current[bid] = w
                 self._followed.add(bid)
             else:
@@ -311,20 +312,26 @@ class LoadFollower:
                 f"{(by_id.get(b) or {}).get('name', b)} {w:.0f} W" for b, w in targets.items()))
 
     def _advance_estimates(self, now: float) -> None:
-        """Lo entregado de verdad: tras RESPONSE_DELAY_S empieza a ir hacia lo
-        pedido; sube a RAMP_UP_W_PER_S y baja de golpe."""
-        for bid, (start, target, ts) in list(self._orders.items()):
-            elapsed = now - ts - RESPONSE_DELAY_S
-            if elapsed <= 0:
-                self._estimate[bid] = start
-            elif target <= start:
-                self._estimate[bid] = target
-                del self._orders[bid]
-            else:
-                value = min(target, start + RAMP_UP_W_PER_S * elapsed)
-                self._estimate[bid] = value
-                if value >= target:
-                    del self._orders[bid]
+        """Lo entregado de verdad va hacia la orden que habia hace
+        RESPONSE_DELAY_S (la que el equipo ya esta aplicando): sube a
+        RAMP_UP_W_PER_S y baja de golpe. BUG REAL de la primera version: cada
+        orden nueva reiniciaba el retraso, y mandando cada segundo la estimacion
+        se quedaba congelada -- el seguimiento no veia el efecto de lo que
+        mandaba y oscilaba."""
+        dt = 0.0 if self._last_advance is None else max(0.0, now - self._last_advance)
+        self._last_advance = now
+        for bid, history in self._orders.items():
+            applied = None
+            for ts, w in history:
+                if ts <= now - RESPONSE_DELAY_S:
+                    applied = w
+            # Solo hace falta la ultima orden ya aplicada y las posteriores.
+            while len(history) > 1 and history[1][0] <= now - RESPONSE_DELAY_S:
+                history.pop(0)
+            if applied is None:
+                continue
+            est = self._estimate.get(bid, 0.0)
+            self._estimate[bid] = applied if applied <= est else min(applied, est + RAMP_UP_W_PER_S * dt)
 
     def _release_missing(self, still: set[str], ctx: dict) -> None:
         """Las baterias que seguian y ya no: a 0 y devueltas al planificador."""
