@@ -3522,6 +3522,7 @@ def _load_follow_context() -> dict:
     mode = general.get("load_follow_mode") or "off"
     return {
         "mode": "on" if testing else mode,
+        "trace": bool(general.get("load_follow_trace")),
         "other_charging_w": other_charging_w,
         "others": others_list,
         "meter_host": general.get("load_follow_meter_host"),

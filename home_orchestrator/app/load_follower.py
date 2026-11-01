@@ -240,6 +240,11 @@ class LoadFollower:
                 self._last_swap = now
                 self._active = swapped
         targets = compute_targets(*args, active=self._active)
+        if ctx.get("trace"):
+            # Diagnostico (general.load_follow_trace): cada lectura con lo pedido.
+            log.info("[SEGUIMIENTO TRAZA] contador %.0f W, entregando %s, otros %s, objetivo %s", meter,
+                     {k: round(v) for k, v in self._current.items()},
+                     [round(o.get("output_w") or 0) for o in others], {k: round(v) for k, v in targets.items()})
         # Baterias que han dejado de seguir (cambio de modo, sin SOC...): a 0.
         for bid in list(self._current):
             if bid not in targets:
