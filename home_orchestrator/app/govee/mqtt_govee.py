@@ -124,26 +124,35 @@ class MqttGoveeDevice:
     # el comando, asi que HA se quedaba con el valor viejo hasta el siguiente
     # sondeo (de ahi que por MQTT pareciera lentisimo y por la interfaz no).
 
+    def _handle(self):
+        # BUG REAL (produccion 1-nov): los comandos de HA iban directos a
+        # `manager.turn_on/turn_off`, que es SOLO LAN -- un dispositivo dado
+        # de alta solo por la nube (o con la LAN caida) daba KeyError
+        # "dispositivo Govee desconocido" y no se encendia/apagaba nunca
+        # desde HA. El handle elige LAN o nube y recorta al rango de Kelvin
+        # real del modelo, igual que cuando manda Lighting.
+        handle = self._manager.light_handle(self.device_id)
+        if handle is None:
+            raise KeyError(f"dispositivo Govee desconocido: {self.device_id}")
+        return handle
+
     def _on_power(self, client, userdata, msg) -> None:
         on = msg.payload.decode(errors="replace").strip() == "ON"
-        self._commands.submit(
-            lambda: self._manager.turn_on(self.device_id) if on
-            else self._manager.turn_off(self.device_id)
-        )
+        self._commands.submit(lambda: self._handle().turn_on() if on else self._handle().turn_off())
 
     def _on_brightness(self, client, userdata, msg) -> None:
         value = self._as_float(msg, "brillo")
         if value is None:
             return
         pct = max(1, min(100, round(value)))
-        self._commands.submit(lambda: self._manager.turn_on(self.device_id, brightness_pct=pct))
+        self._commands.submit(lambda: self._handle().turn_on(brightness_pct=pct))
 
     def _on_color_temp(self, client, userdata, msg) -> None:
         value = self._as_float(msg, "temperatura de color")
         if value is None:
             return
         kelvin = round(value)
-        self._commands.submit(lambda: self._manager.turn_on(self.device_id, color_temp_kelvin=kelvin))
+        self._commands.submit(lambda: self._handle().turn_on(color_temp_kelvin=kelvin))
 
     def _on_hs(self, client, userdata, msg) -> None:
         try:
@@ -152,7 +161,7 @@ class MqttGoveeDevice:
         except ValueError:
             log.warning("Govee %s: payload de color invalido: %r", self.device_id, msg.payload)
             return
-        self._commands.submit(lambda: self._manager.turn_on(self.device_id, hs=hs))
+        self._commands.submit(lambda: self._handle().turn_on(hs=hs))
 
     def _as_float(self, msg, what: str) -> float | None:
         try:
