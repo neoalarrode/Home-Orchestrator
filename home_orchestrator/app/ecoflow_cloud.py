@@ -367,9 +367,14 @@ class EcoFlowCloudClient:
             relevant = self._is_relevant_change(sn, payload)
             state.update(payload)
             self._live_state_ts[sn] = time.time()
+            first_timer_task = "allTimerTask" in payload and sn not in self._all_timer_task
             if "allTimerTask" in payload:
                 self._all_timer_task[sn] = payload["allTimerTask"]
                 self._all_timer_task_ts[sn] = time.time()
+        if first_timer_task:
+            # Sin ella no se puede mandar nada a este grupo por la nube; que
+            # quede constancia de cuando se conoce.
+            log.info(f"allTimerTask de {sn} recibida: ya se le pueden mandar tareas por la nube")
 
         # El feed manda mensajes continuamente (temperaturas, tensiones,
         # contadores internos...). Antes CADA mensaje relanzaba el ciclo de

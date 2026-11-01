@@ -80,6 +80,11 @@ def _note_command(battery_id: str, signature: tuple, now: datetime) -> None:
 # normal retoma el control.
 SOC_UNAVAILABLE_SAFE_STOP_SECONDS = 300.0
 _soc_unavailable_since: dict[str, datetime] = {}
+# Si el corte falla (equipo apagado: ni BLE ni la nube llegan) no se reintenta
+# en cada ciclo -- con el disparo reactivo son cada pocos segundos y solo
+# llenaban el log (1-nov, Max Patio apagada: 26 avisos en 2 min).
+SAFE_STOP_RETRY_SECONDS = 60.0
+_safe_stop_failed_at: dict[str, datetime] = {}
 
 
 def _safe_stop_charge(b: "Battery") -> None:
@@ -655,16 +660,21 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
             if sin_soc_s >= SOC_UNAVAILABLE_SAFE_STOP_SECONDS:
                 line += f" — sin SOC desde hace {int(sin_soc_s // 60)} min: carga cortada por seguridad"
                 signature = ("safe_stop",)
-                if not dry_run and _command_send_allowed(b.id, signature, now, refresh_seconds=COMMAND_REFRESH_SECONDS):
+                failed_at = _safe_stop_failed_at.get(b.id)
+                retry_ok = failed_at is None or (now - failed_at).total_seconds() >= SAFE_STOP_RETRY_SECONDS
+                if not dry_run and retry_ok and _command_send_allowed(b.id, signature, now, refresh_seconds=COMMAND_REFRESH_SECONDS):
                     try:
                         _safe_stop_charge(b)
                         _note_command(b.id, signature, now)
+                        _safe_stop_failed_at.pop(b.id, None)
                     except Exception as e:
                         _last_command.pop(b.id, None)
+                        _safe_stop_failed_at[b.id] = now
                         line += f" — AVISO: no se pudo aplicar en Home Assistant ({e})"
             log_lines.append(("[SIMULACION] " if dry_run else "") + line)
             continue
         _soc_unavailable_since.pop(b.id, None)
+        _safe_stop_failed_at.pop(b.id, None)
 
         # Semantica confirmada por el usuario para estos equipos (p.ej.
         # EcoFlow): cargar = switch de carga ON, switch de descarga OFF (a
