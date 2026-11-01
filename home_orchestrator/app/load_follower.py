@@ -66,6 +66,11 @@ ENSURE_TASKS_SECONDS = 10.0
 # Cada orden se verifica leyendo el equipo VERIFY_AFTER_S despues (el equipo
 # tarda ~2 s en aplicarla: leer al instante daria el valor anterior).
 VERIFY_AFTER_S = 3.0
+# Liberar un equipo que no responde: reintentos en su hilo, no en cada lectura.
+RELEASE_ATTEMPTS = 5
+RELEASE_RETRY_S = 10.0
+# Llamadas en hilos por equipo (False en tests: en linea).
+ASYNC_CALLS = True
 
 
 def read_shelly_w(host: str, session: requests.Session | None = None) -> float | None:
@@ -80,7 +85,8 @@ def read_shelly_w(host: str, session: requests.Session | None = None) -> float |
 
 def wanted_total(meter_w: float, current: dict[str, float], followers: list[dict],
                  discharge_allowed: bool, contracted_w: float, margin_w: float,
-                 other_charging_w: float = 0.0, others: list[dict] | None = None) -> float:
+                 other_charging_w: float = 0.0, others: list[dict] | None = None,
+                 own_charging_w: float = 0.0) -> float:
     """Potencia total que tienen que entregar las baterias ahora.
 
     `other_charging_w`: lo que estan cargando de red las baterias que NO siguen
@@ -93,8 +99,12 @@ def wanted_total(meter_w: float, current: dict[str, float], followers: list[dict
     if discharge_allowed:
         wanted = demand - margin_w
     elif contracted_w > 0:
-        # Fuera de descarga planificada: solo lo que pase del contratado.
-        wanted = demand - (contracted_w - margin_w)
+        # Fuera de descarga planificada: solo lo que la CASA (sin la carga de
+        # las propias baterias, que ya recorta el plan con su tope de potencia
+        # contratada) pase del contratado. Contandola, se descargaba una bateria
+        # para dejar cargar a otra y se peleaba con el plan, que volvia a
+        # activar la carga en cada ciclo.
+        wanted = demand - max(0.0, own_charging_w) - (contracted_w - margin_w)
     else:
         wanted = 0.0
     cap = sum(f["max_w"] for f in followers + list(others or []) if f["available_wh"] > 0)
@@ -104,7 +114,7 @@ def wanted_total(meter_w: float, current: dict[str, float], followers: list[dict
 def compute_targets(meter_w: float, current: dict[str, float], followers: list[dict],
                     discharge_allowed: bool, contracted_w: float, margin_w: float,
                     other_charging_w: float = 0.0, others: list[dict] | None = None,
-                    active: list[str] | None = None) -> dict[str, float]:
+                    own_charging_w: float = 0.0, active: list[str] | None = None) -> dict[str, float]:
     """Carga base objetivo de cada bateria (todas, a 0 las inactivas).
 
     `current`: lo que entrega ahora cada una (la ultima carga base mandada).
@@ -114,7 +124,8 @@ def compute_targets(meter_w: float, current: dict[str, float], followers: list[d
     """
     if not followers:
         return {}
-    wanted = wanted_total(meter_w, current, followers, discharge_allowed, contracted_w, margin_w, other_charging_w, others)
+    wanted = wanted_total(meter_w, current, followers, discharge_allowed, contracted_w, margin_w,
+                          other_charging_w, others, own_charging_w)
     # Los grupos con contador cuentan como una unidad mas en el reparto (su
     # tope y su energia), pero no se les manda nada: lo que les toque lo cubren
     # solos siguiendo al Shelly, porque las sueltas ya entregan su parte.
@@ -187,6 +198,52 @@ def _distribute(total_w: float, followers: list[dict]) -> dict[str, float]:
     return {k: round(v) for k, v in result.items()}
 
 
+class _Worker:
+    """Ejecuta en su propio hilo las llamadas a UN equipo (BLE: pueden tardar
+    hasta 40 s si no responde), para que el bucle del contador no espere nunca.
+    Las cargas base se agrupan: si llega una nueva antes de mandar la anterior,
+    solo se manda la ultima. El resto de trabajos (preparar, verificar,
+    liberar) van en orden."""
+
+    def __init__(self, name: str):
+        self._cv = threading.Condition()
+        self._base: tuple | None = None
+        self._jobs: list = []
+        threading.Thread(target=self._run, name=f"seguimiento-{name}", daemon=True).start()
+
+    def base(self, fn) -> None:
+        with self._cv:
+            self._base = fn
+            self._cv.notify()
+
+    def job(self, fn) -> None:
+        with self._cv:
+            self._jobs.append(fn)
+            self._cv.notify()
+
+    def cancel_base(self) -> None:
+        with self._cv:
+            self._base = None
+
+    def idle(self) -> bool:
+        with self._cv:
+            return self._base is None and not self._jobs
+
+    def _run(self) -> None:
+        while True:
+            with self._cv:
+                while self._base is None and not self._jobs:
+                    self._cv.wait()
+                if self._jobs:
+                    fn = self._jobs.pop(0)
+                else:
+                    fn, self._base = self._base, None
+            try:
+                fn()
+            except Exception:
+                log.exception("Seguimiento de carga: fallo en una llamada al equipo")
+
+
 class LoadFollower:
     """Hilo del seguimiento. `context()` lo da main.py: config, SOC y permiso
     del planificador; `send(battery_cfg, watts)` manda la carga base."""
@@ -219,6 +276,12 @@ class LoadFollower:
         self._last_advance = None
         self._stop = threading.Event()
         self.status: dict = {"mode": "off"}
+        # Un hilo por equipo para sus llamadas (ver _Worker). `asynchronous=False`
+        # (tests) las ejecuta en linea.
+        self.asynchronous = ASYNC_CALLS
+        self._workers: dict[str, _Worker] = {}
+        self._failed: set[str] = set()      # ordenes que el equipo no confirmo
+        self._lock = threading.Lock()
 
     def stop(self) -> None:
         self._stop.set()
@@ -252,6 +315,12 @@ class LoadFollower:
         self._last_meter = meter
 
         self._advance_estimates(now)
+        # Ordenes que el equipo no confirmo (envio fallido o verificacion): se
+        # olvidan para repetirlas en esta misma lectura.
+        with self._lock:
+            failed, self._failed = self._failed, set()
+        for bid in failed:
+            self._current.pop(bid, None)
         followers = ctx.get("followers") or []
         # Fuera del modo real nadie se queda con una carga base puesta. BUG REAL
         # (1-nov): al vencer la prueba el modo paso a sombra y la Ultra X se
@@ -262,7 +331,7 @@ class LoadFollower:
         delivered = {k: self._estimate.get(k, v) for k, v in self._current.items()}
         args = (meter, delivered, followers, bool(ctx.get("discharge_allowed")),
                 float(ctx.get("contracted_w") or 0), float(ctx.get("margin_w") or DEFAULT_MARGIN_W),
-                float(ctx.get("other_charging_w") or 0), others)
+                float(ctx.get("other_charging_w") or 0), others, float(ctx.get("own_charging_w") or 0))
         wanted = wanted_total(*args)
         pool = followers + others
         self._active = choose_active(wanted, pool, self._active)
@@ -297,15 +366,36 @@ class LoadFollower:
                     # (si es mas nueva el equipo aun no ha podido aplicarla); las
                     # tareas, siempre.
                     last_order = (self._orders.get(bid) or [(0.0, current)])[-1][0]
-                    if not self._verify(by_id[bid], current, now - last_order >= VERIFY_AFTER_S):
-                        # No aplicada: que la proxima lectura la vuelva a mandar.
-                        self._current.pop(bid, None)
+                    b, check_base = by_id[bid], now - last_order >= VERIFY_AFTER_S
+
+                    def verify_job(b=b, bid=bid, current=current, check_base=check_base):
+                        if not self._verify(b, current, check_base):
+                            with self._lock:
+                                self._failed.add(bid)   # no aplicada: se vuelve a mandar
+                    self._run_job(bid, verify_job)
         if mode == "on" and self._ensure is not None:
             by_id = {b["id"]: b for b in ctx.get("batteries_cfg") or []}
             for bid, w in self._current.items():
                 if w > 0 and bid in by_id and now - self._last_ensure.get(bid, 0.0) >= ENSURE_TASKS_SECONDS:
                     self._last_ensure[bid] = now
-                    self._ensure(by_id[bid])
+                    self._run_job(bid, lambda b=by_id[bid]: self._ensure(b))
+
+    def _worker(self, bid: str) -> _Worker:
+        if bid not in self._workers:
+            self._workers[bid] = _Worker(bid)
+        return self._workers[bid]
+
+    def _run_job(self, bid: str, fn) -> None:
+        if self.asynchronous:
+            self._worker(bid).job(fn)
+        else:
+            fn()
+
+    def _run_base(self, bid: str, fn) -> None:
+        if self.asynchronous:
+            self._worker(bid).base(fn)
+        else:
+            fn()
 
     def _apply(self, targets: dict[str, float], ctx: dict, why: str) -> None:
         mode = ctx.get("mode") or "off"
@@ -334,16 +424,22 @@ class LoadFollower:
             b = by_id.get(bid)
             if b is None:
                 continue
-            if self._send(b, w):
-                self._orders.setdefault(bid, []).append((time.monotonic(), w))
-                # No se reprograma una verificacion pendiente: mandando cada
-                # segundo no llegaria nunca.
-                self._verify_due.setdefault(bid, (time.monotonic() + VERIFY_AFTER_S, w))
-                self._current[bid] = w
-                self._followed.add(bid)
-            else:
-                log.warning("[SEGUIMIENTO] %s: no se pudo aplicar la carga base de %.0f W -- se reintenta en la proxima lectura",
-                            b.get("name", bid), w)
+
+            def send_job(b=b, bid=bid, w=w):
+                if not self._send(b, w):
+                    log.warning("[SEGUIMIENTO] %s: no se pudo aplicar la carga base de %.0f W -- se reintenta",
+                                b.get("name", bid), w)
+                    with self._lock:
+                        self._failed.add(bid)
+            # Se da por enviada al ponerla en cola; si el equipo no la confirma,
+            # el hilo la marca como fallida y la verificacion la detecta.
+            self._run_base(bid, send_job)
+            self._orders.setdefault(bid, []).append((time.monotonic(), w))
+            # No se reprograma una verificacion pendiente: mandando cada
+            # segundo no llegaria nunca.
+            self._verify_due.setdefault(bid, (time.monotonic() + VERIFY_AFTER_S, w))
+            self._current[bid] = w
+            self._followed.add(bid)
         now = time.monotonic()
         if changes and now - self._last_log >= SHADOW_LOG_SECONDS:
             self._last_log = now
@@ -377,8 +473,21 @@ class LoadFollower:
         by_id = {b["id"]: b for b in ctx.get("batteries_cfg") or []}
         for bid in [x for x in self._followed if x not in still]:
             b = by_id.get(bid)
-            done = b is None or self._release is None or self._release(b)
-            if done:
+            if b is not None and self._release is not None:
+                # Ninguna carga base pendiente puede mandarse ya despues de liberar.
+                if bid in self._workers:
+                    self._workers[bid].cancel_base()
+
+                def release_job(b=b):
+                    for attempt in range(RELEASE_ATTEMPTS):
+                        if self._release(b):
+                            return
+                        if attempt + 1 < RELEASE_ATTEMPTS:
+                            time.sleep(RELEASE_RETRY_S)
+                    log.warning("[SEGUIMIENTO] %s: no se pudo liberar tras %d intentos (carga base sin confirmar a 0)",
+                                b.get("name", b.get("id")), RELEASE_ATTEMPTS)
+                self._run_job(bid, release_job)
+            if True:
                 self._followed.discard(bid)
                 self._current.pop(bid, None)
                 self._estimate.pop(bid, None)

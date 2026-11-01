@@ -3466,10 +3466,13 @@ def _load_follow_context() -> dict:
             g["main"] = b
             g["out_max"] = state.get("max_ac_out_power")
     followers = []
+    own_charging_w = 0.0     # lo que cargan ahora los propios seguidores (del grupo)
     for key, g in groups.items():
         main = g["main"] or g["units"][0]
         declared = [float(u.get("max_discharge_w", 1200)) for u in g["units"]]
         cap = float(g["out_max"]) if g["out_max"] else max(declared)
+        own_state = ecoflow_ble.get_state(main["ecoflow_ble_address"], user_id) or {}
+        own_charging_w += max(0.0, float(own_state.get("battery_power") or 0))
         followers.append({"id": main["id"], "max_w": min(cap, sum(declared)), "available_wh": g["available_wh"],
                           "soc": 100 * g["soc_wh"] / g["cap_wh"] if g["cap_wh"] else 0,
                           "units": [u["id"] for u in g["units"]]})
@@ -3524,6 +3527,7 @@ def _load_follow_context() -> dict:
         "mode": "on" if testing else mode,
         "trace": bool(general.get("load_follow_trace")),
         "other_charging_w": other_charging_w,
+        "own_charging_w": own_charging_w,
         "others": others_list,
         "meter_host": general.get("load_follow_meter_host"),
         "margin_w": general.get("load_follow_margin_w"),

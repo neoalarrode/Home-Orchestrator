@@ -6,6 +6,8 @@ import os, sys, unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 import load_follower as lf  # noqa: E402
 
+lf.ASYNC_CALLS = False   # llamadas en linea en los tests
+
 F = [{"id": "ultra", "max_w": 1200, "available_wh": 2600}, {"id": "ef", "max_w": 1200, "available_wh": 900}]
 
 
@@ -34,6 +36,12 @@ class Targets(unittest.TestCase):
     def test_peak_shaving_above_contracted_power(self):
         t = lf.compute_targets(5600, {}, F, False, 5000, 50)
         self.assertEqual(sum(t.values()), 650)                   # 5600 - (5000 - 50)
+
+    def test_peak_shaving_ignores_own_charging(self):
+        # casa 4800 W + 300 W de carga de la propia bateria: el Shelly marca 5100,
+        # pero la casa sola no pasa del tope -> nada que recortar descargando
+        self.assertEqual(lf.wanted_total(5100, {}, F, False, 5000, 50, own_charging_w=300), 0)
+        self.assertEqual(lf.wanted_total(5400, {}, F, False, 5000, 50, own_charging_w=300), 150)
 
     def test_one_battery_empty(self):
         f = [dict(F[0]), dict(F[1], available_wh=0)]
@@ -212,13 +220,43 @@ class Follower(unittest.TestCase):
             lf.read_shelly_w = lambda *a, **k: 401.0
             f._tick(None)                                   # verifica -> no aplicada
             self.assertEqual(len(verified), 1)
-            self.assertNotIn("ultra", f._current)           # se volvera a mandar
+            self.assertIn("ultra", f._failed)               # se volvera a mandar
             before = len(sent)
             lf.read_shelly_w = lambda *a, **k: 402.0
             f._tick(None)
             self.assertEqual(len(sent), before + 1)
         finally:
             lf.read_shelly_w, lf.time.monotonic = orig, orig_t
+
+    def test_slow_battery_does_not_block_the_loop(self):
+        import threading, time as _t
+        gate = threading.Event()
+        ctx = {"mode": "on", "meter_host": "x", "followers": F, "discharge_allowed": True,
+               "contracted_w": 5000, "margin_w": 50, "batteries_cfg": [{"id": "ultra"}, {"id": "ef"}]}
+        sent = []
+        def send(b, w):
+            if b["id"] == "ef":
+                gate.wait(5)                 # la EF no responde
+            sent.append(b["id"]); return True
+        f = lf.LoadFollower(lambda: ctx, send)
+        f.asynchronous = True
+        orig = lf.read_shelly_w
+        lf.read_shelly_w = lambda *a, **k: 1000.0
+        try:
+            t0 = _t.monotonic(); f._tick(None); took = _t.monotonic() - t0
+        finally:
+            lf.read_shelly_w = orig
+        _t.sleep(0.2)
+        self.assertLess(took, 0.5)            # el bucle no espera a la EF
+        self.assertIn("ultra", sent)          # la Ultra X recibe su orden igual
+        gate.set()
+
+    def test_release_cancels_pending_base(self):
+        w = lf._Worker.__new__(lf._Worker)
+        import threading
+        w._cv = threading.Condition(); w._base = lambda: None; w._jobs = []
+        w.cancel_base()
+        self.assertIsNone(w._base)
 
     def test_shadow_sends_nothing(self):
         sent = []
