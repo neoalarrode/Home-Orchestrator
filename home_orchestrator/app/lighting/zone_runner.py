@@ -200,6 +200,16 @@ class ZoneRunner:
         # Luces que la zona quiere ENCENDIDAS ahora mismo (las de la regla activa,
         # si no hay luz natural de sobra): las unicas a las que se reenvia algo.
         self._wanted_on: set[str] = set()
+        # Luces vistas inalcanzables (ver `_track_availability`) y las que acaban
+        # de volver en este ciclo.
+        # Al arrancar, una orden abandonada sin confirmar ("no aplico el cambio
+        # tras N intentos": inalcanzable o rechazando) cuenta como inalcanzable:
+        # si ya responde, el primer ciclo la trata como recien vuelta.
+        self._unreachable: set[str] = {
+            e for e, c in (self._state.get("commanded") or {}).items()
+            if isinstance(c, dict) and c.get("gave_up") and not c.get("confirmed")
+        }
+        self._returned: set[str] = set()
         self._verify_timer: threading.Timer | None = None
 
     # ------------------------------------------------------------ estado -
@@ -362,6 +372,11 @@ class ZoneRunner:
                 "color_temp_kelvin": handle.color_temp_kelvin,
             }
         st = states.get(entity_id) or {}
+        if st.get("state") in ("unavailable", "unknown"):
+            # Igual que un bridge no disponible: sin dato. Antes contaba como
+            # APAGADA -- una luz confirmada encendida que perdia la conexion
+            # quedaba como "apagada a mano" y no se volvia a tocar.
+            return None
         attrs = st.get("attributes") or {}
         brightness = attrs.get("brightness")
         return {
@@ -369,6 +384,36 @@ class ZoneRunner:
             "brightness_pct": round(brightness / 255 * 100) if brightness is not None else None,
             "color_temp_kelvin": attrs.get("color_temp_kelvin"),
         }
+
+    def _reachable(self, states: dict[str, dict], entity_id: str) -> bool:
+        if self._is_bridge_ref(entity_id):
+            handle = self._resolve_bridge_handle(entity_id)
+            return handle is not None and bool(handle.available)
+        st = states.get(entity_id)
+        return st is not None and st.get("state") not in ("unavailable", "unknown")
+
+    def _track_availability(self, states: dict[str, dict], entity_ids: set[str]) -> None:
+        """Una luz que VUELVE tras estar inalcanzable (corte de corriente, Wi-Fi,
+        Matter...) se trata como nueva: se olvida lo que se le mando y la marca de
+        "tocada a mano", para que la zona la encienda/adapte en este ciclo. BUG
+        REAL (1-nov, techo del salon y plafon del despacho, Matter): al volver,
+        apagada no se encendia (solo se enciende en el flanco de la regla) y
+        encendida con sus valores de fabrica no se reajustaba (lo "ya mandado"
+        coincidia con la curva)."""
+        self._returned = set()
+        commanded = self._state.get("commanded") or {}
+        overrides = self._state.get("manual_override") or {}
+        for entity_id in entity_ids:
+            if not self._reachable(states, entity_id):
+                if entity_id not in self._unreachable:
+                    self._unreachable.add(entity_id)
+                    log.info("Zona lighting %s: %s inalcanzable -- en espera hasta que vuelva", self.zone_id, entity_id)
+            elif entity_id in self._unreachable:
+                self._unreachable.discard(entity_id)
+                self._returned.add(entity_id)
+                commanded.pop(entity_id, None)
+                overrides.pop(entity_id, None)
+                log.info("Zona lighting %s: %s vuelve a estar disponible -- se reaplica", self.zone_id, entity_id)
 
     def _is_on(self, states: dict[str, dict], entity_id: str) -> bool:
         vals = self._current_light_values(states, entity_id)
@@ -836,6 +881,8 @@ class ZoneRunner:
             for entity_id in plant_lights:
                 if respect_manual and manual_marks.get(entity_id):
                     continue
+                if not self._reachable(states, entity_id):
+                    continue  # inalcanzable: no se le manda nada en cada ciclo
                 if self._is_on(states, entity_id):
                     if self._needs_reapply(entity_id, values, False):
                         self._apply_values(entity_id, values, False)
@@ -1035,6 +1082,7 @@ class ZoneRunner:
         # de apagar/aplicar nada este ciclo. Se miran todas las luces de la
         # zona, pero solo se REENVIA a las que la zona quiere encendidas ahora.
         self._wanted_on = set(selected_lights) if dark_enough else set()
+        self._track_availability(states, set(all_zone_lights))
         self._verify_and_detect_overrides(states, all_zone_lights, retry_ids=self._wanted_on)
 
         transitioned = (not was_occupied) or (selected_name != self.active_rule) or just_got_dark_enough
@@ -1154,6 +1202,8 @@ class ZoneRunner:
         for entity_id in selected_lights:
             only_brightness = entity_id in selected_brightness_only
             only_on_off = entity_id in selected_on_off_only
+            if entity_id in self._unreachable:
+                continue  # inalcanzable: nada que mandar; se reaplica al volver
             if self._is_on(states, entity_id):
                 # Una luz «:solo_encendido» no tiene NADA que reajustar
                 # una vez encendida (ni brillo ni color) -- a diferencia
@@ -1163,7 +1213,7 @@ class ZoneRunner:
                     continue
                 if not overrides.get(entity_id) and self._needs_reapply(entity_id, values, only_brightness):
                     pending.append((entity_id, values, False, only_brightness, None, False))
-            elif auto_on and transitioned and dark_enough:
+            elif auto_on and dark_enough and (transitioned or entity_id in self._returned):
                 pending.append((entity_id, values, True, only_brightness, None, only_on_off))
         if len(pending) == 1:
             self._apply_values(*pending[0])
