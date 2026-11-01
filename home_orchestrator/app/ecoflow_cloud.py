@@ -463,10 +463,17 @@ class EcoFlowCloudClient:
             return {**mqtt_state, **rest_state}  # se completa, no se pierde lo que ya traia MQTT
         return rest_state or mqtt_state
 
-    def get_all_timer_task(self, main_sn: str) -> dict | None:
+    def get_all_timer_task(self, main_sn: str, member_sns: tuple[str, ...] = ()) -> dict | None:
+        """La lista de tareas es del grupo y la publica cualquiera de sus
+        unidades (verificado 2-nov: principal y secundaria traen la misma). Se
+        usa la mas reciente entre el principal y los miembros que se pasen."""
         self.ensure_subscribed(main_sn)
         with self._lock:
-            return copy.deepcopy(self._all_timer_task.get(main_sn))
+            candidates = [sn for sn in (main_sn, *member_sns) if sn in self._all_timer_task]
+            if not candidates:
+                return None
+            newest = max(candidates, key=lambda sn: self._all_timer_task_ts.get(sn, 0.0))
+            return copy.deepcopy(self._all_timer_task[newest])
 
     # -- escritura ------------------------------------------------------------
 
@@ -509,7 +516,7 @@ class EcoFlowCloudClient:
         `allTimerTask` actual (nunca se escribe a ciegas) o si esta
         bateria no tiene entrada en la tarea de carga.
         """
-        current = self.get_all_timer_task(main_sn)
+        current = self.get_all_timer_task(main_sn, (battery_sn,))
         if current is None:
             log.warning(f"No hay allTimerTask conocida de {main_sn} todavia, no se manda el comando")
             return False

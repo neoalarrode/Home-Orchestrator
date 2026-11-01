@@ -704,6 +704,18 @@ def _reconcile_ecoflow_main_sn(cfg: dict) -> None:
                 log.info(f"[{b.get('name')}] ha cambiado de grupo: principal {b['ecoflow_main_sn']} -> {main_sn}")
             else:
                 log.info(f"[{b.get('name')}] unidad principal del grupo resuelta por la API de EcoFlow — ya puede recibir ordenes por Cloud")
+    # Suscripcion al MQTT de la nube de TODAS las unidades cloud/hibridas desde el
+    # arranque. La lista de tareas (`allTimerTask`) solo llega en el estado
+    # completo que la nube manda ~cada minuto a quien este suscrito; antes la
+    # suscripcion del grupo se hacia al intentar la primera orden por la nube (el
+    # respaldo cuando falla Bluetooth), justo cuando ya hacia falta, y la orden se
+    # descartaba. 1-nov: el grupo del Despacho nunca la tuvo.
+    client = ecoflow_cloud.get_client(access_key, secret_key)
+    if client is not None:
+        for b in cfg["batteries"]:
+            if b.get("source") == "ecoflow" and b.get("ecoflow_mode") in ("cloud", "hybrid"):
+                for sn in {b.get("ecoflow_sn"), b.get("ecoflow_main_sn")} - {None, ""}:
+                    client.ensure_subscribed(sn)
 
 
 def _stable_battery_key(b) -> str:
