@@ -1,5 +1,11 @@
 # Changelog
 
+## core 0.77.63
+
+- WebSocket de HA — suscripción filtrada funcionando de verdad. HA la rechazaba siempre porque se le pedían refs de puente de HO (`tuya:…`), así que el add-on recibía TODOS los cambios de la casa. Ahora solo se piden entidades de HA, y lo que un plugin lee con `get_state` sin haberlo declarado se añade solo a la suscripción (nada se queda con el valor del arranque).
+- WebSocket de HA — la siembra inicial y los acks de suscripción ya no toman «el siguiente mensaje» por la respuesta: se espera la respuesta concreta procesando lo que llegue entre medias. Antes, un evento colado justo antes dejaba el caché sin sembrar.
+- La suscripción se rehace en cuanto cambia lo que hay que pedir, no solo tras 30 s de silencio.
+
 ## core 0.77.62
 
 - Carga de plugins — la versión que se muestra de cada plugin es la del catálogo (`plugins.json`) cuando corre el tag pineado. La fijada a mano en cada plugin se había quedado atrás: el log decía «Climate Orchestrator v0.7.8» con la 0.7.30 desplegada.

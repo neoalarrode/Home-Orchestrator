@@ -36,8 +36,17 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
+
+# Solo se le piden a HA entidades suyas: una ref de puente de HO ("tuya:...")
+# hacia que HA rechazase la suscripcion filtrada ENTERA y se cayera siempre a la
+# completa (628 KB/min frente a 3 KB/min).
+_HA_ENTITY_ID = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+# Entre dos resuscripciones: las altas por lectura (`get_state`) llegan en rafaga
+# al arrancar Climate y se agrupan en una sola.
+RESUBSCRIBE_MIN_INTERVAL_SECONDS = 2.0
 
 log = logging.getLogger("ha_websocket")
 
@@ -117,6 +126,11 @@ class HAWebSocketClient:
         self._watched_by_key: dict[str, set[str]] = {}
         # Lo que se LEE pero no despierta (ver `set_cached_entities`).
         self._cached_by_key: dict[str, set[str]] = {}
+        # Lo que se ha LEIDO con `get_state` sin declararlo: entra solo en la
+        # suscripcion para que no se quede con el valor del volcado inicial.
+        self._read_on_demand: set[str] = set()
+        self._subs_dirty = False
+        self._last_resubscribe = 0.0
         # Conjunto por el que se pregunto en la suscripcion viva, para saber
         # cuando hay que rehacerla (una zona nueva, una regla editada...).
         self._subscribed: set[str] | None = None
@@ -199,6 +213,11 @@ class HAWebSocketClient:
             return list(self._states_cache.values())
 
     def get_state(self, entity_id: str) -> dict | None:
+        if self._compressed and entity_id and _HA_ENTITY_ID.match(entity_id):
+            with self._watched_lock:
+                if entity_id not in self._read_on_demand and entity_id not in (self._subscribed or ()):
+                    self._read_on_demand.add(entity_id)
+                    self._subs_dirty = True
         with self._states_lock:
             return self._states_cache.get(entity_id)
 
@@ -274,6 +293,7 @@ class HAWebSocketClient:
         with self._watched_lock:
             self._watched_by_key[clave] = {e for e in entities if e}
             self._watched = set().union(*self._watched_by_key.values()) if self._watched_by_key else set()
+            self._subs_dirty = True
 
     def set_cached_entities(self, entities: set[str], key: str) -> None:
         """Entidades cuyo estado hay que tener FRESCO, pero que no disparan.
@@ -292,15 +312,16 @@ class HAWebSocketClient:
         """
         with self._watched_lock:
             self._cached_by_key[key] = {e for e in entities if e}
+            self._subs_dirty = True
 
     def _subscription_entities(self) -> set[str]:
         """Lo que se le pide a HA que nos mande: lo que despierta MAS lo que
         se lee."""
         with self._watched_lock:
-            todo: set[str] = set(self._watched)
+            todo: set[str] = set(self._watched) | self._read_on_demand
             for s in self._cached_by_key.values():
                 todo |= s
-            return todo
+            return {e for e in todo if _HA_ENTITY_ID.match(e)}
 
     def watched_entities(self) -> set[str]:
         """Union de lo que vigilan todos los consumidores."""
@@ -389,22 +410,19 @@ class HAWebSocketClient:
             anterior_id = self._sub_id
             if anterior_id is not None:
                 try:
-                    self._ws.send(json.dumps({
-                        "id": self._next_msg_id(), "type": "unsubscribe_events",
-                        "subscription": anterior_id,
-                    }))
-                    self._ws.recv()  # descartar el ack -- ver bug real arriba
+                    unsub_id = self._next_msg_id()
+                    self._send({"id": unsub_id, "type": "unsubscribe_events", "subscription": anterior_id})
+                    self._await_result(unsub_id)  # descartar el ack -- ver bug real arriba
                 except Exception:
                     log.debug("No se ha podido cancelar la suscripcion anterior", exc_info=True)
 
         sub_id = self._next_msg_id()
         if objetivo:
-            self._ws.send(json.dumps({
-                "id": sub_id, "type": "subscribe_entities", "entity_ids": sorted(objetivo),
-            }))
-            ack = json.loads(self._ws.recv())
+            self._send({"id": sub_id, "type": "subscribe_entities", "entity_ids": sorted(objetivo)})
+            ack = self._await_result(sub_id)
             if ack.get("success"):
                 self._sub_id, self._subscribed, self._compressed = sub_id, set(objetivo), True
+                self._last_resubscribe = time.monotonic()
                 log.info(
                     "WebSocket de HA: suscrito a %d entidad(es) concretas -- HA filtra en su lado",
                     len(objetivo),
@@ -416,11 +434,12 @@ class HAWebSocketClient:
             )
             sub_id = self._next_msg_id()
 
-        self._ws.send(json.dumps({"id": sub_id, "type": "subscribe_events", "event_type": "state_changed"}))
-        ack = json.loads(self._ws.recv())
+        self._send({"id": sub_id, "type": "subscribe_events", "event_type": "state_changed"})
+        ack = self._await_result(sub_id)
         if not ack.get("success"):
             raise RuntimeError(f"No se pudo suscribir a state_changed: {ack}")
         self._sub_id, self._subscribed, self._compressed = sub_id, set(objetivo), False
+        self._last_resubscribe = time.monotonic()
 
     def _apply_compressed(self, event: dict) -> list[tuple[str, dict, str | None]]:
         """Traduce el formato comprimido de `subscribe_entities` al mismo que
@@ -472,6 +491,76 @@ class HAWebSocketClient:
                 salida.append((entity_id, nuevo, anterior))
         return salida
 
+    def _send(self, payload: dict) -> None:
+        with self._send_lock:
+            self._ws.send(json.dumps(payload))
+
+    def _await_result(self, msg_id: int) -> dict:
+        """Lee hasta la respuesta a `msg_id`, procesando lo que llegue entre
+        medias (eventos, respuestas de otros hilos) en vez de tomar el primer
+        mensaje por la respuesta. Solo desde el hilo lector."""
+        while True:
+            msg = json.loads(self._ws.recv())
+            if msg.get("type") == "result" and msg.get("id") == msg_id:
+                return msg
+            self._handle_message(msg)
+
+    def _maybe_resubscribe(self) -> None:
+        if not self._subs_dirty or self._subscribed is None:
+            return
+        if time.monotonic() - self._last_resubscribe < RESUBSCRIBE_MIN_INTERVAL_SECONDS:
+            return
+        self._subs_dirty = False
+        if self._subscription_entities() != self._subscribed:
+            self._resubscribe_locked()
+
+    def _handle_message(self, msg: dict) -> None:
+        msg_type = msg.get("type")
+        if msg_type == "result":
+            # Respuesta a una llamada puntual hecha desde OTRO hilo (ver
+            # `call`) -- se entrega a quien esperaba ese id concreto.
+            q = self._pending.get(msg.get("id"))
+            if q is not None:
+                try:
+                    q.put_nowait(msg)
+                except queue.Full:
+                    pass
+            return
+        if msg_type != "event":
+            return
+        event = msg.get("event") or {}
+        if self._compressed and "event_type" not in event:
+            # `subscribe_entities`: HA ya ha filtrado, y lo que llega son
+            # deltas. Todo lo suscrito entra al cache; solo despierta a alguien
+            # lo que ESE alguien vigile.
+            for entity_id, nuevo, anterior in self._apply_compressed(event):
+                if not self._is_watched(entity_id):
+                    continue
+                if anterior == nuevo.get("state"):
+                    continue  # solo cambio un atributo, no es lectura nueva
+                self._notify(entity_id, nuevo.get("state"))
+            return
+        if event.get("event_type") != "state_changed":
+            return
+        data = event.get("data") or {}
+        entity_id = data.get("entity_id")
+        if not entity_id:
+            return
+        new_state_obj = data.get("new_state")
+        with self._states_lock:
+            if new_state_obj is None:
+                self._states_cache.pop(entity_id, None)
+            else:
+                self._states_cache[entity_id] = new_state_obj
+        if not self._is_watched(entity_id):
+            return
+        old_state = (data.get("old_state") or {}).get("state")
+        new_state = new_state_obj.get("state") if new_state_obj else None
+        if old_state == new_state:
+            # Solo el ATRIBUTO cambio -- no es una lectura nueva de verdad.
+            return
+        self._notify(entity_id, new_state)
+
     def _connect_and_listen(self) -> None:
         import websocket as ws_lib
 
@@ -497,9 +586,13 @@ class HAWebSocketClient:
             # conexion (justo tras el ack de suscripcion, antes de que
             # ningun otro hilo haya podido mandar nada) el SIGUIENTE
             # mensaje que llegue solo puede ser esta respuesta.
+            # BUG REAL latente: se leia "el siguiente mensaje" como respuesta.
+            # Con `subscribe_entities` HA manda ANTES un evento inicial con las
+            # entidades suscritas, que se tomaba por la respuesta: la siembra
+            # fallaba y el cache se quedaba vacio.
             states_id = self._next_msg_id()
-            self._ws.send(json.dumps({"id": states_id, "type": "get_states"}))
-            states_resp = json.loads(self._ws.recv())
+            self._send({"id": states_id, "type": "get_states"})
+            states_resp = self._await_result(states_id)
             if states_resp.get("success"):
                 with self._states_lock:
                     self._states_cache = {
@@ -518,82 +611,18 @@ class HAWebSocketClient:
                 try:
                     raw = self._ws.recv()
                 except ws_lib.WebSocketTimeoutException:
-                    # CON FILTRO, el silencio es lo NORMAL: antes llegaban 9
-                    # eventos por segundo de toda la casa y el timeout del
-                    # socket no saltaba jamas, asi que tratarlo como error
-                    # nunca se noto. Pidiendole a HA que filtre pueden pasar
-                    # minutos sin nada nuestro, y reconectar por eso seria
-                    # peor que el problema que se venia a resolver.
-                    #
-                    # De paso es el momento natural para rehacer la
-                    # suscripcion si han cambiado las entidades (una zona
-                    # nueva, una regla editada).
-                    if self._subscribed is not None and self._subscription_entities() != self._subscribed:
-                        self._resubscribe_locked()
+                    # CON FILTRO, el silencio es lo NORMAL: pueden pasar minutos
+                    # sin nada nuestro, y reconectar por eso seria peor que el
+                    # problema que se venia a resolver.
+                    self._maybe_resubscribe()
                     continue
                 if not raw:
                     raise RuntimeError("WebSocket de HA cerrado por el otro lado")
-                msg = json.loads(raw)
-                msg_type = msg.get("type")
-
-                if msg_type == "result":
-                    # Respuesta a una llamada puntual hecha desde OTRO hilo
-                    # (ver `call`) -- se entrega a quien esperaba ese id
-                    # concreto, nunca se procesa aqui mismo.
-                    q = self._pending.get(msg.get("id"))
-                    if q is not None:
-                        try:
-                            q.put_nowait(msg)
-                        except queue.Full:
-                            pass
-                    continue
-
-                if msg_type != "event":
-                    continue
-                event = msg.get("event") or {}
-
-                if self._compressed:
-                    # `subscribe_entities`: HA ya ha filtrado, y lo que llega
-                    # son deltas. Todo lo suscrito entra al cache; solo
-                    # despierta a alguien lo que ESE alguien vigile.
-                    for entity_id, nuevo, anterior in self._apply_compressed(event):
-                        if not self._is_watched(entity_id):
-                            continue
-                        if anterior == nuevo.get("state"):
-                            continue  # solo cambio un atributo, no es lectura nueva
-                        self._notify(entity_id, nuevo.get("state"))
-                    continue
-
-                if event.get("event_type") != "state_changed":
-                    continue
-                data = event.get("data") or {}
-                entity_id = data.get("entity_id")
-                if not entity_id:
-                    continue
-                new_state_obj = data.get("new_state")
-                # La copia local se mantiene con TODOS los cambios, no
-                # solo los "vigilados" -- seguimos suscritos a TODO
-                # `state_changed` (HA no permite filtrar por entidad en
-                # la suscripcion, ver docstring de la clase), asi que
-                # esto no cuesta ninguna llamada de red extra, solo
-                # actualizar el dict local. El filtro "vigilado o no"
-                # (mas abajo) sigue existiendo tal cual -- decide si esto
-                # dispara un ciclo reactivo, nunca si se guarda o no.
-                with self._states_lock:
-                    if new_state_obj is None:
-                        self._states_cache.pop(entity_id, None)
-                    else:
-                        self._states_cache[entity_id] = new_state_obj
-                if not self._is_watched(entity_id):
-                    continue
-                old_state = (data.get("old_state") or {}).get("state")
-                new_state = new_state_obj.get("state") if new_state_obj else None
-                if old_state == new_state:
-                    # Solo el ATRIBUTO cambio (p.ej. jitter interno de otra
-                    # integracion) — no es una lectura nueva de verdad,
-                    # ignorarlo evita relanzar el ciclo por nada.
-                    continue
-                self._notify(entity_id, new_state)
+                self._handle_message(json.loads(raw))
+                # Antes solo se rehacia en un silencio de 30 s; con eventos
+                # llegando sin parar, una zona nueva o una entidad leida por
+                # primera vez podian quedarse fuera indefinidamente.
+                self._maybe_resubscribe()
         finally:
             try:
                 self._ws.close()
