@@ -76,6 +76,46 @@ class Efficiency(unittest.TestCase):
         self.assertEqual(lf.maybe_swap(["patio"], [dict(x, soc=60) for x in U4]), ["patio"])
 
 
+GRP = {"id": "grupo:D", "max_w": 1200, "available_wh": 1500, "soc": 55, "output_w": 0.0}
+
+
+class WithMeterGroups(unittest.TestCase):
+    """Una bateria suelta (la sigue Energy) y un grupo con contador propio."""
+    ULTRA = [{"id": "ultra", "max_w": 1200, "available_wh": 2600, "soc": 80}]
+
+    def test_small_load_ultra_alone(self):
+        act = lf.choose_active(600, self.ULTRA + [GRP], [])
+        self.assertEqual(act, ["ultra"])
+        t = lf.compute_targets(650, {}, self.ULTRA, True, 5000, 50, others=[GRP], active=act)
+        self.assertEqual(t, {"ultra": 600})
+
+    def test_big_load_shared_with_the_group(self):
+        # casa 2000 W: el Shelly marca 2000 sin nadie descargando
+        act = lf.choose_active(1950, self.ULTRA + [GRP], ["ultra"])
+        self.assertEqual(set(act), {"ultra", "grupo:D"})
+        # por energia disponible (2600 frente a 1500 Wh): la Ultra X llega a su
+        # tope y el grupo cubre el resto (750 W) solo, siguiendo al Shelly
+        self.assertEqual(lf.compute_targets(2000, {}, self.ULTRA, True, 5000, 50, others=[GRP], active=act), {"ultra": 1200})
+        g = dict(GRP, available_wh=2600)
+        t = lf.compute_targets(2000, {}, self.ULTRA, True, 5000, 50, others=[g], active=act)
+        self.assertEqual(t, {"ultra": 975})                 # mitad y mitad de 1950
+
+    def test_target_does_not_depend_on_how_the_group_reacted(self):
+        # misma casa (2000 W), el grupo ya entrega 700: el Shelly marca menos
+        g = dict(GRP, output_w=700)
+        a = lf.compute_targets(2000, {}, self.ULTRA, True, 5000, 50, others=[GRP], active=["ultra", "grupo:D"])
+        b = lf.compute_targets(1300, {}, self.ULTRA, True, 5000, 50, others=[g], active=["ultra", "grupo:D"])
+        self.assertEqual(a, b)
+
+    def test_total_cap_is_both_groups(self):
+        self.assertEqual(lf.wanted_total(5000, {}, self.ULTRA, True, 9999, 50, others=[GRP]), 2400)
+
+    def test_empty_group_leaves_it_to_the_ultra(self):
+        g = dict(GRP, available_wh=0)
+        t = lf.compute_targets(1500, {}, self.ULTRA, True, 5000, 50, others=[g], active=["ultra"])
+        self.assertEqual(t, {"ultra": 1200})
+
+
 class Follower(unittest.TestCase):
     def test_meter_lost_sets_zero(self):
         sent = []
@@ -107,6 +147,21 @@ class Follower(unittest.TestCase):
         finally:
             lf.read_shelly_w = orig
         self.assertEqual(sorted(released), ["ef", "ultra"])
+
+    def test_first_time_sends_even_zero(self):
+        sent = []
+        ctx = {"mode": "on", "meter_host": "x", "followers": F, "discharge_allowed": False,
+               "contracted_w": 5000, "margin_w": 50, "batteries_cfg": [{"id": "ultra"}, {"id": "ef"}]}
+        f = lf.LoadFollower(lambda: ctx, lambda b, w: sent.append((b["id"], w)) or True)
+        orig = lf.read_shelly_w
+        lf.read_shelly_w = lambda *a, **k: 800.0
+        try:
+            f._tick(None)
+            lf.read_shelly_w = lambda *a, **k: 810.0
+            f._tick(None)                         # ya conocido y sigue en 0: nada
+        finally:
+            lf.read_shelly_w = orig
+        self.assertEqual(sorted(sent), [("ef", 0.0), ("ultra", 0.0)])
 
     def test_shadow_sends_nothing(self):
         sent = []

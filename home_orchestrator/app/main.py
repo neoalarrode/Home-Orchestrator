@@ -3436,8 +3436,12 @@ def _load_follow_context() -> dict:
     cache BLE, sin conectar), permiso del planificador y potencia contratada."""
     cfg = config_store.load_config()
     general = cfg.get("general") or {}
-    followers = []
     user_id = cfg.get("ecoflow_user_id")
+    # Un seguidor por GRUPO en semiautomatico, no por unidad: la carga base, la
+    # tarea de descarga y el tope (1200 W) son del grupo entero. Se manda a su
+    # unidad principal; la energia disponible es la suma de sus unidades. Una
+    # bateria sola en su grupo es un grupo de una.
+    groups: dict[str, dict] = {}
     for b in cfg.get("batteries") or []:
         if b.get("source") != "ecoflow" or not b.get("ecoflow_ble_address") or not user_id:
             continue
@@ -3445,34 +3449,76 @@ def _load_follow_context() -> dict:
         soc = state.get("battery_level_main")
         if state.get("energy_monitoring_mode") != "semi_automated" or soc is None:
             continue
+        key = b.get("ecoflow_main_sn") or b["id"]
+        g = groups.setdefault(key, {"units": [], "soc_wh": 0.0, "cap_wh": 0.0, "available_wh": 0.0,
+                                    "main": None, "out_max": None})
         capacity = float(b.get("capacity_wh") or 0)
-        available_wh = max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity)
-        followers.append({"id": b["id"], "max_w": float(b.get("max_discharge_w", 1200)),
-                          "available_wh": available_wh, "soc": float(soc)})
+        g["units"].append(b)
+        g["available_wh"] += max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity)
+        g["soc_wh"] += float(soc) / 100 * capacity
+        g["cap_wh"] += capacity
+        if b.get("ecoflow_sn") and b.get("ecoflow_sn") == key:
+            g["main"] = b
+            g["out_max"] = state.get("max_ac_out_power")
+    followers = []
+    for key, g in groups.items():
+        main = g["main"] or g["units"][0]
+        declared = [float(u.get("max_discharge_w", 1200)) for u in g["units"]]
+        cap = float(g["out_max"]) if g["out_max"] else max(declared)
+        followers.append({"id": main["id"], "max_w": min(cap, sum(declared)), "available_wh": g["available_wh"],
+                          "soc": 100 * g["soc_wh"] / g["cap_wh"] if g["cap_wh"] else 0,
+                          "units": [u["id"] for u in g["units"]]})
     testing = _load_follow_test_ids(cfg)
     if testing:
         followers = [f for f in followers if f["id"] in testing]
-    # Lo que cargan de red las baterias que NO siguen (positivo = cargando): el
-    # Shelly lo ve como consumo y no hay que cubrirlo descargando otras.
+    # Los GRUPOS con contador propio (smart_meter): siguen al Shelly solos. No
+    # se les manda nada, pero cuentan en el reparto como una unidad (su tope y
+    # su energia) y lo que entregan o cargan es parte de lo que ve el Shelly.
     other_charging_w = 0.0
-    follower_ids = {f["id"] for f in followers}
-    seen_groups: set[str] = set()
+    others: dict[str, dict] = {}
+    follower_ids = {u for f in followers for u in f.get("units", [f["id"]])}
     for b in cfg.get("batteries") or []:
         if b["id"] in follower_ids or b.get("source") != "ecoflow" or not b.get("ecoflow_ble_address") or not user_id:
             continue
-        group = b.get("ecoflow_main_sn") or b["id"]
-        if group in seen_groups:
-            continue
         state = ecoflow_ble.get_state(b["ecoflow_ble_address"], user_id) or {}
-        if state.get("battery_power") is not None:
-            seen_groups.add(group)
+        if not state:
+            continue
+        group = b.get("ecoflow_main_sn") or b["id"]
+        g = others.setdefault(group, {"id": f"grupo:{group}", "max_w": 0.0, "available_wh": 0.0, "soc_wh": 0.0,
+                                      "cap_wh": 0.0, "output_w": None})
+        soc = state.get("battery_level_main")
+        capacity = float(b.get("capacity_wh") or 0)
+        if soc is not None:
+            g["available_wh"] += max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity)
+            g["soc_wh"] += float(soc) / 100 * capacity
+            g["cap_wh"] += capacity
+        # Tope del grupo: el que informa su principal (ver effective_max_discharge_w).
+        out_max = state.get("max_ac_out_power")
+        if b.get("ecoflow_sn") == group and out_max:
+            g["max_w"] = float(out_max)
+        else:
+            g["max_w"] = max(g["max_w"], float(b.get("max_discharge_w", 1200)))
+        # Entregado a la casa: el puerto de red de CADA unidad (grid_power > 0),
+        # no la potencia de bateria del grupo -- esa incluye lo que sale por los
+        # enchufes, que el Shelly no ve. Lo que cargan: la bateria del grupo.
+        if state.get("grid_power") is not None:
+            g["output_w"] = (g["output_w"] or 0.0) + max(0.0, float(state["grid_power"]))
+        if state.get("battery_power") is not None and not g.get("_charging_counted"):
+            g["_charging_counted"] = True
             other_charging_w += max(0.0, float(state["battery_power"]))
+    others_list = []
+    for g in others.values():
+        g["soc"] = 100 * g["soc_wh"] / g["cap_wh"] if g["cap_wh"] else 0
+        if testing and ((cfg.get("general") or {}).get("load_follow_test") or {}).get("hold_others"):
+            g["available_wh"] = 0.0                      # en reposo durante la prueba
+        others_list.append(g)
     with _state_lock:
         action = (_last_status.get("distribution") or {}).get("action")
     mode = general.get("load_follow_mode") or "off"
     return {
         "mode": "on" if testing else mode,
         "other_charging_w": other_charging_w,
+        "others": others_list,
         "meter_host": general.get("load_follow_meter_host"),
         "margin_w": general.get("load_follow_margin_w"),
         "deadband_w": general.get("load_follow_deadband_w"),

@@ -62,13 +62,16 @@ def read_shelly_w(host: str, session: requests.Session | None = None) -> float |
 
 def wanted_total(meter_w: float, current: dict[str, float], followers: list[dict],
                  discharge_allowed: bool, contracted_w: float, margin_w: float,
-                 other_charging_w: float = 0.0) -> float:
+                 other_charging_w: float = 0.0, others: list[dict] | None = None) -> float:
     """Potencia total que tienen que entregar las baterias ahora.
 
     `other_charging_w`: lo que estan cargando de red las baterias que NO siguen
     (el Shelly lo ve como consumo): se descuenta para no descargar unas para
     cargar otras, perdiendo en los dos sentidos."""
-    demand = meter_w + sum(current.get(f["id"], 0.0) for f in followers) - max(0.0, other_charging_w)
+    # Lo que entregan ahora los GRUPOS con contador propio (siguen al Shelly
+    # por su cuenta): tambien es parte del consumo de la casa.
+    others_out = sum(max(0.0, o.get("output_w") or 0.0) for o in (others or []))
+    demand = meter_w + sum(current.get(f["id"], 0.0) for f in followers) + others_out - max(0.0, other_charging_w)
     if discharge_allowed:
         wanted = demand - margin_w
     elif contracted_w > 0:
@@ -76,12 +79,14 @@ def wanted_total(meter_w: float, current: dict[str, float], followers: list[dict
         wanted = demand - (contracted_w - margin_w)
     else:
         wanted = 0.0
-    return max(0.0, min(wanted, sum(f["max_w"] for f in followers if f["available_wh"] > 0)))
+    cap = sum(f["max_w"] for f in followers + list(others or []) if f["available_wh"] > 0)
+    return max(0.0, min(wanted, cap))
 
 
 def compute_targets(meter_w: float, current: dict[str, float], followers: list[dict],
                     discharge_allowed: bool, contracted_w: float, margin_w: float,
-                    other_charging_w: float = 0.0, active: list[str] | None = None) -> dict[str, float]:
+                    other_charging_w: float = 0.0, others: list[dict] | None = None,
+                    active: list[str] | None = None) -> dict[str, float]:
     """Carga base objetivo de cada bateria (todas, a 0 las inactivas).
 
     `current`: lo que entrega ahora cada una (la ultima carga base mandada).
@@ -91,11 +96,14 @@ def compute_targets(meter_w: float, current: dict[str, float], followers: list[d
     """
     if not followers:
         return {}
-    wanted = wanted_total(meter_w, current, followers, discharge_allowed, contracted_w, margin_w, other_charging_w)
-    use = [f for f in followers if (active is None or f["id"] in active) and f["available_wh"] > 0]
-    result = {f["id"]: 0.0 for f in followers}
-    result.update(_distribute(wanted, use))
-    return result
+    wanted = wanted_total(meter_w, current, followers, discharge_allowed, contracted_w, margin_w, other_charging_w, others)
+    # Los grupos con contador cuentan como una unidad mas en el reparto (su
+    # tope y su energia), pero no se les manda nada: lo que les toque lo cubren
+    # solos siguiendo al Shelly, porque las sueltas ya entregan su parte.
+    pool = followers + list(others or [])
+    use = [f for f in pool if (active is None or f["id"] in active) and f["available_wh"] > 0]
+    shares = _distribute(wanted, use)
+    return {f["id"]: shares.get(f["id"], 0.0) for f in followers}
 
 
 def choose_active(wanted_w: float, followers: list[dict], active: list[str]) -> list[str]:
@@ -219,13 +227,15 @@ class LoadFollower:
         # quedo con 350 W de carga base -- la proxima descarga del plan los
         # habria entregado fijos, sin nadie siguiendo a la casa.
         self._release_missing({f["id"] for f in followers} if mode == "on" else set(), ctx)
+        others = ctx.get("others") or []
         args = (meter, self._current, followers, bool(ctx.get("discharge_allowed")),
                 float(ctx.get("contracted_w") or 0), float(ctx.get("margin_w") or DEFAULT_MARGIN_W),
-                float(ctx.get("other_charging_w") or 0))
+                float(ctx.get("other_charging_w") or 0), others)
         wanted = wanted_total(*args)
-        self._active = choose_active(wanted, followers, self._active)
+        pool = followers + others
+        self._active = choose_active(wanted, pool, self._active)
         if self._active and now - self._last_swap >= SWAP_MIN_SECONDS:
-            swapped = maybe_swap(self._active, followers)
+            swapped = maybe_swap(self._active, pool)
             if set(swapped) != set(self._active):
                 self._last_swap = now
                 self._active = swapped
@@ -240,8 +250,12 @@ class LoadFollower:
         mode = ctx.get("mode") or "off"
         deadband = float(ctx.get("deadband_w") or DEFAULT_DEADBAND_W)
         by_id = {b["id"]: b for b in ctx.get("batteries_cfg") or []}
+        # Un equipo que aun no hemos mandado nunca recibe su objetivo aunque sea
+        # 0: puede traer una carga base de antes (el grupo de tres tenia 510 W)
+        # que entregaria fija en cuanto se le active la descarga.
         changes = {bid: w for bid, w in targets.items()
-                   if abs(w - self._current.get(bid, 0.0)) >= deadband or (w == 0 and self._current.get(bid, 0.0) > 0)}
+                   if bid not in self._current or abs(w - self._current[bid]) >= deadband
+                   or (w == 0 and self._current[bid] > 0)}
         self.status = {"mode": mode, "meter_w": self._last_meter, "targets": dict(targets), "why": why,
                        "discharge_allowed": bool(ctx.get("discharge_allowed"))}
         if mode == "shadow":
