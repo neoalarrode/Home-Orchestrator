@@ -921,7 +921,7 @@ def run_cycle():
     # que esperar a la comprobacion de baterias con SOC disponible que viene
     # despues -- esa señal debe seguir publicandose aunque las baterias no
     # respondan (ver el comentario extenso junto a la publicacion).
-    max_discharge_w_all = sum(b.max_discharge_w for b in batteries)
+    max_discharge_w_all = battery_exec.effective_max_discharge_w(batteries)
     horizon = _int_setting(cfg["general"], "horizon_hours", 48, 1, 168)
 
     now = datetime.now()

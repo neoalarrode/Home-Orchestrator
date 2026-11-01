@@ -562,6 +562,24 @@ def plan_distribution(batteries: list[Battery], charge_w: float, discharge_w: fl
     return {"action": action, "per_battery": per_battery}
 
 
+def effective_max_discharge_w(batteries: list) -> float:
+    """Potencia de descarga que de verdad puede dar el conjunto. Las unidades
+    STREAM de un mismo grupo comparten UNA tarea de descarga con UN limite (el
+    del fabricante, 1200 W), asi que un grupo aporta el mayor limite de sus
+    unidades, no la suma. BUG REAL (1-nov): se sumaban las cuatro (4800 W)
+    con el grupo dando 1200; con la Ultra X en un grupo propio son 2400. Cada
+    bateria que no es EcoFlow (o EcoFlow sin grupo conocido) suma lo suyo."""
+    total = 0.0
+    groups: dict[str, float] = {}
+    for b in batteries:
+        key = _ecoflow_group_key(b)
+        if key is None:
+            total += b.max_discharge_w
+        else:
+            groups[key] = max(groups.get(key, 0.0), b.max_discharge_w)
+    return total + sum(groups.values())
+
+
 def _ecoflow_group_key(b: Battery) -> str | None:
     """Grupo EcoFlow (unidades STREAM enlazadas) al que pertenece la bateria, o
     None si no es EcoFlow o no se conoce su grupo."""

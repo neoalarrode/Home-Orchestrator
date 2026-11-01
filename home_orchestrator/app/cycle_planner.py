@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+import battery_exec
 import logging
 import math
 
@@ -56,7 +57,8 @@ def decide(
     current_soc_pct = round(100 * current_soc_wh / total_capacity_wh, 1) if total_capacity_wh else 0
     min_soc_wh = sum(b.min_soc_pct / 100 * b.capacity_wh for b in usable_batteries)
     max_charge_w = sum(b.max_charge_w for b in usable_batteries)
-    max_discharge_w = sum(b.max_discharge_w for b in usable_batteries)
+    # Por grupo EcoFlow, no por unidad: ver battery_exec.effective_max_discharge_w.
+    max_discharge_w = battery_exec.effective_max_discharge_w(usable_batteries)
     # techo real de carga (SOC maximo declarado por bateria, no el 100% nominal)
     max_usable_wh = sum(b.max_soc_pct / 100 * b.capacity_wh for b in usable_batteries)
 
