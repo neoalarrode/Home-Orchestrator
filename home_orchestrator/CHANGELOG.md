@@ -1,5 +1,9 @@
 # Changelog
 
+## core 0.77.61
+
+- WebSocket de HA — `last_updated` al día en la caché de estados. Con `subscribe_entities`, HA omite `lu` cuando coincide con `lc` (altas) y no lo manda cuando cambia `lc` (cambios de valor), así que la caché se quedaba con el `last_updated` del arranque. Climate fechaba su media de temperatura con él y congelaba la lectura (cuarto de juegos 40 min en 20,79 °C con el sensor en 20,15). Climate 0.7.30 ya no depende de esa marca; esto corrige la causa para cualquier otro consumidor.
+
 ## core 0.77.60
 
 - Climatización/Tuya — oscilación de aspas (swing) en zonas con AC Tuya de delegado. El handle interno de tuya_native (`TuyaClimateHandle`) no exponía `swing_mode`/`swing_modes`/`set_swing_mode`, así que la entidad climate que genera Climate Orchestrator no ofrecía swing aunque el equipo (y su propia entidad Tuya en HA) sí lo soporta. Ahora el handle lee/escribe el DP `up_down_sweep` (el mismo que anuncia el discovery MQTT), y como el lado de Climate ya estaba preparado (`getattr` con reserva), la zona agrega y propaga el swing al equipo.
