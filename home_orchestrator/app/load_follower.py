@@ -61,9 +61,14 @@ def read_shelly_w(host: str, session: requests.Session | None = None) -> float |
 
 
 def wanted_total(meter_w: float, current: dict[str, float], followers: list[dict],
-                 discharge_allowed: bool, contracted_w: float, margin_w: float) -> float:
-    """Potencia total que tienen que entregar las baterias ahora."""
-    demand = meter_w + sum(current.get(f["id"], 0.0) for f in followers)
+                 discharge_allowed: bool, contracted_w: float, margin_w: float,
+                 other_charging_w: float = 0.0) -> float:
+    """Potencia total que tienen que entregar las baterias ahora.
+
+    `other_charging_w`: lo que estan cargando de red las baterias que NO siguen
+    (el Shelly lo ve como consumo): se descuenta para no descargar unas para
+    cargar otras, perdiendo en los dos sentidos."""
+    demand = meter_w + sum(current.get(f["id"], 0.0) for f in followers) - max(0.0, other_charging_w)
     if discharge_allowed:
         wanted = demand - margin_w
     elif contracted_w > 0:
@@ -76,7 +81,7 @@ def wanted_total(meter_w: float, current: dict[str, float], followers: list[dict
 
 def compute_targets(meter_w: float, current: dict[str, float], followers: list[dict],
                     discharge_allowed: bool, contracted_w: float, margin_w: float,
-                    active: list[str] | None = None) -> dict[str, float]:
+                    other_charging_w: float = 0.0, active: list[str] | None = None) -> dict[str, float]:
     """Carga base objetivo de cada bateria (todas, a 0 las inactivas).
 
     `current`: lo que entrega ahora cada una (la ultima carga base mandada).
@@ -86,7 +91,7 @@ def compute_targets(meter_w: float, current: dict[str, float], followers: list[d
     """
     if not followers:
         return {}
-    wanted = wanted_total(meter_w, current, followers, discharge_allowed, contracted_w, margin_w)
+    wanted = wanted_total(meter_w, current, followers, discharge_allowed, contracted_w, margin_w, other_charging_w)
     use = [f for f in followers if (active is None or f["id"] in active) and f["available_wh"] > 0]
     result = {f["id"]: 0.0 for f in followers}
     result.update(_distribute(wanted, use))
@@ -160,9 +165,14 @@ class LoadFollower:
     """Hilo del seguimiento. `context()` lo da main.py: config, SOC y permiso
     del planificador; `send(battery_cfg, watts)` manda la carga base."""
 
-    def __init__(self, context, send):
+    def __init__(self, context, send, release=None):
         self._context = context
         self._send = send
+        # `release(battery_cfg)`: devolver la bateria al planificador cuando deja
+        # de seguir (fin de la prueba, cambio de modo...).
+        self._release = release
+        self._followed: set[str] = set()
+        self._last_log = 0.0
         self._current: dict[str, float] = {}
         self._last_meter: float | None = None
         self._last_meter_ts = 0.0
@@ -188,8 +198,7 @@ class LoadFollower:
         mode = ctx.get("mode") or "off"
         host = ctx.get("meter_host")
         if mode == "off" or not host:
-            if self._current and any(self._current.values()):
-                self._apply({k: 0.0 for k in self._current}, ctx, "seguimiento desactivado")
+            self._release_missing(set(), ctx)
             self.status = {"mode": mode}
             return
         now = time.monotonic()
@@ -205,8 +214,10 @@ class LoadFollower:
         self._last_meter = meter
 
         followers = ctx.get("followers") or []
+        self._release_missing({f["id"] for f in followers}, ctx)
         args = (meter, self._current, followers, bool(ctx.get("discharge_allowed")),
-                float(ctx.get("contracted_w") or 0), float(ctx.get("margin_w") or DEFAULT_MARGIN_W))
+                float(ctx.get("contracted_w") or 0), float(ctx.get("margin_w") or DEFAULT_MARGIN_W),
+                float(ctx.get("other_charging_w") or 0))
         wanted = wanted_total(*args)
         self._active = choose_active(wanted, followers, self._active)
         if self._active and now - self._last_swap >= SWAP_MIN_SECONDS:
@@ -246,3 +257,25 @@ class LoadFollower:
                 continue
             if self._send(b, w):
                 self._current[bid] = w
+                self._followed.add(bid)
+            else:
+                log.warning("[SEGUIMIENTO] %s: no se pudo aplicar la carga base de %.0f W -- se reintenta en la proxima lectura",
+                            b.get("name", bid), w)
+        now = time.monotonic()
+        if changes and now - self._last_log >= SHADOW_LOG_SECONDS:
+            self._last_log = now
+            log.info("[SEGUIMIENTO] %s -> %s", why, ", ".join(
+                f"{(by_id.get(b) or {}).get('name', b)} {w:.0f} W" for b, w in targets.items()))
+
+    def _release_missing(self, still: set[str], ctx: dict) -> None:
+        """Las baterias que seguian y ya no: a 0 y devueltas al planificador."""
+        by_id = {b["id"]: b for b in ctx.get("batteries_cfg") or []}
+        for bid in [x for x in self._followed if x not in still]:
+            b = by_id.get(bid)
+            done = b is None or self._release is None or self._release(b)
+            if done:
+                self._followed.discard(bid)
+                self._current.pop(bid, None)
+                self._active = [a for a in self._active if a != bid]
+                log.info("[SEGUIMIENTO] %s deja de seguir: carga base a 0 y vuelve al planificador",
+                         (b or {}).get("name", bid))

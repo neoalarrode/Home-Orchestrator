@@ -1233,7 +1233,26 @@ def run_cycle():
     distribution = battery_exec.plan_distribution(
         batteries, ac_charge_w, now_hp.discharge_w, pv_surplus_w=pv_surplus_now, socs=socs
     )
+    # Bateria en prueba de seguimiento de carga: el ciclo no le manda nada (sus
+    # tareas y su carga base las gestiona load_follower mientras dure).
+    following = _load_follow_test_ids(cfg)
+    if following:
+        test = (cfg.get("general") or {}).get("load_follow_test") or {}
+        rest = []
+        for e in distribution["per_battery"]:
+            if e["id"] in following:
+                continue
+            if test.get("hold_others"):
+                # El resto, en reposo mientras dure la prueba (ni cargan ni
+                # descargan): la bateria en prueba cubre sola la casa y nadie
+                # mas tira del mismo contador.
+                e = {**e, "enabled": False, "power_w": 0, "note": "en reposo durante la prueba de seguimiento"}
+            rest.append(e)
+        distribution = {**distribution, "per_battery": rest}
     log_lines = battery_exec.execute(batteries, distribution, dry_run=dry_run)
+    for b in batteries:
+        if b.id in following:
+            log_lines.append(f"[{b.name}] en prueba de seguimiento de carga (la controla el seguimiento, no el plan)")
 
     # Backstop AUTOMATICO de limite de importacion de red para baterias
     # EcoFlow con `ecoflow_allow_grid_import_limit` -- a peticion expresa
@@ -3382,6 +3401,16 @@ def _run_full_access_server():
         log.warning(f"No se pudo abrir el puerto de acceso completo ({FULL_ACCESS_PORT}): {e}")
 
 
+def _load_follow_test_ids(cfg: dict) -> set[str]:
+    """Baterias en PRUEBA de seguimiento (general.load_follow_test = {"battery_id",
+    "until": epoch}): siguen a la casa aunque el plan no este descargando, hasta
+    que caduca la prueba."""
+    test = (cfg.get("general") or {}).get("load_follow_test") or {}
+    if test.get("battery_id") and float(test.get("until") or 0) > time.time():
+        return {test["battery_id"]}
+    return set()
+
+
 def _load_follow_context() -> dict:
     """Lo que necesita el seguimiento de carga (load_follower.py) en cada
     lectura del contador: modo, baterias en semiautomatico con su SOC (de la
@@ -3401,30 +3430,82 @@ def _load_follow_context() -> dict:
         available_wh = max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity)
         followers.append({"id": b["id"], "max_w": float(b.get("max_discharge_w", 1200)),
                           "available_wh": available_wh, "soc": float(soc)})
+    testing = _load_follow_test_ids(cfg)
+    if testing:
+        followers = [f for f in followers if f["id"] in testing]
+    # Lo que cargan de red las baterias que NO siguen (positivo = cargando): el
+    # Shelly lo ve como consumo y no hay que cubrirlo descargando otras.
+    other_charging_w = 0.0
+    follower_ids = {f["id"] for f in followers}
+    seen_groups: set[str] = set()
+    for b in cfg.get("batteries") or []:
+        if b["id"] in follower_ids or b.get("source") != "ecoflow" or not b.get("ecoflow_ble_address") or not user_id:
+            continue
+        group = b.get("ecoflow_main_sn") or b["id"]
+        if group in seen_groups:
+            continue
+        state = ecoflow_ble.get_state(b["ecoflow_ble_address"], user_id) or {}
+        if state.get("battery_power") is not None:
+            seen_groups.add(group)
+            other_charging_w += max(0.0, float(state["battery_power"]))
     with _state_lock:
         action = (_last_status.get("distribution") or {}).get("action")
+    mode = general.get("load_follow_mode") or "off"
     return {
-        "mode": general.get("load_follow_mode") or "off",
+        "mode": "on" if testing else mode,
+        "other_charging_w": other_charging_w,
         "meter_host": general.get("load_follow_meter_host"),
         "margin_w": general.get("load_follow_margin_w"),
         "deadband_w": general.get("load_follow_deadband_w"),
         "contracted_w": general.get("contracted_power_w"),
-        "discharge_allowed": action == "discharge",
+        "discharge_allowed": bool(testing) or action == "discharge",
         "followers": followers,
         "batteries_cfg": cfg.get("batteries") or [],
     }
 
 
+_load_follow_prepared: set[str] = set()
+
+
 def _load_follow_send(b: dict, watts: float) -> bool:
+    """Carga base de una bateria que sigue a la casa. La primera vez se le
+    prepara: carga desactivada y tarea de descarga activa a su limite (sin
+    tarea de descarga la carga base no se entrega -- medido el 1-nov)."""
     cfg = config_store.load_config()
+    address, user_id = b["ecoflow_ble_address"], cfg.get("ecoflow_user_id")
     try:
-        return ecoflow_ble.set_base_load(b["ecoflow_ble_address"], cfg.get("ecoflow_user_id"), watts)
+        if watts > 0 and b["id"] not in _load_follow_prepared:
+            ok_off = ecoflow_ble.set_charging_task(address, user_id, enable=False)
+            ok_on = ecoflow_ble.set_discharging_task(address, user_id, enable=True,
+                                                      power_limit_w=float(b.get("max_discharge_w", 1200)))
+            if not (ok_off and ok_on):
+                log.warning(f"[{b.get('name')}] seguimiento: no se pudo preparar (carga off {ok_off}, descarga on {ok_on})")
+                return False
+            _load_follow_prepared.add(b["id"])
+            log.info(f"[{b.get('name')}] seguimiento: carga desactivada y descarga activada")
+        return ecoflow_ble.set_base_load(address, user_id, watts)
     except Exception:
         log.exception(f"[{b.get('name')}] fallo mandando carga base {watts:.0f} W")
         return False
 
 
-_load_follower = load_follower.LoadFollower(_load_follow_context, _load_follow_send)
+def _load_follow_release(b: dict) -> bool:
+    """Fin del seguimiento de esta bateria: carga base 0 y descarga desactivada;
+    el siguiente ciclo del plan vuelve a mandarla."""
+    cfg = config_store.load_config()
+    address, user_id = b["ecoflow_ble_address"], cfg.get("ecoflow_user_id")
+    try:
+        if not ecoflow_ble.set_base_load(address, user_id, 0):
+            return False
+        ecoflow_ble.set_discharging_task(address, user_id, enable=False)
+        _load_follow_prepared.discard(b["id"])
+        return True
+    except Exception:
+        log.exception(f"[{b.get('name')}] fallo devolviendo la bateria al plan")
+        return False
+
+
+_load_follower = load_follower.LoadFollower(_load_follow_context, _load_follow_send, _load_follow_release)
 
 
 def start_background_threads() -> None:
