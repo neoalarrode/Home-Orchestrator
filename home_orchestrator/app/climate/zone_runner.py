@@ -440,6 +440,11 @@ class ZoneRunner:
         self._swing_modes: list[str] | None = None
 
         self._climate_entities_unresolved = False
+        # Ultimos modos conocidos con TODOS los equipos legibles (persistidos):
+        # ver `_refresh_hvac_modes`.
+        saved_modes = (state or {}).get("known_hvac_modes")
+        self._known_hvac_modes: list[str] | None = (
+            [m for m in saved_modes if isinstance(m, str)] if isinstance(saved_modes, list) and saved_modes else None)
         # Firma de lo ULTIMO que se anuncio en el discovery (ver
         # `_refresh_hvac_modes`). `None` = todavia no se ha anunciado nada, asi
         # que la primera vuelta -- esta de aqui, dentro del __init__ -- solo
@@ -728,6 +733,7 @@ class ZoneRunner:
             "action_log": [[ts, act] for ts, act in self._action_log],
             "activation_margins": dict(self._delegate_activation_margin),
             "running_power": dict(self._running_power),
+            "known_hvac_modes": list(self._known_hvac_modes or []),
             "hold_trims": dict(self._hold_trim),
             "rest_deviations": {e: self._delegate_deviations[e] for e in self._deviation_at_rest
                                 if e in self._delegate_deviations},
@@ -874,6 +880,17 @@ class ZoneRunner:
         for hvac_mode, name in _PASSTHROUGH_MODES.items():
             if name in capability:
                 modes.append(hvac_mode)
+        if self._climate_entities_unresolved:
+            # Algun equipo aun no se puede leer (arranque: cache de HA y puentes
+            # cargando): no se recortan los modos. BUG REAL (1-nov): con todo
+            # ilegible salia ["off"] y ese era el discovery que veia HomeKit en
+            # cada reinicio ("Cannot map hvac target mode: heat_cool ... only
+            # off"). Se mantienen los ultimos conocidos (o, sin ellos, el
+            # respaldo completo de publish_discovery).
+            known = self._known_hvac_modes
+            modes = list(known) if known else (modes if len(modes) > 1 else [])
+        else:
+            self._known_hvac_modes = list(modes)
         self.hvac_modes = modes
 
         fan_modes = self._available_fan_modes()
