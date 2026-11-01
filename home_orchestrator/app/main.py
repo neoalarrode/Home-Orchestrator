@@ -3545,19 +3545,70 @@ def _load_follow_send(b: dict, watts: float) -> bool:
     cfg = config_store.load_config()
     address, user_id = b["ecoflow_ble_address"], cfg.get("ecoflow_user_id")
     try:
-        if watts > 0 and b["id"] not in _load_follow_prepared:
-            ok_off = ecoflow_ble.set_charging_task(address, user_id, enable=False)
-            ok_on = ecoflow_ble.set_discharging_task(address, user_id, enable=True,
-                                                      power_limit_w=float(b.get("max_discharge_w", 1200)))
-            if not (ok_off and ok_on):
-                log.warning(f"[{b.get('name')}] seguimiento: no se pudo preparar (carga off {ok_off}, descarga on {ok_on})")
-                return False
-            _load_follow_prepared.add(b["id"])
-            log.info(f"[{b.get('name')}] seguimiento: carga desactivada y descarga activada")
+        if watts > 0 and b["id"] not in _load_follow_prepared and not _load_follow_prepare(b):
+            return False
         return ecoflow_ble.set_base_load(address, user_id, watts)
     except Exception:
         log.exception(f"[{b.get('name')}] fallo mandando carga base {watts:.0f} W")
         return False
+
+
+def _load_follow_prepare(b: dict) -> bool:
+    """Carga desactivada y tarea de descarga activa a su limite."""
+    cfg = config_store.load_config()
+    address, user_id = b["ecoflow_ble_address"], cfg.get("ecoflow_user_id")
+    ok_off = ecoflow_ble.set_charging_task(address, user_id, enable=False)
+    ok_on = ecoflow_ble.set_discharging_task(address, user_id, enable=True,
+                                              power_limit_w=float(b.get("max_discharge_w", 1200)))
+    if not (ok_off and ok_on):
+        log.warning(f"[{b.get('name')}] seguimiento: no se pudo preparar (carga off {ok_off}, descarga on {ok_on})")
+        return False
+    _load_follow_prepared.add(b["id"])
+    log.info(f"[{b.get('name')}] seguimiento: carga desactivada y descarga activada")
+    return True
+
+
+def _load_follow_ensure(b: dict) -> None:
+    """Un equipo que tiene que descargar con la carga activada o sin la tarea de
+    descarga (segun la cache BLE): se vuelve a preparar."""
+    cfg = config_store.load_config()
+    state = ecoflow_ble.get_state(b["ecoflow_ble_address"], cfg.get("ecoflow_user_id")) or {}
+    if state.get("charging_task_enabled") is False and state.get("discharging_task_enabled") is True:
+        return
+    if not state:
+        return
+    log.warning(f"[{b.get('name')}] seguimiento: tareas cambiadas por fuera (carga {state.get('charging_task_enabled')}, "
+                f"descarga {state.get('discharging_task_enabled')}) -- se vuelven a preparar")
+    try:
+        _load_follow_prepare(b)
+    except Exception:
+        log.exception(f"[{b.get('name')}] fallo rehaciendo sus tareas")
+
+
+def _load_follow_verify(b: dict, watts: float, check_base: bool = True) -> bool:
+    """Comprueba en el equipo (lectura nueva) que la ultima orden se aplico: su
+    carga base y, si tiene que entregar, carga desactivada y descarga activa.
+    Si no, se rehacen las tareas y se reenvia la carga base."""
+    cfg = config_store.load_config()
+    address, user_id = b["ecoflow_ble_address"], cfg.get("ecoflow_user_id")
+    state = ecoflow_ble.get_state(address, user_id, fresh=True) or {}
+    if not state:
+        return True                     # sin lectura no se concluye nada
+    base_ok = not check_base or (state.get("base_load_power") is not None
+                                 and abs(float(state["base_load_power"]) - watts) <= 1)
+    tasks_ok = watts <= 0 or (state.get("charging_task_enabled") is False and state.get("discharging_task_enabled") is True)
+    if base_ok and tasks_ok:
+        return True
+    log.warning(f"[{b.get('name')}] seguimiento: la orden de {watts:.0f} W no se aplico (carga base "
+                f"{state.get('base_load_power')}, carga {state.get('charging_task_enabled')}, descarga "
+                f"{state.get('discharging_task_enabled')}) -- se rehace")
+    try:
+        if not tasks_ok:
+            _load_follow_prepare(b)
+        ecoflow_ble.set_base_load(address, user_id, watts)
+    except Exception:
+        log.exception(f"[{b.get('name')}] fallo rehaciendo la orden")
+    return False
 
 
 def _load_follow_release(b: dict) -> bool:
@@ -3582,7 +3633,8 @@ def _load_follow_release(b: dict) -> bool:
         return False
 
 
-_load_follower = load_follower.LoadFollower(_load_follow_context, _load_follow_send, _load_follow_release)
+_load_follower = load_follower.LoadFollower(_load_follow_context, _load_follow_send, _load_follow_release,
+                                            _load_follow_ensure, _load_follow_verify)
 
 
 def start_background_threads() -> None:

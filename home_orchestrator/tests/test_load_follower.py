@@ -183,6 +183,43 @@ class Follower(unittest.TestCase):
             f._advance_estimates(float(t))
         self.assertGreater(f._estimate["u"], 500.0)               # sigue a lo pedido
 
+    def test_tasks_are_checked_while_discharging(self):
+        checked = []
+        ctx = {"mode": "on", "meter_host": "x", "followers": F, "discharge_allowed": True,
+               "contracted_w": 5000, "margin_w": 50, "batteries_cfg": [{"id": "ultra"}, {"id": "ef"}]}
+        f = lf.LoadFollower(lambda: ctx, lambda b, w: True, None, lambda b: checked.append(b["id"]))
+        orig = lf.read_shelly_w
+        lf.read_shelly_w = lambda *a, **k: 1000.0
+        try:
+            f._tick(None)
+        finally:
+            lf.read_shelly_w = orig
+        self.assertEqual(sorted(checked), ["ef", "ultra"])
+
+    def test_each_order_is_verified_and_resent_if_not_applied(self):
+        verified, sent = [], []
+        ctx = {"mode": "on", "meter_host": "x", "followers": [F[0]], "discharge_allowed": True,
+               "contracted_w": 5000, "margin_w": 50, "batteries_cfg": [{"id": "ultra"}]}
+        f = lf.LoadFollower(lambda: ctx, lambda b, w: sent.append(w) or True, None, None,
+                            lambda b, w, check_base=True: verified.append(w) or False)    # no aplicada
+        orig, orig_t = lf.read_shelly_w, lf.time.monotonic
+        clock = [1000.0]
+        lf.time.monotonic = lambda: clock[0]
+        try:
+            lf.read_shelly_w = lambda *a, **k: 400.0
+            f._tick(None)                                   # manda la orden
+            clock[0] += 4
+            lf.read_shelly_w = lambda *a, **k: 401.0
+            f._tick(None)                                   # verifica -> no aplicada
+            self.assertEqual(len(verified), 1)
+            self.assertNotIn("ultra", f._current)           # se volvera a mandar
+            before = len(sent)
+            lf.read_shelly_w = lambda *a, **k: 402.0
+            f._tick(None)
+            self.assertEqual(len(sent), before + 1)
+        finally:
+            lf.read_shelly_w, lf.time.monotonic = orig, orig_t
+
     def test_shadow_sends_nothing(self):
         sent = []
         ctx = {"mode": "shadow", "meter_host": "x", "followers": F, "discharge_allowed": True,

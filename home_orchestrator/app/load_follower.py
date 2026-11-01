@@ -58,6 +58,14 @@ RAMP_UP_W_PER_S = 300.0
 # Subida maxima por lectura y unidad (las bajadas son inmediatas): no perseguir
 # del todo un pico corto que al desaparecer dejaria vertiendo.
 MAX_STEP_UP_W = 300.0
+# Cada cuanto se comprueba que un equipo que descarga sigue con la carga
+# desactivada y la descarga activa. BUG REAL (1-nov): una orden de carga del plan
+# que iba por detras en el puente BLE llego DESPUES de preparar la prueba y dejo
+# los dos grupos cargando, con la carga base puesta pero sin entregar nada.
+ENSURE_TASKS_SECONDS = 10.0
+# Cada orden se verifica leyendo el equipo VERIFY_AFTER_S despues (el equipo
+# tarda ~2 s en aplicarla: leer al instante daria el valor anterior).
+VERIFY_AFTER_S = 3.0
 
 
 def read_shelly_w(host: str, session: requests.Session | None = None) -> float | None:
@@ -183,12 +191,19 @@ class LoadFollower:
     """Hilo del seguimiento. `context()` lo da main.py: config, SOC y permiso
     del planificador; `send(battery_cfg, watts)` manda la carga base."""
 
-    def __init__(self, context, send, release=None):
+    def __init__(self, context, send, release=None, ensure=None, verify=None):
         self._context = context
         self._send = send
         # `release(battery_cfg)`: devolver la bateria al planificador cuando deja
         # de seguir (fin de la prueba, cambio de modo...).
         self._release = release
+        # `ensure(battery_cfg)`: comprobar/rehacer sus tareas (carga off, descarga on).
+        self._ensure = ensure
+        self._last_ensure: dict[str, float] = {}
+        # `verify(battery_cfg, watts) -> bool`: comprobar que la orden se aplico
+        # (y rehacerla si no). Pendientes: {id: (cuando, vatios)}.
+        self._verify = verify
+        self._verify_due: dict[str, tuple[float, float]] = {}
         self._followed: set[str] = set()
         self._last_log = 0.0
         self._current: dict[str, float] = {}
@@ -270,6 +285,27 @@ class LoadFollower:
             if bid not in targets:
                 targets[bid] = 0.0
         self._apply(targets, ctx, f"contador {meter:.0f} W")
+        if mode == "on" and self._verify is not None:
+            by_id = {b["id"]: b for b in ctx.get("batteries_cfg") or []}
+            for bid, (due, w) in list(self._verify_due.items()):
+                if now >= due and bid in by_id:
+                    del self._verify_due[bid]
+                    current = self._current.get(bid)
+                    if current is None:
+                        continue
+                    # La carga base solo se compara si la orden ya tiene VERIFY_AFTER_S
+                    # (si es mas nueva el equipo aun no ha podido aplicarla); las
+                    # tareas, siempre.
+                    last_order = (self._orders.get(bid) or [(0.0, current)])[-1][0]
+                    if not self._verify(by_id[bid], current, now - last_order >= VERIFY_AFTER_S):
+                        # No aplicada: que la proxima lectura la vuelva a mandar.
+                        self._current.pop(bid, None)
+        if mode == "on" and self._ensure is not None:
+            by_id = {b["id"]: b for b in ctx.get("batteries_cfg") or []}
+            for bid, w in self._current.items():
+                if w > 0 and bid in by_id and now - self._last_ensure.get(bid, 0.0) >= ENSURE_TASKS_SECONDS:
+                    self._last_ensure[bid] = now
+                    self._ensure(by_id[bid])
 
     def _apply(self, targets: dict[str, float], ctx: dict, why: str) -> None:
         mode = ctx.get("mode") or "off"
@@ -300,6 +336,9 @@ class LoadFollower:
                 continue
             if self._send(b, w):
                 self._orders.setdefault(bid, []).append((time.monotonic(), w))
+                # No se reprograma una verificacion pendiente: mandando cada
+                # segundo no llegaria nunca.
+                self._verify_due.setdefault(bid, (time.monotonic() + VERIFY_AFTER_S, w))
                 self._current[bid] = w
                 self._followed.add(bid)
             else:
