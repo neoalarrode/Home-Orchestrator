@@ -26,5 +26,27 @@ class AuxTemplates(unittest.TestCase):
         self.assertIn("'True' if this.state == 'on'", self.tpl(code="anion", domain="switch"))
 
 
+class ClimateTemplates(unittest.TestCase):
+    def cfg(self):
+        from tuya_native.ha_climate import build_climate
+        codes = {"switch": {"type": "bool"}, "temp_set": {"spec": {"min": 160, "max": 880, "scale": 1}},
+                 "mode": {"spec": {"range": ["cold", "hot"]}}, "fan_speed_enum": {"spec": {"range": ["low", "high"]}},
+                 "mode_ECO": {"type": "bool"}, "sleep": {"type": "bool"}}
+        return build_climate("d", "N", codes, "bt")
+
+    def test_preset_comes_from_active_bool_dp(self):
+        t = self.cfg()["preset_mode_value_template"]
+        self.assertNotIn("value_json.preset", t)
+        self.assertIn("value_json.get('mode_ECO')", t)
+        self.assertIn("none", t)
+
+    def test_fan_reads_the_real_dp(self):
+        self.assertIn("fan_speed_enum", self.cfg()["fan_mode_state_template"])
+
+    def test_celsius_unicode_normalised(self):
+        cfg = build_aux({"code": "temp", "domain": "sensor", "unit": "℃"}, "d", "N", "bt")
+        self.assertEqual((cfg["unit_of_measurement"], cfg.get("device_class")), ("°C", "temperature"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,11 +29,14 @@ def build_aux(e,device_id,name,bt):
         cfg["command_topic"]=cmd
         if e.get("min") is not None: cfg["min"]=e["min"]/d
         if e.get("max") is not None: cfg["max"]=e["max"]/d
-        if e.get("unit"): cfg["unit_of_measurement"]=e["unit"]
+        if e.get("unit"): cfg["unit_of_measurement"]={"℃":"°C","℉":"°F"}.get(e["unit"],e["unit"])
         if scale: cfg["value_template"]=_tpl(code,"value_json['%s'] | float / %d"%(code,d),dom)
     elif dom=="sensor":
         if e.get("unit"):
-            cfg["unit_of_measurement"]=e["unit"]; dc=UNIT_DC.get(e["unit"])
+            # HA rechaza "℃" (U+2103) con device_class temperature: la entidad no
+            # se creaba (sensor de temperatura del robot, 1-nov).
+            unit={"℃":"°C","℉":"°F"}.get(e["unit"],e["unit"])
+            cfg["unit_of_measurement"]=unit; dc=UNIT_DC.get(unit)
             if dc: cfg["device_class"]=dc
         if scale: cfg["value_template"]=_tpl(code,"value_json['%s'] | float / %d"%(code,d),dom)
     return cfg

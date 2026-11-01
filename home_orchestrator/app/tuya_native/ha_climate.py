@@ -37,13 +37,20 @@ def build_climate(device_id,name,codes,bt):
             if hv not in modes: modes.append(hv)
     cfg["modes"]=modes or ["off","auto"]
     # hvac = off si apagado; si no, mapear el modo Tuya -> hvac. Plantilla sobre el dict crudo.
-    cfg["mode_state_template"]=("{%% if not value_json.%s %%}off{%% else %%}{{ {%s}.get(value_json.%s|string, value_json.%s) }}{%% endif %%}"
+    cfg["mode_state_template"]=("{%% if not value_json.get('%s') %%}off{%% else %%}{{ {%s}.get(value_json.get('%s')|string, value_json.get('%s')) }}{%% endif %%}"
         % (on_code, ", ".join("'%s':'%s'"%(k,v) for k,v in mapping.items()), mode_code, mode_code))
     cfg["power_command_topic"]=cmd+"/power_hvac"
-    w=codes.get("windspeed") or codes.get("fan_speed_enum")
-    if w: cfg.update({"fan_modes":(w.get("spec") or {}).get("range") or [],"fan_mode_state_topic":st,"fan_mode_command_topic":cmd+"/windspeed","fan_mode_state_template":"{{ value_json.windspeed }}"})
+    # La plantilla lee el DP REAL (antes siempre `windspeed`, vacio en un equipo
+    # con `fan_speed_enum`).
+    w_code="windspeed" if "windspeed" in codes else ("fan_speed_enum" if "fan_speed_enum" in codes else None)
+    w=codes.get(w_code) if w_code else None
+    if w: cfg.update({"fan_modes":(w.get("spec") or {}).get("range") or [],"fan_mode_state_topic":st,"fan_mode_command_topic":cmd+"/windspeed","fan_mode_state_template":"{{ value_json.get('%s') }}"%w_code})
     s=codes.get("up_down_sweep")
-    if s: cfg.update({"swing_modes":(s.get("spec") or {}).get("range") or [],"swing_mode_state_topic":st,"swing_mode_command_topic":cmd+"/up_down_sweep","swing_mode_state_template":"{{ value_json.up_down_sweep }}"})
+    if s: cfg.update({"swing_modes":(s.get("spec") or {}).get("range") or [],"swing_mode_state_topic":st,"swing_mode_command_topic":cmd+"/up_down_sweep","swing_mode_state_template":"{{ value_json.get('up_down_sweep') }}"})
     pr=[c for c in ("mode_ECO","eco","sleep","mode_dry") if has(c)]
-    if pr: cfg.update({"preset_modes":pr,"preset_mode_state_topic":st,"preset_mode_command_topic":cmd+"/preset","preset_mode_value_template":"{{ value_json.preset }}"})
+    # BUG REAL (1-nov): leia `value_json.preset`, una clave que el estado crudo
+    # no tiene nunca -- el preset de los AC no se veia en HA (y dejaba un aviso de
+    # plantilla en cada publicacion). El preset activo es el primer DP bool a true.
+    if pr: cfg.update({"preset_modes":pr,"preset_mode_state_topic":st,"preset_mode_command_topic":cmd+"/preset","preset_mode_value_template":
+        "".join("{%% %s value_json.get('%s') %%}%s" % ("if" if i == 0 else "elif", c, c) for i, c in enumerate(pr)) + "{% else %}none{% endif %}"})
     return cfg

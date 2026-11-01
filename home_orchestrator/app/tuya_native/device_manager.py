@@ -184,6 +184,13 @@ class TuyaDevice:
             if code: self.ctl.set_dp(code,payload); return True
             return False
         if command=="preset":
+            if str(payload)=="none":
+                # Quitar el preset en HA: se apagan los que esten activos.
+                state=self.state_payload() or {}
+                active=[c for c in ("mode_ECO","eco","sleep","mode_dry")
+                        if (rc:=self._real_code(c)) and state.get(rc) is True]
+                for c in active: self.ctl.set_dp(self._real_code(c),False)
+                return bool(active)
             code=self._real_code(str(payload))
             if code and (self.codes.get(code) or {}).get("type")=="bool":
                 self.ctl.set_dp(code,True); return True
