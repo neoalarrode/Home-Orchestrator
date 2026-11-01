@@ -60,7 +60,16 @@ SCAN_WINDOW_SECONDS = 4
 # Cloud cuenta contra el limite diario de la cuenta (ver govee_cloud.py),
 # asi que aqui se cachea mas tiempo -- el respaldo cloud es para
 # dispositivos que LAN no puede alcanzar, no para tiempo real.
-CLOUD_STATE_CACHE_SECONDS = 20
+# 20 s gastaba ~3 lecturas/min por bombilla solo-nube: el 1-nov la cuenta iba
+# por 7.275 de 10.000 peticiones/dia. Tras cada comando el estado se repinta en
+# optimista, asi que lo unico que tarda mas en verse es un cambio hecho desde
+# la app de Govee.
+CLOUD_STATE_CACHE_SECONDS = 120
+# Cambios por debajo de esto no se mandan por la nube (cada propiedad es una
+# peticion): Lighting da por aplicado lo que este a menos de 4 % / 150 K (ver
+# lighting/zone_runner.py), y su deriva circadiana pedia 1 % y 15 K cada minuto.
+CLOUD_MIN_BRIGHTNESS_STEP = 2
+CLOUD_MIN_KELVIN_STEP = 100
 
 MIN_KELVIN, MAX_KELVIN = 2000, 9000
 
@@ -192,14 +201,27 @@ class GoveeDeviceManager:
         if identity is None or not self._cloud_api_key:
             return False
         mac, sku = identity
+        # Lo que ya tiene (ultima lectura o lo ultimo mandado): no se gasta una
+        # peticion en repetirlo -- p.ej. "turn on" a una bombilla encendida en
+        # cada ajuste de brillo.
+        known = (self._cloud_state_cache.get(mac) or {}).get("status") or {}
         ok = True
-        if on is not None:
+        if on is not None and known.get("onOff") != (1 if on else 0):
             ok = govee_cloud.control(self._cloud_api_key, mac, sku, "turn", "on" if on else "off") and ok
         if brightness_pct is not None:
-            ok = govee_cloud.control(self._cloud_api_key, mac, sku, "brightness", int(_clamp(round(brightness_pct), 1, 100))) and ok
+            value = int(_clamp(round(brightness_pct), 1, 100))
+            prev = known.get("brightness")
+            if prev is None or abs(value - prev) >= CLOUD_MIN_BRIGHTNESS_STEP:
+                ok = govee_cloud.control(self._cloud_api_key, mac, sku, "brightness", value) and ok
+            else:
+                brightness_pct = prev
         if color_temp_kelvin is not None:
             kelvin = int(_clamp(round(color_temp_kelvin), MIN_KELVIN, MAX_KELVIN))
-            ok = govee_cloud.control(self._cloud_api_key, mac, sku, "colorTem", kelvin) and ok
+            prev = known.get("colorTemInKelvin")
+            if prev is None or abs(kelvin - prev) >= CLOUD_MIN_KELVIN_STEP:
+                ok = govee_cloud.control(self._cloud_api_key, mac, sku, "colorTem", kelvin) and ok
+            else:
+                color_temp_kelvin = prev
         if ok:
             # Mismo repintado optimista que la via LAN -- el proximo
             # sondeo (aqui, la siguiente lectura tras CLOUD_STATE_CACHE_SECONDS)
