@@ -1247,14 +1247,14 @@ class ZoneRunner:
                 raw = None
             if raw is not None:
                 self._sensor_stale = False
-                last_updated_raw = state.get("last_updated")
-                last_updated = _utcnow()
-                if last_updated_raw:
-                    try:
-                        last_updated = datetime.fromisoformat(str(last_updated_raw).replace("Z", "+00:00"))
-                    except ValueError:
-                        pass
-                return self._temp_ema.update(raw, last_updated)
+                # El valor del sensor vale hasta que cambia: la EMA avanza con el
+                # reloj del ciclo, no con la marca de HA. BUG REAL (1-nov): con
+                # subscribe_entities, al cambiar el valor HA manda solo `lc` (no
+                # `lu`), asi que `last_updated` se quedaba con la fecha del
+                # arranque, la EMA veia dt=0 y CONGELABA la lectura (cuarto de
+                # juegos 40 min en 20.79 con el sensor en 20.15); y aun con la
+                # marca buena, cada lectura nueva solo pesaba max_alpha una vez.
+                return self._temp_ema.update(raw, now)
 
         age = self._temp_ema.age_seconds(now)
         if age is not None and age <= STALE_SENSOR_HARD_TIMEOUT_SECONDS:
