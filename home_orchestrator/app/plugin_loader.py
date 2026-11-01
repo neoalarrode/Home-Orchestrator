@@ -448,6 +448,18 @@ def load_all_plugins() -> list:
                 slug,
             )
 
+    import plugin_downloader
+
     for p in plugins:
+        # La version a mano de cada plugin (`ClimatePlugin.version`...) se quedaba
+        # atras: el log decia "Climate v0.7.8" con la 0.7.30 desplegada. Si lo que
+        # corre es el tag pineado, la version buena es la del catalogo.
+        meta = catalogo().get(p.slug) or {}
+        try:
+            activo = plugin_downloader.current_tag(p.slug)
+        except Exception:
+            activo = None
+        if meta.get("version") and meta.get("tag") and activo == meta["tag"]:
+            p.version = meta["version"]
         log.info("Plugin cargado: %s v%s (%s)", p.name, p.version, p.slug)
     return plugins

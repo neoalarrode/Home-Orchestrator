@@ -1,5 +1,9 @@
 # Changelog
 
+## core 0.77.62
+
+- Carga de plugins — la versión que se muestra de cada plugin es la del catálogo (`plugins.json`) cuando corre el tag pineado. La fijada a mano en cada plugin se había quedado atrás: el log decía «Climate Orchestrator v0.7.8» con la 0.7.30 desplegada.
+
 ## core 0.77.61
 
 - WebSocket de HA — `last_updated` al día en la caché de estados. Con `subscribe_entities`, HA omite `lu` cuando coincide con `lc` (altas) y no lo manda cuando cambia `lc` (cambios de valor), así que la caché se quedaba con el `last_updated` del arranque. Climate fechaba su media de temperatura con él y congelaba la lectura (cuarto de juegos 40 min en 20,79 °C con el sensor en 20,15). Climate 0.7.30 ya no depende de esa marca; esto corrige la causa para cualquier otro consumidor.
