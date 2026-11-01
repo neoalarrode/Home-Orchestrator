@@ -136,6 +136,9 @@ class Battery:
     ecoflow_access_key: str | None = None    # credenciales de cuenta EcoFlow (globales), solo si hace falta cloud
     ecoflow_secret_key: str | None = None
     ecoflow_user_id: str | None = None       # userId de cuenta EcoFlow (global), solo si hace falta bluetooth
+    # Limite de salida AC que informa el propio equipo (`max_ac_out_power` por
+    # BLE): en la unidad principal es el del grupo entero. None si no se sabe.
+    ecoflow_max_out_w: float | None = None
     # De donde vino el ULTIMO SOC leido con exito ("bluetooth" | "cloud"),
     # solo informativo -- para el iconito BT/API del dashboard. Se
     # actualiza cada vez que se llama a read_soc_pct() en una bateria
@@ -570,14 +573,20 @@ def effective_max_discharge_w(batteries: list) -> float:
     con el grupo dando 1200; con la Ultra X en un grupo propio son 2400. Cada
     bateria que no es EcoFlow (o EcoFlow sin grupo conocido) suma lo suyo."""
     total = 0.0
-    groups: dict[str, float] = {}
+    members: dict[str, list] = {}
     for b in batteries:
         key = _ecoflow_group_key(b)
         if key is None:
             total += b.max_discharge_w
         else:
-            groups[key] = max(groups.get(key, 0.0), b.max_discharge_w)
-    return total + sum(groups.values())
+            members.setdefault(key, []).append(b)
+    for key, units in members.items():
+        # El limite del grupo: el que informa su unidad principal; si no, el
+        # mayor declarado. Nunca mas que la suma de sus unidades.
+        main = next((u for u in units if u.ecoflow_sn and u.ecoflow_sn == key and u.ecoflow_max_out_w), None)
+        cap = float(main.ecoflow_max_out_w) if main else max(u.max_discharge_w for u in units)
+        total += min(cap, sum(u.max_discharge_w for u in units))
+    return total
 
 
 def _ecoflow_group_key(b: Battery) -> str | None:

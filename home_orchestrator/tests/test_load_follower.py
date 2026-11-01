@@ -92,6 +92,22 @@ class Follower(unittest.TestCase):
             lf.read_shelly_w = orig
         self.assertEqual(sorted(sent), [("ef", 0.0), ("ultra", 0.0)])
 
+    def test_leaving_real_mode_releases_the_battery(self):
+        released = []
+        ctx = {"mode": "on", "meter_host": "x", "followers": F, "discharge_allowed": True,
+               "contracted_w": 5000, "margin_w": 50, "batteries_cfg": [{"id": "ultra"}, {"id": "ef"}]}
+        f = lf.LoadFollower(lambda: ctx, lambda b, w: True, lambda b: released.append(b["id"]) or True)
+        orig = lf.read_shelly_w
+        lf.read_shelly_w = lambda *a, **k: 1000.0
+        try:
+            f._tick(None)                       # sigue y manda
+            ctx["mode"] = "shadow"              # vence la prueba
+            lf.read_shelly_w = lambda *a, **k: 1001.0
+            f._tick(None)
+        finally:
+            lf.read_shelly_w = orig
+        self.assertEqual(sorted(released), ["ef", "ultra"])
+
     def test_shadow_sends_nothing(self):
         sent = []
         ctx = {"mode": "shadow", "meter_host": "x", "followers": F, "discharge_allowed": True,

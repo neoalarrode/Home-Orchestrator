@@ -7,9 +7,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 import battery_exec  # noqa: E402
 
 
-def _b(i, main=None, source="ecoflow", w=1200):
+def _b(i, main=None, source="ecoflow", w=1200, sn=None, out=None):
     b = battery_exec.Battery.__new__(battery_exec.Battery)
     b.id, b.source, b.ecoflow_main_sn, b.max_discharge_w = i, source, main, w
+    b.ecoflow_sn, b.ecoflow_max_out_w = sn or i, out
     return b
 
 
@@ -27,6 +28,18 @@ class GroupDischarge(unittest.TestCase):
     def test_non_ecoflow_adds_its_own(self):
         bats = [_b("a", "G"), _b("b", "G"), _b("h", source="ha", w=800)]
         self.assertEqual(battery_exec.effective_max_discharge_w(bats), 2000)
+
+
+class GroupLimitFromDevice(unittest.TestCase):
+    def test_main_unit_reports_the_group_limit(self):
+        bats = [_b("G", "G", out=800), _b("b", "G"), _b("c", "G")]
+        self.assertEqual(battery_exec.effective_max_discharge_w(bats), 800)
+
+    def test_never_more_than_its_units(self):
+        self.assertEqual(battery_exec.effective_max_discharge_w([_b("G", "G", w=600, out=1200)]), 600)
+
+    def test_without_reading_falls_back_to_declared(self):
+        self.assertEqual(battery_exec.effective_max_discharge_w([_b("G", "G"), _b("b", "G")]), 1200)
 
 
 if __name__ == "__main__":

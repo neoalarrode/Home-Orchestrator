@@ -214,7 +214,11 @@ class LoadFollower:
         self._last_meter = meter
 
         followers = ctx.get("followers") or []
-        self._release_missing({f["id"] for f in followers}, ctx)
+        # Fuera del modo real nadie se queda con una carga base puesta. BUG REAL
+        # (1-nov): al vencer la prueba el modo paso a sombra y la Ultra X se
+        # quedo con 350 W de carga base -- la proxima descarga del plan los
+        # habria entregado fijos, sin nadie siguiendo a la casa.
+        self._release_missing({f["id"] for f in followers} if mode == "on" else set(), ctx)
         args = (meter, self._current, followers, bool(ctx.get("discharge_allowed")),
                 float(ctx.get("contracted_w") or 0), float(ctx.get("margin_w") or DEFAULT_MARGIN_W),
                 float(ctx.get("other_charging_w") or 0))

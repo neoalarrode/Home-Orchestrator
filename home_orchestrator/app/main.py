@@ -268,7 +268,20 @@ def _battery_from_cfg(b: dict, cfg: dict) -> battery_exec.Battery:
         ecoflow_access_key=cfg.get("ecoflow_access_key") or None if ecoflow_mode in ("cloud", "hybrid") else None,
         ecoflow_secret_key=cfg.get("ecoflow_secret_key") or None if ecoflow_mode in ("cloud", "hybrid") else None,
         ecoflow_user_id=cfg.get("ecoflow_user_id") or None if ecoflow_mode in ("bluetooth", "hybrid") else None,
+        ecoflow_max_out_w=_ecoflow_max_out_w(b, cfg),
     )
+
+
+def _ecoflow_max_out_w(b: dict, cfg: dict) -> float | None:
+    """Limite de salida que informa el equipo (cache BLE, sin conectar)."""
+    if (b.get("source") or "ha") != "ecoflow" or not b.get("ecoflow_ble_address") or not cfg.get("ecoflow_user_id"):
+        return None
+    state = ecoflow_ble.get_state(b["ecoflow_ble_address"], cfg["ecoflow_user_id"]) or {}
+    try:
+        value = float(state.get("max_ac_out_power"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def _watched_entities_from_cfg(cfg: dict) -> set[str]:
@@ -672,19 +685,25 @@ def _reconcile_ecoflow_main_sn(cfg: dict) -> None:
     if not (access_key and secret_key):
         return
     now = datetime.now()
+    # Tambien las que YA tienen principal: los grupos cambian (1-nov: la Ultra X
+    # salio a un grupo propio y Energy siguio tratando las cuatro como un grupo
+    # con ella de principal). Se vuelve a preguntar cada 10 minutos y se corrige.
     pending = [
         b for b in cfg["batteries"]
         if b.get("source") == "ecoflow" and b.get("ecoflow_mode") in ("cloud", "hybrid")
-        and b.get("ecoflow_sn") and not b.get("ecoflow_main_sn")
+        and b.get("ecoflow_sn")
         and now - _ecoflow_main_sn_last_try.get(b["id"], datetime.min)
         >= timedelta(seconds=ECOFLOW_MAIN_SN_RETRY_SECONDS)
     ]
     for b in pending:
         _ecoflow_main_sn_last_try[b["id"]] = now
         main_sn = ecoflow_cloud.get_main_sn(access_key, secret_key, b["ecoflow_sn"])
-        if main_sn:
+        if main_sn and main_sn != b.get("ecoflow_main_sn"):
             config_store.update_battery(cfg, b["id"], {"ecoflow_main_sn": main_sn})
-            log.info(f"[{b.get('name')}] unidad principal del grupo resuelta por la API de EcoFlow — ya puede recibir ordenes por Cloud")
+            if b.get("ecoflow_main_sn"):
+                log.info(f"[{b.get('name')}] ha cambiado de grupo: principal {b['ecoflow_main_sn']} -> {main_sn}")
+            else:
+                log.info(f"[{b.get('name')}] unidad principal del grupo resuelta por la API de EcoFlow — ya puede recibir ordenes por Cloud")
 
 
 def _stable_battery_key(b) -> str:
