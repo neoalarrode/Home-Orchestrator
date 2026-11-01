@@ -3425,9 +3425,14 @@ def _load_follow_test_ids(cfg: dict) -> set[str]:
     "until": epoch}): siguen a la casa aunque el plan no este descargando, hasta
     que caduca la prueba."""
     test = (cfg.get("general") or {}).get("load_follow_test") or {}
-    if test.get("battery_id") and float(test.get("until") or 0) > time.time():
-        return {test["battery_id"]}
-    return set()
+    ids = set(test.get("battery_ids") or []) | ({test["battery_id"]} if test.get("battery_id") else set())
+    if not ids or float(test.get("until") or 0) <= time.time():
+        return set()
+    # Todas las unidades de esos grupos: las tareas de un grupo son compartidas,
+    # y el ciclo no puede mandar carga a una mientras la prueba descarga el grupo.
+    batteries = cfg.get("batteries") or []
+    groups = {b.get("ecoflow_main_sn") or b["id"] for b in batteries if b["id"] in ids}
+    return {b["id"] for b in batteries if (b.get("ecoflow_main_sn") or b["id"]) in groups}
 
 
 def _load_follow_context() -> dict:
@@ -3564,6 +3569,12 @@ def _load_follow_release(b: dict) -> bool:
             return False
         ecoflow_ble.set_discharging_task(address, user_id, enable=False)
         _load_follow_prepared.discard(b["id"])
+        # Que el siguiente ciclo del plan le reenvie su orden sin esperar al
+        # "misma orden ya enviada" (se le cambiaron las tareas por fuera).
+        group = b.get("ecoflow_main_sn") or b["id"]
+        for u in cfg.get("batteries") or []:
+            if (u.get("ecoflow_main_sn") or u["id"]) == group:
+                battery_exec._last_command.pop(u["id"], None)
         return True
     except Exception:
         log.exception(f"[{b.get('name')}] fallo devolviendo la bateria al plan")
