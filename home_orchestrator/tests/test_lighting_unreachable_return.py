@@ -134,6 +134,15 @@ class UnreachableAndBack(unittest.TestCase):
         self.assertEqual(self.light()["attributes"]["brightness"], 3)        # 1 % de la curva
         self.assertFalse(self.z._state.get("manual_override", {}).get(L))
 
+    def test_no_transition_lights_get_transition_zero(self):
+        self.z = zr.ZoneRunner("0df2d936", dict(CFG, rules_text=f"Normal; luces={L},light.barra",
+                                                no_transition_lights=[L]), self.ha)
+        self.z._schedule_fast_verify = lambda: None
+        self.ha.states["light.barra"] = {"entity_id": "light.barra", "state": "off", "attributes": {}}
+        self.cycle()
+        sent = {c[1].get("transition") for c in self.ha.calls if c[0] == "turn_on"}
+        self.assertEqual(sent, {0.0, 2.0})
+
     def test_manual_off_still_respected(self):
         self.cycle(); self.cycle()
         self.ha.states[L]["state"] = "off"                        # la apaga alguien

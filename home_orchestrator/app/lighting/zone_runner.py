@@ -535,6 +535,14 @@ class ZoneRunner:
                 elif color_temp_kelvin is not None:
                     service_data["color_temp_kelvin"] = color_temp_kelvin
                 transition = self.zone.get("transition_seconds")
+                if entity_id in (self.zone.get("no_transition_lights") or []):
+                    # Luces cuyo firmware estira la transicion: los plafones
+                    # Govee por Matter bajan un paso cada ~250 ms, asi que 2 s
+                    # de transicion desde el 100 % eran mas de un minuto (el de
+                    # la cocina se encendia a los 12 s, aun al ~82 %, con las
+                    # barras ya al 1 %). Con 0 aplican al instante (probado:
+                    # 100 % -> 1 % en < 0.4 s).
+                    transition = 0
                 if transition is not None:
                     service_data["transition"] = float(transition)
                 self.ws.call_service("light", "turn_on", service_data=service_data, target={"entity_id": entity_id})
