@@ -4,6 +4,10 @@ from __future__ import annotations
 from .handles import TUYA_HVAC_MODE as TUYA_MODE_TO_HVAC
 CLIMATE_MAINCODES={"switch","Switch","Power","power","temp_set","Temp_set","temp_set_f","temp_current","Temp_current","mode","Mode","windspeed","fan_speed_enum","up_down_sweep","left_right_sweep","humidity_current","mode_ECO","eco","sleep","mode_dry"}
 def _div(sp): return 10**int(sp.get("scale",0) or 0)
+# Valores de un DP de preset que significan "no activo". No todos son bool: en
+# los AC Airclima `sleep` es un ENUM y vale "off" -- con solo mirar si era
+# verdadero, "off" (texto no vacio) se pintaba como preset "sleep" activo.
+_PRESET_OFF="(none, false, 'off', 'false', 'close', '0', 0, '')"
 def build_climate(device_id,name,codes,bt):
     def has(*c): return any(x in codes for x in c)
     st=bt+"/state"; cmd=bt+"/cmd"
@@ -52,5 +56,5 @@ def build_climate(device_id,name,codes,bt):
     # no tiene nunca -- el preset de los AC no se veia en HA (y dejaba un aviso de
     # plantilla en cada publicacion). El preset activo es el primer DP bool a true.
     if pr: cfg.update({"preset_modes":pr,"preset_mode_state_topic":st,"preset_mode_command_topic":cmd+"/preset","preset_mode_value_template":
-        "".join("{%% %s value_json.get('%s') %%}%s" % ("if" if i == 0 else "elif", c, c) for i, c in enumerate(pr)) + "{% else %}none{% endif %}"})
+        "".join("{%% %s value_json.get('%s') not in %s %%}%s" % ("if" if i == 0 else "elif", c, _PRESET_OFF, c) for i, c in enumerate(pr)) + "{% else %}none{% endif %}"})
     return cfg

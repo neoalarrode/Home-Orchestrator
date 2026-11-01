@@ -40,6 +40,11 @@ class ClimateTemplates(unittest.TestCase):
         self.assertIn("value_json.get('mode_ECO')", t)
         self.assertIn("none", t)
 
+    def test_enum_preset_off_is_not_active(self):
+        # AC Airclima: `sleep` es enum y vale "off" (Tuya Cloud, DP 105).
+        t = self.cfg()["preset_mode_value_template"]
+        self.assertIn("not in (none, false, 'off'", t)
+
     def test_fan_reads_the_real_dp(self):
         self.assertIn("fan_speed_enum", self.cfg()["fan_mode_state_template"])
 
