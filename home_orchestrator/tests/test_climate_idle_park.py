@@ -18,7 +18,7 @@ class _Stub:
         self._activation_probe = {}
         self._drive_climate_idle = zr.ZoneRunner._drive_climate_idle.__get__(self)
         self._delegate_last_command = {}
-        self._park_since = {}; self._deviation_at_rest = set()
+        self._park_since = {}; self._deviation_at_rest = set(); self._hold_run = {}; self._hold_trim = {}; self._rest_dev_at = {}
         self._learn_rest_deviation = zr.ZoneRunner._learn_rest_deviation.__get__(self)
         self._delegate_pre_temp = {}
         self._fallback_thermal_mode = zr.ZoneRunner._fallback_thermal_mode.__get__(self)

@@ -19,7 +19,7 @@ class _Stub:
     def __init__(self):
         self.zone = {"name": "Dormitorio"}
         self._delegate_deviations, self._park_since = {}, {}
-        self._deviation_at_rest = set()
+        self._deviation_at_rest = set(); self._hold_run = {}; self._hold_trim = {}; self._rest_dev_at = {}
         self.learn = zr.ZoneRunner._learn_rest_deviation.__get__(self)
         self.comp = zr.ZoneRunner._compensate_delegate_target.__get__(self)
 

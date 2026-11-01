@@ -123,6 +123,22 @@ DEVIATION_EMA_ALPHA = 0.25
 DEVIATION_REST_SETTLE_SECONDS = 1800
 DEVIATION_REST_MAX_DEG = 8.0
 DEVIATION_REST_EMA_ALPHA = 0.1
+# Suavizado de la desviacion en reposo por TIEMPO, no por ciclo: con 0.1 por
+# ciclo (~1 min) en 20 min ya seguia cualquier deriva de la sonda -- la noche
+# del 1-nov el AC del dormitorio oscilo entre 0.9 y 3 C de desviacion y con ella
+# la consigna de mantener. Constante de tiempo de 2 h: una calibracion.
+DEVIATION_REST_TAU_SECONDS = 7200
+# Recorte aprendido de la consigna de MANTENER por equipo (solo sensor de zona):
+# si al empezar a mantener la zona se pasa (consigna+deadband) en menos de
+# HOLD_SHORT_SECONDS, ese "mantener" no modula, es una rafaga -- la proxima vez
+# se le pide HOLD_TRIM_STEP_DEG menos. Si mantiene HOLD_LONG_SECONDS sin llegar
+# a la consigna, se le pide un paso mas. Caso real 1-nov: dormitorio, mantener
+# a 24 -> la sala de 21.0 a 22.9 en 11 min, 1.5 h para bajar, cada 1.5 h.
+HOLD_SHORT_SECONDS = 1200
+HOLD_LONG_SECONDS = 5400
+HOLD_TRIM_STEP_DEG = 0.5
+HOLD_TRIM_MAX_DEG = 3.0   # como mucho 3 C menos de lo compensado
+HOLD_TRIM_MIN_DEG = -1.0  # como mucho 1 C mas
 # Tiempo minimo en un modo de equipo (calor/frio/dry/ventilar) antes de que una
 # decision AUTOMATICA lo cambie por otro: sin esto, la anticipacion entrando y
 # saliendo + la deshumidificacion en reposo hacian saltar un AC calor<->dry cada
@@ -544,6 +560,9 @@ class ZoneRunner:
         # Idle MODULANDO de las bombas de calor (ver _drive_climate_idle): por
         # delegado, si esta parado por haberse pasado de la consigna.
         self._hold_overshoot: dict[str, bool] = {}
+        self._hold_trim: dict[str, float] = {}
+        self._hold_run: dict[str, dict] = {}
+        self._rest_dev_at: dict[str, datetime] = {}
         self._maintain_ok: bool = False
         self._last_thermal_mode: str | None = None
         self._delegate_last_active: dict[str, tuple[str, float]] = {}
@@ -679,6 +698,12 @@ class ZoneRunner:
                 value = _safe_float(watts)
                 if isinstance(entity_id, str) and value is not None and value > 0:
                     self._running_power[entity_id] = value
+        saved_trims = state.get("hold_trims")
+        if isinstance(saved_trims, dict):
+            for entity_id, trim in saved_trims.items():
+                value = _safe_float(trim)
+                if isinstance(entity_id, str) and value is not None:
+                    self._hold_trim[entity_id] = max(HOLD_TRIM_MIN_DEG, min(HOLD_TRIM_MAX_DEG, value))
         saved_margins = state.get("activation_margins")
         if isinstance(saved_margins, dict):
             for entity_id, margin in saved_margins.items():
@@ -703,6 +728,7 @@ class ZoneRunner:
             "action_log": [[ts, act] for ts, act in self._action_log],
             "activation_margins": dict(self._delegate_activation_margin),
             "running_power": dict(self._running_power),
+            "hold_trims": dict(self._hold_trim),
             "rest_deviations": {e: self._delegate_deviations[e] for e in self._deviation_at_rest
                                 if e in self._delegate_deviations},
             "hvac_mode": self.hvac_mode,
@@ -1295,8 +1321,15 @@ class ZoneRunner:
         if abs(raw) > DEVIATION_REST_MAX_DEG:
             return
         prev = self._delegate_deviations.get(entity_id) if entity_id in self._deviation_at_rest else None
-        dev = raw if prev is None else (1 - DEVIATION_REST_EMA_ALPHA) * prev + DEVIATION_REST_EMA_ALPHA * raw
-        self._delegate_deviations[entity_id] = round(dev, 2)
+        last = self._rest_dev_at.get(entity_id)
+        if prev is None:
+            dev = raw
+        else:
+            dt = (now - last).total_seconds() if last is not None else 60.0
+            alpha = 1.0 - math.exp(-max(0.0, min(dt, 600.0)) / DEVIATION_REST_TAU_SECONDS)
+            dev = (1 - alpha) * prev + alpha * raw
+        self._rest_dev_at[entity_id] = now
+        self._delegate_deviations[entity_id] = round(dev, 3)
         self._deviation_at_rest.add(entity_id)
 
     def _side_target(self, mode: str) -> float | None:
@@ -1322,15 +1355,18 @@ class ZoneRunner:
         heating = mode == "heat"
         overshoot = current_temp >= target + deadband if heating else current_temp <= target - deadband
         back = current_temp <= target if heating else current_temp >= target
-        stopped = self._hold_overshoot.get(entity_id, False)
-        stopped = True if overshoot else (False if back else stopped)
+        now = _utcnow()
+        was_stopped = self._hold_overshoot.get(entity_id, False)
+        stopped = True if overshoot else (False if back else was_stopped)
         self._hold_overshoot[entity_id] = stopped
+        self._learn_hold_trim(entity_id, target, current_temp, heating, stopped, now)
         if stopped:
             return False
-        now = _utcnow()
         if cur_state != mode and self._delegate_send_allowed(entity_id, now):
             self._send_delegate_once(entity_id, "hvac_mode", mode, "set_hvac_mode", {"hvac_mode": mode}, now)
-        setpoint = self._compensate_delegate_target(entity_id, state, target, current_temp)
+        trim = self._hold_trim.get(entity_id, 0.0)
+        setpoint = self._compensate_delegate_target(entity_id, state, target, current_temp,
+                                                    extra=-trim if heating else trim)
         current_sp = _safe_float(attrs.get("temperature"))
         if current_sp is None or abs(current_sp - setpoint) > TEMP_SEND_TOLERANCE_DEG:
             if self._delegate_send_allowed(entity_id, now):
@@ -1338,6 +1374,36 @@ class ZoneRunner:
                                          {"temperature": setpoint}, now)
         self._drive_delegate_fan_mode(entity_id, state, urgent=False)
         return True
+
+    def _learn_hold_trim(self, entity_id: str, target: float, current_temp: float, heating: bool,
+                         stopped: bool, now: datetime) -> None:
+        """Ajusta `_hold_trim` con lo que hizo la zona (NUESTRO sensor) en el
+        ultimo tramo de mantener -- ver HOLD_*. Un tramo empieza cuando el
+        mantener arranca y acaba al pasarse (aparca) o al salir de banda."""
+        run = self._hold_run.get(entity_id)
+        if stopped:
+            if run is not None:
+                if (now - run["since"]).total_seconds() < HOLD_SHORT_SECONDS:
+                    self._bump_hold_trim(entity_id, +HOLD_TRIM_STEP_DEG, "se pasa enseguida")
+                self._hold_run.pop(entity_id, None)
+            return
+        if run is None:
+            self._hold_run[entity_id] = {"since": now, "reached": False}
+            return
+        if (current_temp >= target) if heating else (current_temp <= target):
+            run["reached"] = True
+        if (now - run["since"]).total_seconds() >= HOLD_LONG_SECONDS:
+            if not run["reached"]:
+                self._bump_hold_trim(entity_id, -HOLD_TRIM_STEP_DEG, "no llega a la consigna")
+            self._hold_run[entity_id] = {"since": now, "reached": False}
+
+    def _bump_hold_trim(self, entity_id: str, delta: float, why: str) -> None:
+        old = self._hold_trim.get(entity_id, 0.0)
+        new = max(HOLD_TRIM_MIN_DEG, min(HOLD_TRIM_MAX_DEG, old + delta))
+        if new != old:
+            self._hold_trim[entity_id] = new
+            _LOGGER.info("%s: mantener de %s %s -- recorte %.1f -> %.1f C",
+                         self.zone.get("name"), entity_id, why, old, new)
 
     def _heat_reserve(self, action: str, current_temp: float | None, urgent: bool, safety_emergency: bool) -> set[str]:
         """Delegados resistivos (solo calor) que quedan EN RESERVA mientras la
@@ -2170,6 +2236,7 @@ class ZoneRunner:
             self._delegate_pre_temp.pop(entity_id, None)
         if can_do:
             self._park_since.pop(entity_id, None)  # actua: ya no esta en reposo
+            self._hold_run.pop(entity_id, None)    # ni mantiene
         if can_do:
             if action in ("heat", "cool"):
                 self._delegate_last_active[entity_id] = (action, target_temp)
@@ -2407,6 +2474,8 @@ class ZoneRunner:
                 self._park_since.pop(entity_id, None)
                 return "hold"
         # Aparcado de verdad: momento de aprender su desfase de sonda en reposo.
+        if not maintain:
+            self._hold_run.pop(entity_id, None)
         self._learn_rest_deviation(entity_id, attrs, current_temp)
         now = _utcnow()
         # Mantener el modo termico (solo se envia si no esta ya en el: p.ej. al

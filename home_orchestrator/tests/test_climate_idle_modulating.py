@@ -21,13 +21,13 @@ class _Stub:
         self.target_temperature_low, self.target_temperature_high = 21.0, 25.0
         self.zone = {"name": "Salón", "min_temp": 16.0, "max_temp": 30.0}
         self.calls = []
-        self._deviation_at_rest = set()
+        self._deviation_at_rest = set(); self._hold_run = {}; self._hold_trim = {}; self._rest_dev_at = {}
         for a in ("_delegate_last_command", "_delegate_last_active", "_delegate_deviations",
                   "_activation_probe", "_delegate_pre_temp", "_park_since", "_hold_overshoot"):
             setattr(self, a, {})
         self._delegate_last_active["e"] = (mode, 21.0)
         for n in ("_drive_climate_idle", "_send_delegate_once", "_note_delegate_command",
-                  "_compensate_delegate_target", "_fallback_thermal_mode", "_learn_rest_deviation", "_maintain_heat_pump", "_side_target"):
+                  "_compensate_delegate_target", "_fallback_thermal_mode", "_learn_rest_deviation", "_maintain_heat_pump", "_side_target", "_learn_hold_trim", "_bump_hold_trim"):
             setattr(self, n, getattr(zr.ZoneRunner, n).__get__(self))
     def _get_state(self, e): return self.state
     def _respect_delegate_override(self, *a): return False
@@ -77,6 +77,86 @@ class IdleModulating(unittest.TestCase):
         log = [(1000.0, "hold"), (2000.0, "heat"), (3000.0, "off"), (4000.0, "heat")]
         starts = [t.timestamp() for t in pm._zone_starts(log, 100000)]
         self.assertEqual(starts, [4000.0])
+
+
+class HoldTrim(unittest.TestCase):
+    """Caso real 1-nov (dormitorio): mantener -> la zona se pasa en 5 min, cada
+    1.5 h. Cada rafaga recorta la consigna de mantener; un mantener que no llega
+    la sube. Solo con el sensor de zona."""
+    def _clock(self, start):
+        t = [start]
+        zr._utcnow = lambda: t[0]
+        return t
+
+    def setUp(self):
+        self._orig = zr._utcnow
+
+    def tearDown(self):
+        zr._utcnow = self._orig
+
+    def test_quick_overshoot_trims_next_hold(self):
+        from datetime import datetime, timedelta, timezone
+        t = self._clock(datetime(2026, 11, 1, 2, 25, tzinfo=timezone.utc))
+        s = _Stub()
+        s._delegate_deviations["e"] = 3.0; s._deviation_at_rest.add("e")
+        s._drive_climate_idle("e", 21.0, 0.3, False, maintain=True)
+        self.assertEqual(s.temps(), [24.0])                 # 21 + 3
+        t[0] += timedelta(minutes=5)
+        s._drive_climate_idle("e", 21.4, 0.3, False, maintain=True)   # rafaga: aparca
+        self.assertEqual(s._hold_trim["e"], 0.5)
+        s.calls.clear()
+        t[0] += timedelta(minutes=90)
+        s._drive_climate_idle("e", 21.0, 0.3, False, maintain=True)
+        self.assertEqual(s.temps(), [23.5])                 # 21 + 3 - 0.5
+
+    def test_long_hold_without_reaching_raises(self):
+        from datetime import datetime, timedelta, timezone
+        t = self._clock(datetime(2026, 11, 1, 2, 0, tzinfo=timezone.utc))
+        s = _Stub()
+        s._hold_trim["e"] = 1.0
+        s._drive_climate_idle("e", 21.0, 0.3, False, maintain=True)
+        for _ in range(10):
+            t[0] += timedelta(minutes=10)
+            s._drive_climate_idle("e", 20.8, 0.3, False, maintain=True)
+        self.assertEqual(s._hold_trim["e"], 0.5)
+
+    def test_slow_overshoot_does_not_trim(self):
+        from datetime import datetime, timedelta, timezone
+        t = self._clock(datetime(2026, 11, 1, 2, 0, tzinfo=timezone.utc))
+        s = _Stub()
+        s._drive_climate_idle("e", 21.0, 0.3, False, maintain=True)
+        t[0] += timedelta(minutes=45)
+        s._drive_climate_idle("e", 21.3, 0.3, False, maintain=True)
+        self.assertNotIn("e", s._hold_trim)
+
+    def test_cooling_trim_raises_setpoint(self):
+        from datetime import datetime, timedelta, timezone
+        self._clock(datetime(2026, 11, 1, 14, 0, tzinfo=timezone.utc))
+        s = _Stub(mode="cool", setpoint=30.0)
+        s._delegate_last_active["e"] = ("cool", 25.0)
+        s._hold_trim["e"] = 1.0
+        s._drive_climate_idle("e", 25.0, 0.3, False, maintain=True)
+        self.assertEqual(s.temps(), [26.0])
+
+
+class RestDeviationIsSlow(unittest.TestCase):
+    def test_time_based_smoothing(self):
+        from datetime import datetime, timedelta, timezone
+        orig = zr._utcnow
+        t = [datetime(2026, 11, 1, 3, 0, tzinfo=timezone.utc)]
+        zr._utcnow = lambda: t[0]
+        try:
+            s = _Stub()
+            s._delegate_deviations["e"] = 1.0; s._deviation_at_rest.add("e")
+            s._rest_dev_at["e"] = t[0]
+            s._park_since["e"] = t[0] - timedelta(hours=1)
+            for _ in range(20):                              # 20 min leyendo +3
+                t[0] += timedelta(minutes=1)
+                s._learn_rest_deviation("e", {"current_temperature": 24.0}, 21.0)
+            # antes (0.1 por ciclo) ya iba por 2.76; ahora apenas se mueve
+            self.assertLess(s._delegate_deviations["e"], 1.4)
+        finally:
+            zr._utcnow = orig
 
 
 if __name__ == "__main__":
