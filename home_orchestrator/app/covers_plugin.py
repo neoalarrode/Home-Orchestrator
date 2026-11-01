@@ -203,11 +203,20 @@ class CoversPlugin(Plugin):
 
     def _refresh_watched_entities(self) -> None:
         watched: set[str] = set()
+        # Lo que se LEE sin que deba despertar a la zona: el sensor interior de
+        # la proteccion solar. Con la suscripcion filtrada, lo no declarado se
+        # queda con el valor del arranque hasta su primera lectura -- y esa
+        # primera lectura es justo el punto de partida del aprendizaje solar.
+        leidas: set[str] = set()
         for runner in self._runners.values():
             try:
                 watched |= runner.watched_entities()
+                sensor = (runner.zone or {}).get("indoor_temp_sensor")
+                if sensor:
+                    leidas.add(sensor)
             except Exception:
                 log.exception("Fallo obteniendo watched_entities de zona %s", runner.zone_id)
+        self._ws.set_cached_entities(leidas, key="covers")
         self._ws.set_watched_entities(watched, key="covers")
 
     # ----------------------------------------------------------- reactivo -

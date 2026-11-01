@@ -766,6 +766,18 @@ class ZoneRunner:
         ] if e}
         return watched
 
+    def read_entities(self) -> set[str]:
+        """Lo que la zona LEE sin que deba despertarla (interruptores que ella
+        misma conmuta, extractores, consumo de la casa): se declara para que la
+        suscripcion filtrada lo tenga fresco desde la primera lectura."""
+        return {e for e in [
+            *(self.zone.get(CONF_HEAT_SWITCHES) or []),
+            *(self.zone.get(CONF_COOL_SWITCHES) or []),
+            *(self.zone.get(CONF_EXTRACTOR_SWITCHES) or []),
+            *(self.zone.get(CONF_EXTRACTOR_FANS) or []),
+            self.zone.get(CONF_HOME_POWER_SENSOR),
+        ] if e}
+
     # ---------------------------------------------------- estado extra ----
 
     def extra_attributes(self) -> dict:

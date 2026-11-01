@@ -377,11 +377,14 @@ class ClimatePlugin(Plugin):
 
     def _refresh_watched_entities(self) -> None:
         watched: set[str] = set()
+        leidas: set[str] = set()
         for runner in self._runners.values():
             try:
                 watched |= runner.watched_entities()
+                leidas |= runner.read_entities()
             except Exception:
                 log.exception("Fallo obteniendo watched_entities de zona %s", runner.zone_id)
+        self._ws.set_cached_entities(leidas, key="climate")
         self._ws.set_watched_entities(watched, key="climate")
 
     # ----------------------------------------------------------- reactivo -
