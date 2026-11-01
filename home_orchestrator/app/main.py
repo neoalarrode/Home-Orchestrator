@@ -14,6 +14,7 @@ from werkzeug.serving import make_server
 
 import anomaly_store
 import battery_exec
+import load_follower
 import capacity_store
 import climate_link
 import config_store
@@ -3381,6 +3382,50 @@ def _run_full_access_server():
         log.warning(f"No se pudo abrir el puerto de acceso completo ({FULL_ACCESS_PORT}): {e}")
 
 
+def _load_follow_context() -> dict:
+    """Lo que necesita el seguimiento de carga (load_follower.py) en cada
+    lectura del contador: modo, baterias en semiautomatico con su SOC (de la
+    cache BLE, sin conectar), permiso del planificador y potencia contratada."""
+    cfg = config_store.load_config()
+    general = cfg.get("general") or {}
+    followers = []
+    user_id = cfg.get("ecoflow_user_id")
+    for b in cfg.get("batteries") or []:
+        if b.get("source") != "ecoflow" or not b.get("ecoflow_ble_address") or not user_id:
+            continue
+        state = ecoflow_ble.get_state(b["ecoflow_ble_address"], user_id) or {}
+        soc = state.get("battery_level_main")
+        if state.get("energy_monitoring_mode") != "semi_automated" or soc is None:
+            continue
+        capacity = float(b.get("capacity_wh") or 0)
+        available_wh = max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity)
+        followers.append({"id": b["id"], "max_w": float(b.get("max_discharge_w", 1200)), "available_wh": available_wh})
+    with _state_lock:
+        action = (_last_status.get("distribution") or {}).get("action")
+    return {
+        "mode": general.get("load_follow_mode") or "off",
+        "meter_host": general.get("load_follow_meter_host"),
+        "margin_w": general.get("load_follow_margin_w"),
+        "deadband_w": general.get("load_follow_deadband_w"),
+        "contracted_w": general.get("contracted_power_w"),
+        "discharge_allowed": action == "discharge",
+        "followers": followers,
+        "batteries_cfg": cfg.get("batteries") or [],
+    }
+
+
+def _load_follow_send(b: dict, watts: float) -> bool:
+    cfg = config_store.load_config()
+    try:
+        return ecoflow_ble.set_base_load(b["ecoflow_ble_address"], cfg.get("ecoflow_user_id"), watts)
+    except Exception:
+        log.exception(f"[{b.get('name')}] fallo mandando carga base {watts:.0f} W")
+        return False
+
+
+_load_follower = load_follower.LoadFollower(_load_follow_context, _load_follow_send)
+
+
 def start_background_threads() -> None:
     """
     Arranca todos los hilos de fondo de Battery. Extraido a funcion propia
@@ -3410,6 +3455,7 @@ def start_background_threads() -> None:
     threading.Thread(target=_recover_energy_gap, daemon=True).start()
     threading.Thread(target=background_loop, daemon=True).start()
     threading.Thread(target=_live_sensor_loop, daemon=True).start()
+    threading.Thread(target=_load_follower.run, name="load-follower", daemon=True).start()
     threading.Thread(target=_run_wallpanel_server, daemon=True).start()
     threading.Thread(target=_run_full_access_server, daemon=True).start()
     threading.Thread(target=_reactive_trigger.worker_loop, daemon=True).start()

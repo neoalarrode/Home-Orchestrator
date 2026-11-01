@@ -175,6 +175,14 @@ def set_discharging_task(
 # en Battery-Orchestrator-BLE-Bridge, vendorizado de rabits/ha-ef-ble) —
 # mismo patron de servicio HA que los dos de arriba. Requieren que el
 # puente tenga registrados los servicios correspondientes (ver ese repo).
+def set_base_load(address: str, user_id: str, watts: float) -> bool:
+    """Carga base que entrega la unidad en modo semiautomatico (puente >= 0.5.0)
+    -- la usa el seguimiento de carga (load_follower.py), que hace de contador."""
+    extra = {"brand": BRAND, "address": address, "credentials": {"user_id": user_id}, "watts": max(0.0, float(watts))}
+    resp = ha_client.call_service_with_response(DOMAIN, "set_base_load", extra, timeout=BLE_CALL_TIMEOUT_SECONDS)
+    return bool(resp and resp.get("ok"))
+
+
 def set_backup_reserve(address: str, user_id: str, pct: float) -> bool:
     extra = {"brand": BRAND, "address": address, "credentials": {"user_id": user_id}, "pct": pct}
     resp = ha_client.call_service_with_response(DOMAIN, "set_backup_reserve", extra, timeout=BLE_CALL_TIMEOUT_SECONDS)
