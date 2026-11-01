@@ -285,6 +285,15 @@ class ZoneRunner:
         try:
             raw_lux = float((lux_state or {}).get("state"))
         except (TypeError, ValueError):
+            # Un valor que NUNCA sera un numero (no "unavailable"/"unknown") es
+            # un sensor mal elegido. Caso real (1-nov): el Cuarto de juegos tenia
+            # como sensor de luz su propia bombilla (`light.h60a4`, "on"/"off") y
+            # decidia sin saber si habia luz natural, sin un solo aviso.
+            st = (lux_state or {}).get("state")
+            if lux_state and st not in ("unavailable", "unknown", None) and not getattr(self, "_lux_misconfig_warned", False):
+                self._lux_misconfig_warned = True
+                log.warning("Zona lighting %s: el sensor de luz %s no da un numero (%r) -- revisa la configuracion",
+                            self.zone_id, cfg.get("lux_sensor"), st)
             return
         self.lux_history.append(raw_lux)
 

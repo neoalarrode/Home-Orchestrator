@@ -150,6 +150,16 @@ class UnreachableAndBack(unittest.TestCase):
         self.assertEqual(set(z._state["commanded"]), {L})
         self.assertEqual(z._state["manual_override"], {})
 
+    def test_non_numeric_lux_sensor_warns_once(self):
+        z = zr.ZoneRunner("90a448df", dict(CFG, lux_sensor=L), self.ha)
+        z._schedule_fast_verify = lambda: None
+        with self.assertLogs("lighting.zone_runner", level="WARNING") as cm:
+            self.cycle_with(z); self.cycle_with(z)
+        self.assertEqual(sum("no da un numero" in m for m in cm.output), 1)
+
+    def cycle_with(self, z):
+        z.handle_reactive_event({s["entity_id"]: s for s in self.ha.get_states()})
+
     def test_manual_off_still_respected(self):
         self.cycle(); self.cycle()
         self.ha.states[L]["state"] = "off"                        # la apaga alguien
