@@ -48,6 +48,16 @@ REMOVE_W_PER_UNIT = 600
 # una vez cada SWAP_MIN_SECONDS).
 SWAP_SOC_POINTS = 10
 SWAP_MIN_SECONDS = 600
+# Respuesta de una STREAM a un cambio de carga base (traza del 1-nov): se nota
+# a los ~2 s y sube a unos 300 W/s por unidad. La demanda se calcula con lo que
+# se ESTIMA entregado, no con lo pedido -- dando por entregado lo pedido desde el
+# primer instante, mientras subian las rampas el contador seguia marcando
+# importacion, se pedia todavia mas y al acabar se vertian 824 W.
+RESPONSE_DELAY_S = 2.0
+RAMP_UP_W_PER_S = 300.0
+# Subida maxima por lectura y unidad (las bajadas son inmediatas): no perseguir
+# del todo un pico corto que al desaparecer dejaria vertiendo.
+MAX_STEP_UP_W = 300.0
 
 
 def read_shelly_w(host: str, session: requests.Session | None = None) -> float | None:
@@ -187,6 +197,10 @@ class LoadFollower:
         self._last_shadow_log = 0.0
         self._active: list[str] = []
         self._last_swap = 0.0
+        # Estimacion de lo entregado de verdad por cada equipo: {id: (valor, ts)}
+        # y las ordenes en curso {id: (desde, hacia, ts_orden)}.
+        self._estimate: dict[str, float] = {}
+        self._orders: dict[str, tuple[float, float, float]] = {}
         self._stop = threading.Event()
         self.status: dict = {"mode": "off"}
 
@@ -221,6 +235,7 @@ class LoadFollower:
             return  # solo se recalcula cuando el contador cambia
         self._last_meter = meter
 
+        self._advance_estimates(now)
         followers = ctx.get("followers") or []
         # Fuera del modo real nadie se queda con una carga base puesta. BUG REAL
         # (1-nov): al vencer la prueba el modo paso a sombra y la Ultra X se
@@ -228,7 +243,8 @@ class LoadFollower:
         # habria entregado fijos, sin nadie siguiendo a la casa.
         self._release_missing({f["id"] for f in followers} if mode == "on" else set(), ctx)
         others = ctx.get("others") or []
-        args = (meter, self._current, followers, bool(ctx.get("discharge_allowed")),
+        delivered = {k: self._estimate.get(k, v) for k, v in self._current.items()}
+        args = (meter, delivered, followers, bool(ctx.get("discharge_allowed")),
                 float(ctx.get("contracted_w") or 0), float(ctx.get("margin_w") or DEFAULT_MARGIN_W),
                 float(ctx.get("other_charging_w") or 0), others)
         wanted = wanted_total(*args)
@@ -240,10 +256,13 @@ class LoadFollower:
                 self._last_swap = now
                 self._active = swapped
         targets = compute_targets(*args, active=self._active)
+        # Subida limitada respecto a lo que ya entrega (bajadas inmediatas).
+        targets = {k: min(v, delivered.get(k, 0.0) + MAX_STEP_UP_W) if v > delivered.get(k, 0.0) else v
+                   for k, v in targets.items()}
         if ctx.get("trace"):
             # Diagnostico (general.load_follow_trace): cada lectura con lo pedido.
             log.info("[SEGUIMIENTO TRAZA] contador %.0f W, entregando %s, otros %s, objetivo %s", meter,
-                     {k: round(v) for k, v in self._current.items()},
+                     {k: round(v) for k, v in delivered.items()},
                      [round(o.get("output_w") or 0) for o in others], {k: round(v) for k, v in targets.items()})
         # Baterias que han dejado de seguir (cambio de modo, sin SOC...): a 0.
         for bid in list(self._current):
@@ -279,6 +298,7 @@ class LoadFollower:
             if b is None:
                 continue
             if self._send(b, w):
+                self._orders[bid] = (self._estimate.get(bid, self._current.get(bid, 0.0)), w, time.monotonic())
                 self._current[bid] = w
                 self._followed.add(bid)
             else:
@@ -290,6 +310,22 @@ class LoadFollower:
             log.info("[SEGUIMIENTO] %s -> %s", why, ", ".join(
                 f"{(by_id.get(b) or {}).get('name', b)} {w:.0f} W" for b, w in targets.items()))
 
+    def _advance_estimates(self, now: float) -> None:
+        """Lo entregado de verdad: tras RESPONSE_DELAY_S empieza a ir hacia lo
+        pedido; sube a RAMP_UP_W_PER_S y baja de golpe."""
+        for bid, (start, target, ts) in list(self._orders.items()):
+            elapsed = now - ts - RESPONSE_DELAY_S
+            if elapsed <= 0:
+                self._estimate[bid] = start
+            elif target <= start:
+                self._estimate[bid] = target
+                del self._orders[bid]
+            else:
+                value = min(target, start + RAMP_UP_W_PER_S * elapsed)
+                self._estimate[bid] = value
+                if value >= target:
+                    del self._orders[bid]
+
     def _release_missing(self, still: set[str], ctx: dict) -> None:
         """Las baterias que seguian y ya no: a 0 y devueltas al planificador."""
         by_id = {b["id"]: b for b in ctx.get("batteries_cfg") or []}
@@ -299,6 +335,8 @@ class LoadFollower:
             if done:
                 self._followed.discard(bid)
                 self._current.pop(bid, None)
+                self._estimate.pop(bid, None)
+                self._orders.pop(bid, None)
                 self._active = [a for a in self._active if a != bid]
                 log.info("[SEGUIMIENTO] %s deja de seguir: carga base a 0 y vuelve al planificador",
                          (b or {}).get("name", bid))

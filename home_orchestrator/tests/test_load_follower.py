@@ -163,6 +163,15 @@ class Follower(unittest.TestCase):
             lf.read_shelly_w = orig
         self.assertEqual(sorted(sent), [("ef", 0.0), ("ultra", 0.0)])
 
+    def test_estimate_waits_for_the_ramp(self):
+        f = lf.LoadFollower(lambda: {}, lambda b, w: True)
+        f._orders["u"] = (0.0, 1200.0, 100.0)
+        f._advance_estimates(101.0); self.assertEqual(f._estimate["u"], 0.0)        # aun sin respuesta
+        f._advance_estimates(103.0); self.assertEqual(f._estimate["u"], 300.0)      # 1 s de rampa
+        f._advance_estimates(110.0); self.assertEqual(f._estimate["u"], 1200.0)
+        f._orders["u"] = (1200.0, 200.0, 200.0)
+        f._advance_estimates(203.0); self.assertEqual(f._estimate["u"], 200.0)      # bajada de golpe
+
     def test_shadow_sends_nothing(self):
         sent = []
         ctx = {"mode": "shadow", "meter_host": "x", "followers": F, "discharge_allowed": True,
@@ -175,7 +184,14 @@ class Follower(unittest.TestCase):
         finally:
             lf.read_shelly_w = orig
         self.assertEqual(sent, [])
-        self.assertEqual(sum(f.status["targets"].values()), 950)
+        # subida limitada: no salta de golpe a los 950 W
+        self.assertLessEqual(max(f.status["targets"].values()), lf.MAX_STEP_UP_W)
+        # ...pero llega en unas pocas lecturas (misma casa: 1000 W)
+        for i in range(6):
+            lf.read_shelly_w = lambda *a, **k: 1000.0 - sum(f._current.values()) + 0.1 * (i + 1)
+            f._tick(None)
+        lf.read_shelly_w = orig
+        self.assertAlmostEqual(sum(f.status["targets"].values()), 950, delta=2)
 
 
 if __name__ == "__main__":
