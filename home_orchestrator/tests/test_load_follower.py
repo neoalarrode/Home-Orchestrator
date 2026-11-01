@@ -40,6 +40,42 @@ class Targets(unittest.TestCase):
         self.assertEqual(lf.compute_targets(1500, {}, f, True, 5000, 50), {"ultra": 1200, "ef": 0})
 
 
+U4 = [{"id": "ultra", "max_w": 1200, "available_wh": 2600, "soc": 80},
+      {"id": "ef", "max_w": 1200, "available_wh": 700, "soc": 50},
+      {"id": "desp", "max_w": 1200, "available_wh": 900, "soc": 58},
+      {"id": "patio", "max_w": 1200, "available_wh": 800, "soc": 55}]
+
+
+class Efficiency(unittest.TestCase):
+    def test_low_demand_uses_one_unit_the_fullest(self):
+        self.assertEqual(lf.choose_active(500, U4, []), ["ultra"])
+
+    def test_adds_a_unit_above_900_per_active(self):
+        self.assertEqual(lf.choose_active(1000, U4, ["ultra"]), ["ultra", "desp"])
+
+    def test_hysteresis_keeps_two_until_below_600(self):
+        self.assertEqual(len(lf.choose_active(800, U4, ["ultra", "desp"])), 2)
+        self.assertEqual(lf.choose_active(550, U4, ["ultra", "desp"]), ["ultra"])
+
+    def test_high_demand_uses_all_units(self):
+        self.assertEqual(len(lf.choose_active(3000, U4, [])), 4)    # 3000 > 3 x 900
+        self.assertEqual(len(lf.choose_active(2500, U4, [])), 3)    # 2500 > 2 x 900
+
+    def test_empty_unit_leaves(self):
+        f = [dict(U4[0], available_wh=0)] + U4[1:]
+        self.assertEqual(lf.choose_active(500, f, ["ultra"]), ["desp"])
+
+    def test_inactive_units_get_zero(self):
+        t = lf.compute_targets(600, {}, U4, True, 5000, 50, active=["ultra"])
+        self.assertEqual(t, {"ultra": 550, "ef": 0.0, "desp": 0.0, "patio": 0.0})
+
+    def test_swap_when_another_has_much_more_soc(self):
+        f = [dict(U4[0], soc=45), U4[1], U4[2], U4[3]]      # ultra ya mas baja
+        self.assertEqual(lf.maybe_swap(["ultra"], f), ["desp"])
+        self.assertEqual(lf.maybe_swap(["desp"], U4), ["ultra"])     # 80 vs 58
+        self.assertEqual(lf.maybe_swap(["patio"], [dict(x, soc=60) for x in U4]), ["patio"])
+
+
 class Follower(unittest.TestCase):
     def test_meter_lost_sets_zero(self):
         sent = []

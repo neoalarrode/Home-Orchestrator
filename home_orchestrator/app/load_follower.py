@@ -37,6 +37,17 @@ DEFAULT_DEADBAND_W = 25        # cambios por debajo de esto no se mandan
 METER_TIMEOUT_SECONDS = 2.0
 METER_LOST_SECONDS = 5.0       # sin lectura del contador este tiempo -> todo a 0
 SHADOW_LOG_SECONDS = 15.0      # en sombra, un resumen cada tanto (no cada segundo)
+# Reparto por EFICIENCIA (decision del usuario, 1-nov): el minimo de unidades
+# activas -- un inversor a poca potencia rinde peor y cada unidad mas son mas
+# ordenes BLE. Se suma una cuando la demanda pasa de ADD_W por unidad activa y
+# se quita cuando cabe en una menos a menos de REMOVE_W cada una (histeresis).
+ADD_W_PER_UNIT = 900
+REMOVE_W_PER_UNIT = 600
+# Rotacion para no desgastar siempre las mismas: entra la de mas SOC, y una
+# inactiva que supere a una activa en SWAP_SOC_POINTS se intercambia (como mucho
+# una vez cada SWAP_MIN_SECONDS).
+SWAP_SOC_POINTS = 10
+SWAP_MIN_SECONDS = 600
 
 
 def read_shelly_w(host: str, session: requests.Session | None = None) -> float | None:
@@ -49,16 +60,9 @@ def read_shelly_w(host: str, session: requests.Session | None = None) -> float |
         return None
 
 
-def compute_targets(meter_w: float, current: dict[str, float], followers: list[dict],
-                    discharge_allowed: bool, contracted_w: float, margin_w: float) -> dict[str, float]:
-    """Carga base objetivo de cada bateria.
-
-    `current`: lo que entrega ahora cada una (la ultima carga base mandada).
-    `followers`: [{"id", "max_w", "available_wh"}] -- baterias en semiautomatico
-    con margen de SOC.
-    """
-    if not followers:
-        return {}
+def wanted_total(meter_w: float, current: dict[str, float], followers: list[dict],
+                 discharge_allowed: bool, contracted_w: float, margin_w: float) -> float:
+    """Potencia total que tienen que entregar las baterias ahora."""
     demand = meter_w + sum(current.get(f["id"], 0.0) for f in followers)
     if discharge_allowed:
         wanted = demand - margin_w
@@ -67,8 +71,66 @@ def compute_targets(meter_w: float, current: dict[str, float], followers: list[d
         wanted = demand - (contracted_w - margin_w)
     else:
         wanted = 0.0
-    wanted = max(0.0, min(wanted, sum(f["max_w"] for f in followers)))
-    return _distribute(wanted, followers)
+    return max(0.0, min(wanted, sum(f["max_w"] for f in followers if f["available_wh"] > 0)))
+
+
+def compute_targets(meter_w: float, current: dict[str, float], followers: list[dict],
+                    discharge_allowed: bool, contracted_w: float, margin_w: float,
+                    active: list[str] | None = None) -> dict[str, float]:
+    """Carga base objetivo de cada bateria (todas, a 0 las inactivas).
+
+    `current`: lo que entrega ahora cada una (la ultima carga base mandada).
+    `followers`: [{"id", "max_w", "available_wh", "soc"}] -- baterias en
+    semiautomatico. `active`: las que se usan (ver `choose_active`); sin el,
+    todas las que tengan energia.
+    """
+    if not followers:
+        return {}
+    wanted = wanted_total(meter_w, current, followers, discharge_allowed, contracted_w, margin_w)
+    use = [f for f in followers if (active is None or f["id"] in active) and f["available_wh"] > 0]
+    result = {f["id"]: 0.0 for f in followers}
+    result.update(_distribute(wanted, use))
+    return result
+
+
+def choose_active(wanted_w: float, followers: list[dict], active: list[str]) -> list[str]:
+    """Que unidades descargan, por eficiencia: las minimas necesarias, con
+    histeresis, entrando las de mas SOC. `active` es la eleccion anterior."""
+    usable = [f for f in followers if f["available_wh"] > 0 and f["max_w"] > 0]
+    by_id = {f["id"]: f for f in usable}
+    active = [a for a in active if a in by_id]          # las que se vaciaron o salieron, fuera
+    if wanted_w <= 0:
+        return []
+    k = max(1, len(active))
+    while k < len(usable) and wanted_w > k * ADD_W_PER_UNIT:
+        k += 1
+    while k > 1 and wanted_w < (k - 1) * REMOVE_W_PER_UNIT:
+        k -= 1
+    # Ademas, nunca menos de las que hacen falta por su limite fisico.
+    ranked = sorted(usable, key=lambda f: f.get("soc") or 0, reverse=True)
+    while k < len(usable) and wanted_w > sum(f["max_w"] for f in ranked[:k]):
+        k += 1
+    keep = sorted(active, key=lambda a: by_id[a].get("soc") or 0, reverse=True)[:k]
+    for f in ranked:
+        if len(keep) >= k:
+            break
+        if f["id"] not in keep:
+            keep.append(f["id"])
+    return keep
+
+
+def maybe_swap(active: list[str], followers: list[dict]) -> list[str]:
+    """Una inactiva con bastante mas SOC sustituye a la activa de menos SOC."""
+    by_id = {f["id"]: f for f in followers if f["available_wh"] > 0}
+    act = [a for a in active if a in by_id]
+    idle = [f for f in by_id.values() if f["id"] not in act]
+    if not act or not idle:
+        return act
+    low = min(act, key=lambda a: by_id[a].get("soc") or 0)
+    best = max(idle, key=lambda f: f.get("soc") or 0)
+    if (best.get("soc") or 0) - (by_id[low].get("soc") or 0) >= SWAP_SOC_POINTS:
+        return [a for a in act if a != low] + [best["id"]]
+    return act
 
 
 def _distribute(total_w: float, followers: list[dict]) -> dict[str, float]:
@@ -105,6 +167,8 @@ class LoadFollower:
         self._last_meter: float | None = None
         self._last_meter_ts = 0.0
         self._last_shadow_log = 0.0
+        self._active: list[str] = []
+        self._last_swap = 0.0
         self._stop = threading.Event()
         self.status: dict = {"mode": "off"}
 
@@ -141,10 +205,16 @@ class LoadFollower:
         self._last_meter = meter
 
         followers = ctx.get("followers") or []
-        targets = compute_targets(
-            meter, self._current, followers, bool(ctx.get("discharge_allowed")),
-            float(ctx.get("contracted_w") or 0), float(ctx.get("margin_w") or DEFAULT_MARGIN_W),
-        )
+        args = (meter, self._current, followers, bool(ctx.get("discharge_allowed")),
+                float(ctx.get("contracted_w") or 0), float(ctx.get("margin_w") or DEFAULT_MARGIN_W))
+        wanted = wanted_total(*args)
+        self._active = choose_active(wanted, followers, self._active)
+        if self._active and now - self._last_swap >= SWAP_MIN_SECONDS:
+            swapped = maybe_swap(self._active, followers)
+            if set(swapped) != set(self._active):
+                self._last_swap = now
+                self._active = swapped
+        targets = compute_targets(*args, active=self._active)
         # Baterias que han dejado de seguir (cambio de modo, sin SOC...): a 0.
         for bid in list(self._current):
             if bid not in targets:

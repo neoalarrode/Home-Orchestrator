@@ -3399,7 +3399,8 @@ def _load_follow_context() -> dict:
             continue
         capacity = float(b.get("capacity_wh") or 0)
         available_wh = max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity)
-        followers.append({"id": b["id"], "max_w": float(b.get("max_discharge_w", 1200)), "available_wh": available_wh})
+        followers.append({"id": b["id"], "max_w": float(b.get("max_discharge_w", 1200)),
+                          "available_wh": available_wh, "soc": float(soc)})
     with _state_lock:
         action = (_last_status.get("distribution") or {}).get("action")
     return {
