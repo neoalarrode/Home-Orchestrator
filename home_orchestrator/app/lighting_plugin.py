@@ -507,7 +507,15 @@ class LightingPlugin(Plugin):
         # habia llegado (arranque) lo reintenta a los pocos segundos: con la
         # suscripcion filtrada ya no llegan eventos ajenos que la despierten, y
         # se quedaba ciega hasta `reapply_minutes` (5 min en Baño Abajo).
-        while not stop.wait(POSTPONED_RETRY_SECONDS if getattr(runner, "postponed", False) else interval):
+        # Se espera en tramos cortos: la marca `postponed` aparece DESPUES de
+        # que este hilo empiece a esperar (la primera decision va detras), asi
+        # que una sola espera del intervalo entero no la veia nunca.
+        waited = 0.0
+        while not stop.wait(POSTPONED_RETRY_SECONDS):
+            waited += POSTPONED_RETRY_SECONDS
+            if waited < interval and not getattr(runner, "postponed", False):
+                continue
+            waited = 0.0
             if self._runners.get(zone_id) is not runner:
                 return  # la zona se reinicio (o se borro): este hilo es el viejo
             try:
