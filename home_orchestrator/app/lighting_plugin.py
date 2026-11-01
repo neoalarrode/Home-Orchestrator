@@ -38,6 +38,8 @@ from lighting.mqtt_lighting import MqttLightingZone
 from lighting.zone_runner import ZoneRunner
 from plugin_base import Plugin
 
+POSTPONED_RETRY_SECONDS = 15
+
 log = logging.getLogger("lighting_plugin")
 
 DEFAULT_REAPPLY_MINUTES = 5
@@ -501,7 +503,11 @@ class LightingPlugin(Plugin):
         # de `time.sleep()` para salir en el acto al pararla, sin quedarse
         # colgado el resto del intervalo.
         interval = max(reapply_minutes, 1) * 60
-        while not stop.wait(interval):
+        # Una zona que tuvo que saltarse el ciclo porque el estado de HA aun no
+        # habia llegado (arranque) lo reintenta a los pocos segundos: con la
+        # suscripcion filtrada ya no llegan eventos ajenos que la despierten, y
+        # se quedaba ciega hasta `reapply_minutes` (5 min en Baño Abajo).
+        while not stop.wait(POSTPONED_RETRY_SECONDS if getattr(runner, "postponed", False) else interval):
             if self._runners.get(zone_id) is not runner:
                 return  # la zona se reinicio (o se borro): este hilo es el viejo
             try:

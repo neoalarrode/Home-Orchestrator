@@ -160,6 +160,12 @@ class UnreachableAndBack(unittest.TestCase):
     def cycle_with(self, z):
         z.handle_reactive_event({s["entity_id"]: s for s in self.ha.get_states()})
 
+    def test_postponed_until_ha_state_arrives(self):
+        self.z.handle_reactive_event({})                          # arranque: aun sin estados
+        self.assertTrue(self.z.postponed)
+        self.cycle()
+        self.assertFalse(self.z.postponed)
+
     def test_manual_off_still_respected(self):
         self.cycle(); self.cycle()
         self.ha.states[L]["state"] = "off"                        # la apaga alguien

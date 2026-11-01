@@ -211,6 +211,9 @@ class ZoneRunner:
         # Luces que la zona quiere ENCENDIDAS ahora mismo (las de la regla activa,
         # si no hay luz natural de sobra): las unicas a las que se reenvia algo.
         self._wanted_on: set[str] = set()
+        # Ciclo saltado por no tener aun el estado de HA (arranque): el bucle
+        # periodico lo reintenta enseguida (ver LightingPlugin._periodic_loop).
+        self.postponed = False
         # Luces vistas inalcanzables (ver `_track_availability`) y las que acaban
         # de volver en este ciclo.
         # Al arrancar, una orden abandonada sin confirmar ("no aplico el cambio
@@ -964,7 +967,8 @@ class ZoneRunner:
         # "no hay nadie" -- sin dato, no se toca nada y se reintenta en el
         # siguiente ciclo.
         presence_entities = [e for e in (cfg.get("presence_entities") or []) if e]
-        if presence_entities and not any(e in states for e in presence_entities):
+        self.postponed = bool(presence_entities) and not any(e in states for e in presence_entities)
+        if self.postponed:
             self.reason = "estado de HA no disponible -> sin cambios"
             log.warning(
                 "Zona lighting %s: ninguna entidad de presencia presente en el estado de HA "
