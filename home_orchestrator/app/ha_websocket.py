@@ -439,7 +439,8 @@ class HAWebSocketClient:
                 self._states_cache[entity_id] = {
                     "entity_id": entity_id, "state": comp.get("s"),
                     "attributes": comp.get("a") or {},
-                    "last_changed": comp.get("lc"), "last_updated": comp.get("lu"),
+                    # HA omite `lu` cuando es igual a `lc` (as_compressed_state).
+                    "last_changed": comp.get("lc"), "last_updated": comp.get("lu", comp.get("lc")),
                 }
             for entity_id in (event.get("r") or []):
                 self._states_cache.pop(entity_id, None)
@@ -458,7 +459,11 @@ class HAWebSocketClient:
                     # borraria todo lo que no viniera en este delta.
                     nuevo["attributes"] = {**(actual.get("attributes") or {}), **(mas["a"] or {})}
                 if "lc" in mas:
-                    nuevo["last_changed"] = mas["lc"]
+                    # Si cambia `lc`, HA no manda `lu`: es el mismo instante
+                    # (_state_diff_event). BUG REAL (1-nov): `last_updated` se
+                    # quedaba con la fecha del arranque y la EMA de temperatura
+                    # de Climate, fechada con ella, congelaba la lectura.
+                    nuevo["last_changed"] = nuevo["last_updated"] = mas["lc"]
                 if "lu" in mas:
                     nuevo["last_updated"] = mas["lu"]
                 for quitado in (cambio.get("-") or {}).get("a", []) if isinstance(cambio.get("-"), dict) else []:
