@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 import flask
 
@@ -36,6 +37,9 @@ from govee.mqtt_govee import MqttGoveeDevice
 from plugin_base import Plugin
 
 log = logging.getLogger("govee_plugin")
+
+AUTO_LAN_FIRST_SCAN_SECONDS = 15
+AUTO_LAN_SCAN_SECONDS = 600
 
 
 class GoveePlugin(Plugin):
@@ -116,7 +120,12 @@ class GoveePlugin(Plugin):
 
         @app.post("/api/discover")
         def _discover():
-            added_ips = {d["config"]["host"] for d in govee_store.load_devices()}
+            devices = govee_store.load_devices()
+            added_ips = {d["config"]["host"] for d in devices if d["config"].get("host")}
+            # Tambien por MAC: una bombilla dada de alta solo por la nube (sin IP)
+            # salia como "no añadida" al responder por LAN (2-nov, Salon delante).
+            by_mac = {(d["config"].get("govee_device_mac") or "").upper(): d for d in devices
+                      if d["config"].get("govee_device_mac")}
             try:
                 found = self._manager.discover()
             except Exception:
@@ -127,7 +136,8 @@ class GoveePlugin(Plugin):
                     "host": info["ip"],
                     "sku": info.get("sku"),
                     "device": info.get("device"),
-                    "already_added": info["ip"] in added_ips,
+                    "already_added": info["ip"] in added_ips or (info.get("device") or "").upper() in by_mac,
+                    # Dada de alta sin IP: se puede pasar a LAN poniendosela.
                 }
                 for info in found
             ]
@@ -226,6 +236,44 @@ class GoveePlugin(Plugin):
             except Exception:
                 log.exception("Govee: fallo detectando el rango real de temperatura de color")
         log.info("Plugin Govee arrancado con %d dispositivo(s)", len(devices))
+        threading.Thread(target=self._auto_lan_loop, name="govee-auto-lan", daemon=True).start()
+
+    # ------------------------------------------------------- LAN automatica -
+
+    def _auto_lan_loop(self) -> None:
+        """Busca las bombillas por la LAN al arrancar y cada AUTO_LAN_SCAN_SECONDS:
+        una ya dada de alta (por MAC) que responde pasa a LAN sola, y si cambia
+        de IP se le actualiza. 2-nov: las seis iban solo por la nube y "Salon
+        delante" respondia por LAN en la 192.168.1.7 (decision del usuario: sin
+        botones, automatico)."""
+        time.sleep(AUTO_LAN_FIRST_SCAN_SECONDS)
+        while True:
+            try:
+                self.adopt_lan_addresses(self._manager.discover())
+            except Exception:
+                log.exception("Govee: fallo en la busqueda LAN automatica")
+            time.sleep(AUTO_LAN_SCAN_SECONDS)
+
+    def adopt_lan_addresses(self, found: list[dict]) -> list[str]:
+        """Pone la IP vista por LAN a cada dispositivo conocido (por MAC) que no
+        la tenga o la tenga distinta. Devuelve los ids cambiados."""
+        by_mac = {(d["config"].get("govee_device_mac") or "").upper(): d
+                  for d in govee_store.load_devices() if d["config"].get("govee_device_mac")}
+        changed = []
+        for info in found:
+            device = by_mac.get((info.get("device") or "").upper())
+            ip = info.get("ip")
+            if not device or not ip or device["config"].get("host") == ip:
+                continue
+            old = device["config"].get("host") or "solo nube"
+            updated = govee_store.update_device(device["id"], {"host": ip})
+            if updated:
+                self._stop_device(device["id"])
+                self._start_device(updated)
+                changed.append(device["id"])
+                log.info("Govee: %s responde por LAN en %s (antes: %s) -- pasa a LAN",
+                         device["config"].get("name", device["id"]), ip, old)
+        return changed
 
     def _start_device(self, device: dict) -> None:
         cfg = device["config"]
