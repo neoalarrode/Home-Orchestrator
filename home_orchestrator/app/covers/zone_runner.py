@@ -328,7 +328,6 @@ class ZoneRunner:
         # que Lighting/Climate.
         commanded = self._state.get("commanded") or {}
         overrides = self._state.setdefault("manual_override", {})
-        respect_manual = cfg.get("respect_manual_changes", True)
         for entity_id in covers:
             cmd = commanded.get(entity_id)
             real = self._current_position(states, entity_id)
@@ -370,9 +369,18 @@ class ZoneRunner:
         if not transitioned:
             return  # ya se aplico este mismo objetivo, no se repite cada ciclo
 
+        # Un cambio a mano se respeta HASTA la siguiente transicion, no para
+        # siempre: entre transiciones ya no se manda nada, asi que la marca
+        # solo sirve para no pisarlo mientras dure el objetivo de ahora.
+        # BUG REAL (2-nov): la marca solo se borraba despues de mover la
+        # persiana, y con `respect_manual_changes` (por defecto) las marcadas
+        # se saltaban antes de llegar ahi -- no se borraba nunca y se guarda en
+        # disco. Las tres persianas del usuario estaban marcadas (basta con
+        # que una se pare a unos puntos del objetivo o se lea a medio
+        # recorrido) y la zona no movia ninguna.
+        overrides.clear()
+
         for entity_id in covers:
-            if respect_manual and overrides.get(entity_id):
-                continue
             current = self._current_position(states, entity_id)
             if current is not None and abs(current - desired) <= POSITION_TOLERANCE_PCT:
                 continue  # ya esta donde tiene que estar
