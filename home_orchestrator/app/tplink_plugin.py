@@ -255,8 +255,11 @@ class TplinkPlugin(Plugin):
             return
         try:
             self._manager.add_device(device["id"], cfg["host"], self._credentials())
-        except Exception:
-            log.exception("Fallo conectando al dispositivo TP-Link '%s'", cfg.get("name") or cfg["host"])
+        except Exception as e:
+            # Un aviso de una linea: un equipo apagado o desenchufado no es un
+            # fallo del programa y volcaba la traza entera en cada arranque.
+            log.warning("No se puede conectar con el dispositivo TP-Link '%s' (%s): %s -- se reintenta en el sondeo",
+                        cfg.get("name") or cfg["host"], cfg["host"], e)
             # Mismo criterio que en tuya_plugin: un fallo de CONEXION no es un
             # fallo de ALTA. Si el dispositivo quedo registrado en el manager
             # (`_discover_and_connect` ya lo registra aunque la primera lectura

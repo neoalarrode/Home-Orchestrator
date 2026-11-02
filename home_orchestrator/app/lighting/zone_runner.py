@@ -450,6 +450,10 @@ class ZoneRunner:
                     handle.turn_off()
                 return
             self.ws.call_service("light", "turn_off", target={"entity_id": entity_id})
+        except RuntimeError as e:
+            # Fallo ya explicado por el puente (p.ej. la nube de Govee aplaza una
+            # orden por su limite de 3 s): una linea, se reintenta en el ciclo.
+            log.warning("Zona lighting %s: fallo apagando %s: %s", self.zone_id, entity_id, e)
         except Exception:
             log.exception("Zona lighting %s: fallo apagando %s", self.zone_id, entity_id)
         finally:
@@ -570,6 +574,9 @@ class ZoneRunner:
                     service_data["transition"] = float(transition)
                 self.ws.call_service("light", "turn_on", service_data=service_data, target={"entity_id": entity_id})
             return True
+        except RuntimeError as e:
+            log.warning("Zona lighting %s: fallo encendiendo/ajustando %s: %s", self.zone_id, entity_id, e)
+            return False
         except Exception:
             log.exception("Zona lighting %s: fallo encendiendo/ajustando %s", self.zone_id, entity_id)
             return False

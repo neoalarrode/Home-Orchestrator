@@ -137,7 +137,10 @@ DEVIATION_REST_TAU_SECONDS = 7200
 HOLD_SHORT_SECONDS = 1200
 HOLD_LONG_SECONDS = 5400
 HOLD_TRIM_STEP_DEG = 0.5
-HOLD_TRIM_MAX_DEG = 3.0   # como mucho 3 C menos de lo compensado
+# 3-nov: con 3 C el aire del dormitorio llegaba al tope y seguia pasandose en
+# 5-8 min (encendia y apagaba cada 30-40 min, 64 cambios al dia): con margen,
+# el recorte sigue bajando hasta la consigna que deja al inverter modular.
+HOLD_TRIM_MAX_DEG = 5.0   # como mucho 5 C menos de lo compensado
 HOLD_TRIM_MIN_DEG = -1.0  # como mucho 1 C mas
 # Tiempo minimo en un modo de equipo (calor/frio/dry/ventilar) antes de que una
 # decision AUTOMATICA lo cambie por otro: sin esto, la anticipacion entrando y
