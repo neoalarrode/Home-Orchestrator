@@ -100,6 +100,19 @@
 
       <div class="checkline"><input type="checkbox" id="zf-night-close"><label for="zf-night-close">Cerrar de noche (privacidad)</label></div>
       <div class="checkline"><input type="checkbox" id="zf-day-open"><label for="zf-day-open">Abrir de día</label></div>
+      <label>Sensor de luz para decidir día/noche (opcional)</label>
+      <input id="zf-daylight-sensor" placeholder="sensor.salon_illuminance">
+      <div class="grid2">
+        <div>
+          <label>Umbral (lx)</label>
+          <input type="number" id="zf-daylight-threshold" value="20">
+        </div>
+        <div>
+          <label>Durante (segundos)</label>
+          <input type="number" id="zf-daylight-for" value="60">
+        </div>
+      </div>
+      <p class="help">Con un sensor declarado, es de día mientras la luz supere el umbral ese tiempo seguido; si no, se usa la salida y puesta del sol.</p>
 
       <div class="checkline"><input type="checkbox" id="zf-sun-protection"><label for="zf-sun-protection">Protección solar (baja parcialmente si el sol da directo a la ventana)</label></div>
       <div class="checkline"><input type="checkbox" id="zf-auto-orientation"><label for="zf-auto-orientation">Aprender la orientación de la ventana automáticamente (requiere el sensor de temperatura de abajo)</label></div>
@@ -296,6 +309,9 @@ function readZoneForm() {
     invert_position: document.getElementById("zf-invert").checked,
     night_close_enabled: document.getElementById("zf-night-close").checked,
     day_open_enabled: document.getElementById("zf-day-open").checked,
+    daylight_sensor: document.getElementById("zf-daylight-sensor").value.trim(),
+    daylight_lux_threshold: Number(document.getElementById("zf-daylight-threshold").value || 20),
+    daylight_lux_for_seconds: Number(document.getElementById("zf-daylight-for").value || 60),
     sun_protection_enabled: document.getElementById("zf-sun-protection").checked,
     auto_learn_window_orientation_enabled: document.getElementById("zf-auto-orientation").checked,
     window_azimuth_min: parseFloat(document.getElementById("zf-az-min").value) || 0,
@@ -321,6 +337,9 @@ function fillZoneForm(cfg) {
   document.getElementById("zf-invert").checked = cfg.invert_position === true;
   document.getElementById("zf-night-close").checked = cfg.night_close_enabled === true;
   document.getElementById("zf-day-open").checked = cfg.day_open_enabled === true;
+  document.getElementById("zf-daylight-sensor").value = cfg.daylight_sensor || "";
+  document.getElementById("zf-daylight-threshold").value = cfg.daylight_lux_threshold ?? 20;
+  document.getElementById("zf-daylight-for").value = cfg.daylight_lux_for_seconds ?? 60;
   document.getElementById("zf-sun-protection").checked = cfg.sun_protection_enabled === true;
   document.getElementById("zf-auto-orientation").checked = cfg.auto_learn_window_orientation_enabled === true;
   document.getElementById("zf-az-min").value = cfg.window_azimuth_min ?? 90;

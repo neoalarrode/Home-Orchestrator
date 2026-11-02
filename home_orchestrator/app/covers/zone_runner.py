@@ -97,7 +97,43 @@ class ZoneRunner:
         climate_entity = self.zone.get("climate_entity")
         if climate_entity:
             out.add(climate_entity)
+        daylight_sensor = self.zone.get("daylight_sensor")
+        if daylight_sensor:
+            out.add(daylight_sensor)
         return out
+
+    def _is_daytime(self, states: dict[str, dict], sun_state: dict, now: float | None = None) -> bool:
+        """Dia/noche para el cierre nocturno y la apertura diurna. Con
+        `daylight_sensor`: de dia si la luz supera `daylight_lux_threshold`
+        durante `daylight_lux_for_seconds` seguidos (un cambio mas corto, una
+        nube o una luz encendida un momento, no cuenta). Sin sensor o sin
+        lectura valida, la posicion del sol (sun.sun) de siempre."""
+        by_sun = sun_state.get("state") == "above_horizon"
+        sensor = self.zone.get("daylight_sensor")
+        if not sensor:
+            return by_sun
+        try:
+            lux = float((states.get(sensor) or {}).get("state"))
+        except (TypeError, ValueError):
+            return by_sun
+        now = time.time() if now is None else now
+        raw = lux > float(self.zone.get("daylight_lux_threshold", 20) or 0)
+        hold = float(self.zone.get("daylight_lux_for_seconds", 60) or 0)
+        st = self._state.get("_daylight")
+        if not isinstance(st, dict) or "value" not in st:
+            st = {"value": raw}
+        if raw == st["value"]:
+            st.pop("candidate_since", None)
+        else:
+            since = st.get("candidate_since")
+            if since is None:
+                st["candidate_since"] = now
+            elif now - since >= hold:
+                st = {"value": raw}
+        if hold <= 0:
+            st = {"value": raw}
+        self._state["_daylight"] = st
+        return bool(st["value"])
 
     def all_covers(self) -> set[str]:
         return {e for e in (self.zone.get("cover_entities") or []) if e}
@@ -338,7 +374,7 @@ class ZoneRunner:
 
         sun_protection_position = self._sun_protection_position(cfg, sun_attrs, states)
         self.sun_position_ok = sun_protection_position is not None
-        is_daytime = sun_state.get("state") == "above_horizon"
+        is_daytime = self._is_daytime(states, sun_state)
 
         if sun_protection_position is not None:
             desired = sun_protection_position

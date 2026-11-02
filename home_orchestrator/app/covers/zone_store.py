@@ -38,6 +38,14 @@ DEFAULT_ZONE_CONFIG = {
     # persiana existente hasta que el usuario lo active a proposito.
     "night_close_enabled": False,
     "day_open_enabled": False,
+    # Dia/noche por LUZ en vez de por la posicion del sol (opcional): con un
+    # sensor de iluminancia declarado, es de dia mientras supere el umbral
+    # durante `daylight_lux_for_seconds` seguidos (lo mismo que hacian las
+    # automatizaciones de HA del usuario: >20 lx / <20 lx durante 1 min).
+    # Sin sensor, o si no se puede leer, se usa sun.sun como siempre.
+    "daylight_sensor": "",
+    "daylight_lux_threshold": 20,
+    "daylight_lux_for_seconds": 60,
     # Proteccion solar: si el sol da DIRECTO a esta ventana (posicion
     # real del sol, sun.sun -- azimut dentro del rango que declara la
     # orientacion de la ventana, y elevacion por encima del minimo), la
