@@ -2557,8 +2557,8 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                         # unidades mientras `charging_task_enabled=true` (importando
                         # de red para cargar) -- de ahi el signo invertido para
                         # encajar con el convenio de `net_power` de este modulo
-                        # (positivo = cargando). Pendiente de confirmar contra la
-                        # tendencia real de SOC en los proximos dias.
+                        # (positivo = cargando). Confirmado el 2-nov contra `battery_power`:
+                        # Ultra X descargando grid_power +1157 W con la bateria a -1198 W.
                         if state.get("grid_power") is not None:
                             net_power = -float(state["grid_power"])
                             ecoflow_source = ecoflow_source or "bluetooth"
