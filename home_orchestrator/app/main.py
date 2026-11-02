@@ -1613,10 +1613,14 @@ def run_cycle():
                 net_power = entry.get("net_power_w") if entry else None
                 if net_power is None:
                     continue
+                # Una lectura de 0 W es un dato (bateria en reposo), no su falta:
+                # cuenta para no avisar de "contador congelado" con todas paradas.
+                # 2-nov: con `battery_power` las paradas leen 0 exacto y saltaba
+                # el aviso cada 15 min durante la noche.
+                acumulado_algo = True
                 wh = abs(net_power) * elapsed_h
                 if wh <= 0:
                     continue
-                acumulado_algo = True
                 key = _stable_battery_key(b)
                 action = "charge" if net_power > 0 else "discharge"
                 if action == "charge":
