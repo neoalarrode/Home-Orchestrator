@@ -110,7 +110,8 @@ class TplinkDeviceManager:
         asyncio.set_event_loop(loop)
         self._loop = loop
         self._loop_ready.set()
-        loop.create_task(self._poll_loop())
+        # Referencia fuerte: asyncio solo guarda una debil (ver tuya/device_manager).
+        self._poll_task = loop.create_task(self._poll_loop())
         loop.run_forever()
 
     def _run_coro(self, coro, timeout: float = DEFAULT_CALL_TIMEOUT_SECONDS):

@@ -108,7 +108,11 @@ def accumulate(now: datetime, imported_w: float | None, exported_w: float | None
         if last_iso is not None:
             try:
                 last = _naive_local(datetime.fromisoformat(last_iso))
-                dt_hours = max(0.0, (now - last).total_seconds()) / 3600.0
+                # Restar en hora consciente (`astimezone()` sobre una naive la
+                # toma como local con su horario de verano): restando las naive,
+                # el adelanto de hora de marzo daba 1 h de mas y entraba en el
+                # margen de 2 h como consumo.
+                dt_hours = max(0.0, (now.astimezone() - last.astimezone()).total_seconds()) / 3600.0
                 if dt_hours <= MAX_INTEGRATION_GAP_HOURS:
                     # Se acota el signo: estos dos acumulados se publican como
                     # `total_increasing` y HA interpreta un `total_increasing`

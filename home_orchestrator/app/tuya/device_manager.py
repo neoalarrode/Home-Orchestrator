@@ -66,6 +66,10 @@ class TuyaDeviceManager:
         on_address_change: Callable[[str, str], None] | None = None,
     ) -> None:
         self._on_any_change = on_any_change
+        # asyncio solo guarda una referencia DEBIL a las tareas: una que espera un
+        # futuro (el arranque del descubrimiento, mover un equipo de IP) puede
+        # recolectarse a medias. Se sujetan aqui hasta que terminan.
+        self._tasks: set[asyncio.Task] = set()
         # Persistir la IP nueva es cosa de la capa de arriba (tuya_plugin, que
         # es quien conoce el almacen) -- mismo criterio que `on_any_change`.
         self._on_address_change = on_address_change
@@ -113,9 +117,14 @@ class TuyaDeviceManager:
         asyncio.set_event_loop(loop)
         self._loop = loop
         self._loop_ready.set()
-        loop.create_task(self._reconnect_loop())
-        loop.create_task(self._discovery.start())
+        self._spawn(self._reconnect_loop())
+        self._spawn(self._discovery.start())
         loop.run_forever()
+
+    def _spawn(self, coro) -> None:
+        task = self._loop.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     def get_discovered_devices(self) -> list[DiscoveredDevice]:
         """Snapshot de lo detectado hasta ahora -- solo
@@ -168,7 +177,7 @@ class TuyaDeviceManager:
         )
         # Ya estamos DENTRO del bucle (esto lo llama `datagram_received`), asi
         # que create_task, no run_coroutine_threadsafe.
-        self._loop.create_task(self._move_device(device.device_id, device.ip))
+        self._spawn(self._move_device(device.device_id, device.ip))
 
     async def _move_device(self, device_id: str, new_ip: str, new_version: str | None = None) -> None:
         """Reapunta un dispositivo vivo a una direccion nueva y reconecta.

@@ -252,16 +252,26 @@ class ShellyDeviceManager:
             with self._lock:
                 pending = [(did, info["host"]) for did, info in self._devices.items() if info["gen"] is None]
             for device_id, host in pending:
+                # Mismo motivo que en `_poll_loop`: `_detect`/`_refresh` indexan lo
+                # que responda el equipo y pueden lanzar algo que no es de red
+                # (respuesta que no es JSON, `lights: []`...). Escapaba de aqui y
+                # mataba el hilo: ningun Shelly caido se volvia a reconectar.
                 try:
                     meta = self._detect(host)
                 except requests.RequestException:
+                    continue
+                except Exception:
+                    log.warning("Shelly %s (%s): respuesta inesperada al reconectar", device_id, host, exc_info=True)
                     continue
                 with self._lock:
                     dev = self._devices.get(device_id)
                     if dev is not None:
                         dev.update(gen=meta["gen"], capability=meta["capability"], model=meta["model"])
                 log.info("Shelly %s (%s): reconectado", device_id, host)
-                self._refresh(device_id)
+                try:
+                    self._refresh(device_id)
+                except Exception:
+                    log.warning("Shelly %s: fallo leyendo su estado tras reconectar", device_id, exc_info=True)
 
     def get_device(self, device_id: str) -> dict | None:
         with self._lock:
