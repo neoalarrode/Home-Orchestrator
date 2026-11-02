@@ -16,6 +16,7 @@ class _Stub:
         self.zone = {zr.CONF_SIMULATE: False, zr.CONF_HUMIDIFIER_ENTITIES: ["humidifier.h"]}
         self.ws = _WS(); self.state = state; self.target_humidity = 50
         self.drive = zr.ZoneRunner._drive_humidifiers.__get__(self)
+        self._ha_call = zr.ZoneRunner._ha_call.__get__(self)
     def _get_state(self, e): return self.state
 
 

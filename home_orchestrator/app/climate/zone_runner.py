@@ -1200,23 +1200,37 @@ class ZoneRunner:
             if handle is None:
                 return  # no disponible ahora mismo -- nunca se manda esto a ws.call_service
             data = service_data or {}
-            if service == "set_hvac_mode" and "hvac_mode" in data:
-                handle.set_hvac_mode(data["hvac_mode"])
-            elif service == "set_temperature" and "temperature" in data:
-                handle.set_temperature(data["temperature"])
-            elif service == "set_fan_mode" and "fan_mode" in data:
-                set_fan_mode = getattr(handle, "set_fan_mode", None)
-                if set_fan_mode is not None:
-                    set_fan_mode(data["fan_mode"])
-            elif service == "set_swing_mode" and "swing_mode" in data:
-                # Mismo criterio que set_fan_mode: si el handle no expone
-                # set_swing_mode, se ignora en silencio (el equipo no la soporta
-                # por esta via) -- sin acoplar el componente a ninguna marca.
-                set_swing_mode = getattr(handle, "set_swing_mode", None)
-                if set_swing_mode is not None:
-                    set_swing_mode(data["swing_mode"])
+            # BUG REAL (2-nov, 11:56): un aire que la nube de Tuya da por
+            # desconectado (ApiError DEVICE_OFFLINE) lanzaba hasta arriba y
+            # abortaba el ciclo ENTERO de la zona (el resto de equipos sin
+            # mandar, el estado sin guardar). La orden queda anotada como
+            # enviada (ver _send_delegate_once) y se reintenta con la espera
+            # de confirmacion de siempre.
+            try:
+                if service == "set_hvac_mode" and "hvac_mode" in data:
+                    handle.set_hvac_mode(data["hvac_mode"])
+                elif service == "set_temperature" and "temperature" in data:
+                    handle.set_temperature(data["temperature"])
+                elif service == "set_fan_mode" and "fan_mode" in data:
+                    set_fan_mode = getattr(handle, "set_fan_mode", None)
+                    if set_fan_mode is not None:
+                        set_fan_mode(data["fan_mode"])
+                elif service == "set_swing_mode" and "swing_mode" in data:
+                    # Mismo criterio que set_fan_mode: si el handle no expone
+                    # set_swing_mode, se ignora en silencio (el equipo no la soporta
+                    # por esta via) -- sin acoplar el componente a ninguna marca.
+                    set_swing_mode = getattr(handle, "set_swing_mode", None)
+                    if set_swing_mode is not None:
+                        set_swing_mode(data["swing_mode"])
+            except Exception as e:
+                _LOGGER.warning("%s: no se pudo mandar %s %s a %s: %s",
+                                self.zone.get("name"), service, data, entity_id, e)
             return
-        self.ws.call_service("climate", service, service_data=service_data or {}, target={"entity_id": entity_id})
+        try:
+            self.ws.call_service("climate", service, service_data=service_data or {}, target={"entity_id": entity_id})
+        except Exception as e:
+            _LOGGER.warning("%s: no se pudo mandar %s %s a %s: %s",
+                            self.zone.get("name"), service, service_data, entity_id, e)
 
     def _get_state(self, entity_id: str) -> dict | None:
         if self._is_bridge_ref(entity_id):
@@ -2662,9 +2676,21 @@ class ZoneRunner:
 
         if not simulate:
             service = "turn_on" if desired_on else "turn_off"
-            self.ws.call_service("switch", service, target={"entity_id": entity_id})
+            if not self._ha_call("switch", service, entity_id):
+                return current_on
         self._switch_last_change[entity_id] = ("on" if desired_on else "off", now)
         return desired_on
+
+    def _ha_call(self, domain: str, service: str, entity_id: str, service_data: dict | None = None) -> bool:
+        """Orden a una entidad de HA que, si falla (HA desconectado, entidad
+        borrada, error del servicio), se registra y devuelve False en vez de
+        abortar el ciclo entero de la zona -- ver _call_climate_service."""
+        try:
+            self.ws.call_service(domain, service, service_data=service_data, target={"entity_id": entity_id})
+            return True
+        except Exception as e:
+            _LOGGER.warning("%s: no se pudo mandar %s.%s a %s: %s", self.zone.get("name"), domain, service, entity_id, e)
+            return False
 
     def _drive_humidifiers(self, active: bool) -> None:
         simulate = bool(self.zone.get(CONF_SIMULATE, True))
@@ -2681,12 +2707,12 @@ class ZoneRunner:
             attrs = state.get("attributes") or {}
             if active:
                 if state.get("state") != "on":
-                    self.ws.call_service("humidifier", "turn_on", target={"entity_id": entity_id})
+                    self._ha_call("humidifier", "turn_on", entity_id)
                 current_humidity = _safe_float(attrs.get("humidity"))
                 if current_humidity is None or abs(current_humidity - self.target_humidity) >= HUMIDITY_SEND_TOLERANCE_PCT:
-                    self.ws.call_service("humidifier", "set_humidity", service_data={"humidity": self.target_humidity}, target={"entity_id": entity_id})
+                    self._ha_call("humidifier", "set_humidity", entity_id, {"humidity": self.target_humidity})
             elif state.get("state") != "off":
-                self.ws.call_service("humidifier", "turn_off", target={"entity_id": entity_id})
+                self._ha_call("humidifier", "turn_off", entity_id)
 
     def _update_extractor_baseline(self, humidity: float, now: datetime) -> float:
         """Linea base ASIMETRICA de la humedad de reposo de la zona: baja
@@ -2745,18 +2771,18 @@ class ZoneRunner:
                 continue                # desconectado: ver _drive_humidifiers
             if active:
                 if state.get("state") != "on":
-                    self.ws.call_service("switch", "turn_on", target={"entity_id": entity_id})
+                    self._ha_call("switch", "turn_on", entity_id)
             elif state.get("state") != "off":
-                self.ws.call_service("switch", "turn_off", target={"entity_id": entity_id})
+                self._ha_call("switch", "turn_off", entity_id)
         for entity_id in self.zone.get(CONF_EXTRACTOR_FANS) or []:
             state = self._get_state(entity_id)
             if state is None or state.get("state") in ("unknown", "unavailable"):
                 continue                # desconectado: ver _drive_humidifiers
             if active:
                 if state.get("state") != "on":
-                    self.ws.call_service("fan", "turn_on", target={"entity_id": entity_id})
+                    self._ha_call("fan", "turn_on", entity_id)
             elif state.get("state") != "off":
-                self.ws.call_service("fan", "turn_off", target={"entity_id": entity_id})
+                self._ha_call("fan", "turn_off", entity_id)
 
     # ---------------------------------------------------------- comandos --
 
