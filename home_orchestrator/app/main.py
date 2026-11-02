@@ -92,6 +92,10 @@ def _restrict_wallpanel_port():
 # quien de verdad evita machacar EcoFlow/HA con ordenes repetidas: sin
 # el, bajar esto a 0 SI hubiera sido peligroso. El ciclo periodico sigue
 # funcionando igual, como respaldo si el WebSocket se cae.
+# Consumo en vivo promediado para planificar la hora actual (ver
+# cycle_planner.LiveLoadSmoother): el instantaneo oscilaba con el propio plan.
+_live_load_smoother = cycle_planner.LiveLoadSmoother()
+
 _reactive_trigger = ha_websocket.ReactiveTrigger(lambda: _run_cycle_locked(), min_interval_seconds=0)
 # Conexion COMPARTIDA del core -- ver ha_websocket.shared(). El callback ya no
 # va en el constructor: con la conexion compartida cada plugin se registra con
@@ -1198,7 +1202,8 @@ def run_cycle():
     # como funcion pura, para ejecutar el MISMO codigo en las simulaciones.
     # `load_forecast` sigue siendo la prevision historica para la deteccion de
     # anomalias (compara precisamente lo medido con lo previsto).
-    planning_load = cycle_planner.load_with_live_now(load_forecast, live_total_load_w)
+    planning_load = cycle_planner.load_with_live_now(
+        load_forecast, _live_load_smoother.update(time.time(), live_total_load_w))
     _dec = cycle_planner.decide(now, cfg["general"], usable_batteries, socs, pv_forecast, planning_load, prices_tiers)
     plan, reserve_wh = _dec.plan, _dec.reserve_wh
     total_capacity_wh, current_soc_wh, current_soc_pct = _dec.total_capacity_wh, _dec.current_soc_wh, _dec.current_soc_pct

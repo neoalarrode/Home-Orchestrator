@@ -45,5 +45,33 @@ class LiveLoadNow(unittest.TestCase):
         self.assertEqual(cycle_planner.load_with_live_now([300.0], -20.0), [0.0])
 
 
+class LiveLoadSmoothing(unittest.TestCase):
+    def test_lagging_battery_oscillation_averages_out(self):
+        # 2-nov 13:07: lecturas alternas 450 / 1000 W cada ~7 s con la casa en ~700.
+        sm = cycle_planner.LiveLoadSmoother()
+        out = None
+        for i in range(40):
+            out = sm.update(i * 7.0, 450.0 if i % 2 else 1000.0)
+        self.assertAlmostEqual(out, 725, delta=40)
+        for pv in (600, 650):
+            hp = _now_hour(pv, cycle_planner.load_with_live_now([663.0, 700.0], out))
+            self.assertEqual(hp.reason, "descarga para cubrir consumo en punta")
+
+    def test_real_step_shows_up_quickly(self):
+        sm = cycle_planner.LiveLoadSmoother()
+        for t in range(0, 120, 5):
+            sm.update(t, 500.0)
+        val = None
+        for t in range(120, 160, 5):        # salta el radiador: 2 kW
+            val = sm.update(t, 2000.0)
+        self.assertGreater(val, 900)        # 40 s despues ya supera al sol (600 W)
+
+    def test_old_samples_expire_and_none_keeps_recent(self):
+        sm = cycle_planner.LiveLoadSmoother(window_seconds=60)
+        sm.update(0, 300.0)
+        self.assertEqual(sm.update(10, None), 300.0)
+        self.assertIsNone(sm.update(100, None))
+
+
 if __name__ == "__main__":
     unittest.main()

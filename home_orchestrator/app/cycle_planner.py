@@ -13,6 +13,7 @@ reserva objetivo y los agregados que `run_cycle` necesita para publicar.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -114,6 +115,43 @@ def decide(
         current_soc_wh=current_soc_wh, current_soc_pct=current_soc_pct, min_soc_wh=min_soc_wh,
         max_charge_w=max_charge_w, max_discharge_w=max_discharge_w, max_usable_wh=max_usable_wh,
     )
+
+
+LIVE_LOAD_WINDOW_SECONDS = 120
+
+
+class LiveLoadSmoother:
+    """Consumo en vivo PROMEDIADO (ponderado por tiempo) en una ventana corta,
+    para planificar la hora actual. BUG REAL (2-nov, 13:07): la potencia de las
+    baterias llega con retraso respecto al contador de red, asi que el consumo
+    reconstruido (sol + red + descarga - carga) oscilaba entre 350 y 1190 W con
+    la casa estable en ~700 W: cada cambio del plan (descarga <-> carga solar)
+    movia el contador al instante y la bateria despues, y eso volvia a cambiar
+    el plan cada ~7 s. La media de la ventana es el consumo real."""
+
+    def __init__(self, window_seconds: float = LIVE_LOAD_WINDOW_SECONDS) -> None:
+        self.window = window_seconds
+        self._samples: deque[tuple[float, float]] = deque()
+
+    def update(self, now_ts: float, value: float | None) -> float | None:
+        if value is not None:
+            self._samples.append((now_ts, float(value)))
+        while self._samples and now_ts - self._samples[0][0] > self.window:
+            self._samples.popleft()
+        if not self._samples:
+            return None
+        if len(self._samples) == 1:
+            return self._samples[0][1]
+        # Cada lectura vale hasta la siguiente; la ultima, hasta ahora (con un
+        # minimo para que una lectura recien llegada cuente algo).
+        total = weight = 0.0
+        pts = list(self._samples)
+        for (t0, v), (t1, _) in zip(pts, pts[1:]):
+            total += v * (t1 - t0); weight += t1 - t0
+        last_t, last_v = pts[-1]
+        w_last = max(now_ts - last_t, 1.0)
+        total += last_v * w_last; weight += w_last
+        return total / weight
 
 
 def load_with_live_now(load_forecast: list[float], live_total_load_w: float | None) -> list[float]:
