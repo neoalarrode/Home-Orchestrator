@@ -64,10 +64,8 @@ abiertas:
   histórico real con las persianas abiertas antes de que deje de
   mostrar "aprendiendo…" -- nada que hacer salvo esperar y comprobar
   más adelante.
-- **`cover.ventana_habitacion_invitados` (zona Despacho) en
-  `unavailable`** en HA -- probable fallo de batería/Zigbee del propio
-  dispositivo, no de software. Ninguna regla de Covers podrá moverla
-  mientras siga así. Pendiente de que el usuario lo revise físicamente.
+- ~~`cover.ventana_habitacion_invitados` en `unavailable`~~ -- vuelve a
+  responder (2-nov-2026: `closed`, posicion 0).
 - Interfaz reescrita (v0.6.0) para alinearse con el resto (design-system
   compartido, editar zonas en vez de solo crear) -- verificado servido
   correctamente en producción, pero NO probado a mano en el navegador
@@ -86,10 +84,7 @@ uno a uno antes.
 - Credenciales/tokens usados esta sesión están en memoria persistente
   (`ha_host_ssh_root_password`, `ha_long_lived_token`, credenciales de
   EcoFlow/Govee/Tuya/Grafana) -- no hace falta volver a pedirlos.
-- Plan pendiente en `/Users/ericlarrode/.claude/plans/radiant-snuggling-neumann.md`:
-  cuatro controles adicionales de EcoFlow (reserva de emergencia,
-  vertido a red, salidas AC manuales, límite de importación de red
-  automático) + hacer el motor de Energy más reactivo (enganchar el feed
-  MQTT de EcoFlow al mismo disparador reactivo que ya usan los sensores
-  de HA, debounce de comando) -- diseño completo, cero código escrito
-  todavía.
+- ~~Plan de cuatro controles adicionales de EcoFlow + motor reactivo con el
+  MQTT de EcoFlow~~ -- hecho (set_backup_reserve / set_feed_grid /
+  set_outlet / set_grid_import_limit en ecoflow_cloud.py; el feed MQTT
+  dispara el ciclo reactivo via set_live_update_callback).
