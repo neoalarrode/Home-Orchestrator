@@ -1,5 +1,9 @@
 # Changelog
 
+## core 0.77.65
+
+- Plugins — al instalar una versión se borran las antiguas de ese plugin; se guardan las 3 más recientes (para volver atrás sin descargar), la nueva y la que está usando el proceso en marcha. No se borraba ninguna: 76 versiones de Energy y 292 MB en `/data/plugins`, que entraban en cada copia de seguridad de HA. La limpieza ocurre la siguiente vez que se actualiza cada plugin.
+
 ## core 0.77.64
 
 - Carga de plugins — el aviso «el manifiesto pinea …» sale una vez por plugin y versión. El catálogo se fusiona varias veces al arrancar y salían 48 líneas iguales en cada reinicio.

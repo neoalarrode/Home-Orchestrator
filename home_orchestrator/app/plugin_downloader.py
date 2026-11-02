@@ -153,12 +153,46 @@ def download_plugin(slug: str, tag: str, sha256_hex: str, files: list[str]) -> s
     os.rename(tmp_dir, dest_dir)
 
     current_link = os.path.join(DATA_DIR, slug, "current")
+    # La version que esta usando el proceso en marcha: una actualizacion de
+    # fondo no se carga hasta el proximo arranque y Flask sigue leyendo sus
+    # plantillas de ahi, asi que no se puede borrar.
+    in_use = os.path.realpath(current_link) if os.path.islink(current_link) else None
     if os.path.islink(current_link) or os.path.exists(current_link):
         os.remove(current_link)
     os.symlink(dest_dir, current_link)
 
     log.info("Plugin '%s' @ %s instalado y verificado en %s", slug, tag, dest_dir)
+    _prune_old_versions(slug, keep={os.path.realpath(dest_dir), in_use})
     return dest_dir
+
+
+# Versiones descargadas que se conservan de cada plugin (para `activate`, volver
+# atras sin descargar). BUG REAL (2-nov): no se borraba ninguna -- 76 versiones
+# de Energy, 292 MB en /data/plugins, y todo eso entraba en cada copia de
+# seguridad de HA.
+KEEP_VERSIONS = 3
+
+
+def _prune_old_versions(slug: str, keep: set[str | None]) -> None:
+    """Borra las versiones descargadas mas antiguas de `slug`, conservando las
+    KEEP_VERSIONS mas recientes y siempre las de `keep` (la nueva y la que esta
+    en uso). Nunca lanza: un fallo aqui no puede deshacer una instalacion."""
+    base = os.path.join(DATA_DIR, slug)
+    try:
+        dirs = [os.path.join(base, d) for d in os.listdir(base)
+                if d != "current" and not d.endswith(".tmp") and os.path.isdir(os.path.join(base, d))
+                and not os.path.islink(os.path.join(base, d))]
+        dirs.sort(key=os.path.getmtime, reverse=True)
+        protected = {os.path.realpath(d) for d in dirs[:KEEP_VERSIONS]} | {k for k in keep if k}
+        removed = 0
+        for d in dirs:
+            if os.path.realpath(d) not in protected:
+                shutil.rmtree(d, ignore_errors=True)
+                removed += 1
+        if removed:
+            log.info("Plugin '%s': %d version(es) antigua(s) borrada(s) de disco", slug, removed)
+    except Exception:
+        log.warning("Plugin '%s': no se pudieron borrar versiones antiguas", slug, exc_info=True)
 
 
 def remove_plugin_files(slug: str) -> None:
