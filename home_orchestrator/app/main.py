@@ -2485,6 +2485,11 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
     # agregado tiene que seguir viniendo de la señal que SI es del grupo.
     ecoflow_main_sns_counted: set[str] = set()
     group_owners = _ecoflow_group_owners(cfg["batteries"])
+    group_sizes: dict[str, int] = {}
+    for gb in cfg["batteries"]:
+        if (gb.get("source") or "ha") == "ecoflow":
+            gk = _ecoflow_group_key(gb, gb.get("ecoflow_ble_address"))
+            group_sizes[gk] = group_sizes.get(gk, 0) + 1
     for b in cfg["batteries"]:
         source = b.get("source") or "ha"
         group_power = None
@@ -2508,6 +2513,7 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
             # entrando de verdad y 125 W saliendo por su Schuko, 1-nov) y con
             # ella la capacidad/salud aprendidas.
             outlets_w = None
+            own_battery_power = False
             ecoflow_mode = b.get("ecoflow_mode")
             # De donde ha venido el dato de ESTE ciclo -- para el iconito
             # BT/Cloud del dashboard, no afecta a nada mas. Si el SOC vino
@@ -2553,6 +2559,16 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                             net_power = -float(state["grid_power"])
                             ecoflow_source = ecoflow_source or "bluetooth"
                             outlets_w = _ecoflow_outlet_w(state, _ECOFLOW_OUTLET_FIELDS_BLE)
+                        # Unidad sola en su grupo (2-nov: las cuatro STREAM son
+                        # independientes): `battery_power` ya es SU bateria, con el
+                        # sol que entra por DC y los enchufes incluidos. Por la red
+                        # (`grid_power`) no se veia el sol: la Ultra X "descargo"
+                        # 5,0 kWh entre el 96 % y el 8 % de sus 3,84 kWh, y su
+                        # capacidad aprendida salia al 150-180 %.
+                        if (state.get("battery_power") is not None
+                                and group_sizes.get(_ecoflow_group_key(b, address), 0) == 1):
+                            net_power = float(state["battery_power"])
+                            own_battery_power = True    # enchufes ya incluidos: no se restan
                         # `group_power`: agregado del pack para el TOTAL del
                         # sistema (`live_charge_w`/`live_discharge_w` mas abajo)
                         # -- unica excepcion que SIGUE deduplicando por grupo,
@@ -2614,12 +2630,13 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                             group_power = float(main_state["powGetBpCms"])
                             ecoflow_main_sns_counted.add(main_sn)
 
-            if net_power is not None and outlets_w is None and ecoflow_mode in ("cloud", "hybrid") and b.get("ecoflow_sn"):
+            if net_power is not None and outlets_w is None and not own_battery_power \
+                    and ecoflow_mode in ("cloud", "hybrid") and b.get("ecoflow_sn"):
                 access_key, secret_key = cfg.get("ecoflow_access_key"), cfg.get("ecoflow_secret_key")
                 client = ecoflow_cloud.get_client(access_key, secret_key) if (access_key and secret_key) else None
                 cloud_state = client.get_live_state(b["ecoflow_sn"], required_fields=("gridConnectionPower",)) if client else None
                 outlets_w = _ecoflow_outlet_w(cloud_state, _ECOFLOW_OUTLET_FIELDS_CLOUD)
-            if net_power is not None and outlets_w:
+            if net_power is not None and outlets_w and not own_battery_power:
                 net_power -= outlets_w
             net_power = _plausible_power_w(net_power, f"batería {b.get('name', b.get('id'))} (EcoFlow)")
             group_power = _plausible_power_w(group_power, f"batería {b.get('name', b.get('id'))} (EcoFlow, agregado del pack)")
