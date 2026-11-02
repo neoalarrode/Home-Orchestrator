@@ -31,6 +31,7 @@ import grid_energy_store
 import grid_flow
 import ha_client
 import ha_statistics
+import json_store
 import ha_websocket
 import history_store
 import lifetime_store
@@ -1292,7 +1293,8 @@ def run_cycle():
                 e = {**e, "enabled": False, "power_w": 0, "note": "en reposo durante la prueba de seguimiento"}
             rest.append(e)
         distribution = {**distribution, "per_battery": rest}
-    log_lines = battery_exec.execute(batteries, distribution, dry_run=dry_run)
+    log_lines = battery_exec.execute(batteries, distribution, dry_run=dry_run,
+                                     semi_hold_ids=_semi_hold_ids(cfg))
     for b in batteries:
         if b.id in following:
             log_lines.append(f"[{b.name}] en prueba de seguimiento de carga (la controla el seguimiento, no el plan)")
@@ -3457,6 +3459,40 @@ def _load_follow_test_ids(cfg: dict) -> set[str]:
     return {b["id"] for b in batteries if (b.get("ecoflow_main_sn") or b["id"]) in groups}
 
 
+# Ultimo modo de medida visto por Bluetooth en cada EcoFlow ({battery_id: modo}).
+# Se guarda en disco: el modo solo llega por BLE, y una bateria que no se ve
+# (reinicio incluido) tiene que seguir constando como semiautomatica.
+ECOFLOW_MODES_PATH = os.environ.get("ECOFLOW_MODES_PATH", "/data/ecoflow_modes.json")
+
+
+def _note_ecoflow_mode(battery_id: str, mode: str | None) -> None:
+    if not mode:
+        return
+    modes = json_store.load(ECOFLOW_MODES_PATH) or {}
+    if modes.get(battery_id) != mode:
+        json_store.save(ECOFLOW_MODES_PATH, {**modes, battery_id: mode})
+
+
+def _semi_hold_ids(cfg: dict) -> set[str]:
+    """EcoFlow en semiautomatico (ultimo modo visto) que el seguimiento de carga
+    no controla ahora: el plan no les puede activar la descarga (ver
+    `battery_exec.execute`, rama "semi_hold")."""
+    modes = json_store.load(ECOFLOW_MODES_PATH) or {}
+    follower = globals().get("_load_follower")
+    followed = set(follower._followed) if follower is not None else set()
+    batteries = cfg.get("batteries") or []
+    id_by_sn = {b.get("ecoflow_sn"): b["id"] for b in batteries if b.get("ecoflow_sn")}
+    out = set()
+    for b in batteries:
+        if b.get("source") != "ecoflow" or modes.get(b["id"]) != "semi_automated":
+            continue
+        # El seguidor es el grupo, con el id de su unidad principal.
+        main_id = id_by_sn.get(b.get("ecoflow_main_sn")) or b["id"]
+        if main_id not in followed:
+            out.add(b["id"])
+    return out
+
+
 def _load_follow_context() -> dict:
     """Lo que necesita el seguimiento de carga (load_follower.py) en cada
     lectura del contador: modo, baterias en semiautomatico con su SOC (de la
@@ -3474,6 +3510,7 @@ def _load_follow_context() -> dict:
             continue
         state = ecoflow_ble.get_state(b["ecoflow_ble_address"], user_id) or {}
         soc = state.get("battery_level_main")
+        _note_ecoflow_mode(b["id"], state.get("energy_monitoring_mode"))
         if state.get("energy_monitoring_mode") != "semi_automated" or soc is None:
             continue
         key = b.get("ecoflow_main_sn") or b["id"]

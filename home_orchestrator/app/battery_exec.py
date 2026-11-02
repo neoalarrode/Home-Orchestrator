@@ -632,7 +632,8 @@ def _ecoflow_group_plan(batteries: list[Battery], distribution: dict) -> dict[st
     return groups
 
 
-def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) -> list[str]:
+def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True,
+            semi_hold_ids: set[str] | frozenset = frozenset()) -> list[str]:
     """
     Aplica la distribucion a HA. En dry_run solo devuelve lo que HARIA.
 
@@ -714,6 +715,22 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True) 
             def apply(b=b):
                 if not b.ecoflow_set_charging_task(power_limit_w=0):
                     raise RuntimeError("EcoFlow no confirmo el limite de carga a 0")
+        elif b.id in semi_hold_ids and not (action == "charge" and entry["enabled"]):
+            # EcoFlow en semiautomatico que el seguimiento de carga no esta
+            # controlando (no se ve por Bluetooth, sin SOC, seguimiento apagado):
+            # con la tarea de descarga activa entregaria su carga base, la que
+            # tuviera (1200 W de fabrica al crear un grupo, 2-nov), sin nadie que
+            # la ajuste a la casa. Cargar si puede (su limite si se respeta); lo
+            # demas, carga y descarga desactivadas.
+            signature = ("semi_hold",)
+            line = (f"[{b.name}] semiautomatico sin seguimiento: carga y descarga desactivadas "
+                    f"(su carga base no se puede ajustar ahora, SOC {soc_txt})")
+
+            def apply(b=b):
+                ok_off = b.ecoflow_set_charging_task(enable=False)
+                ok_dis = b.ecoflow_set_discharging_task(enable=False)
+                if not (ok_off and ok_dis):
+                    raise RuntimeError("EcoFlow no confirmo la desactivacion de carga y descarga")
         elif group and group["discharge_limit_w"] > 0 and not entry["enabled"]:
             limit = group["discharge_limit_w"]
             signature = ("discharge_group", limit)
