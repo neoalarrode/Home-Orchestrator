@@ -190,6 +190,11 @@ DRY_FORCE_HUMIDITY_PCT = 70.0
 HUMIDITY_SEND_TOLERANCE_PCT = 1
 EQUIPMENT_FAILURE_DETECTION_MINUTES = 30
 EQUIPMENT_FAILURE_MIN_DELTA_DEG = 0.3
+# Sin ninguna lectura nueva del sensor desde que empezo a pedir, no se puede
+# saber si la temperatura se mueve: se espera hasta este limite. 2-nov: el FP300
+# del cuarto de juegos informa cada ~1 h; con 30 min avisaba "posible fallo del
+# equipo" mientras el radiador subia la habitacion de 20 a 22 °C.
+EQUIPMENT_FAILURE_MAX_WAIT_FOR_READING_MINUTES = 90
 
 # BUG REAL, a peticion expresa del usuario tras el QA adversarial de
 # Climate ("debounce del delegado climate.*", "respeto a un apagado
@@ -1594,6 +1599,11 @@ class ZoneRunner:
         elapsed_min = (now - start_ts).total_seconds() / 60
         if elapsed_min < EQUIPMENT_FAILURE_DETECTION_MINUTES:
             return
+        if elapsed_min < EQUIPMENT_FAILURE_MAX_WAIT_FOR_READING_MINUTES:
+            sensor = self.zone.get(CONF_CURRENT_TEMP_SENSOR)
+            since = _ha_state_since(self._get_state(sensor)) if sensor else None
+            if since is not None and since <= start_ts:
+                return                      # el sensor aun no ha informado nada nuevo
 
         delta = current_temp - start_temp
         progressed = delta >= EQUIPMENT_FAILURE_MIN_DELTA_DEG if run_action == "heat" \
@@ -1940,7 +1950,7 @@ class ZoneRunner:
         if self.hvac_mode == "off":
             action = "idle"
             heat_target, cool_target = preset_heat, preset_cool
-            self.reason = "apagado desde el termostato"
+            self.reason = self._off_reason()
         elif real_door_open or window_alert:
             window_reason = "puerta/ventana abierta" if real_door_open else (
                 f"posible ventana abierta (pendiente {self._window_detector.slope_deg_h:.1f}°C/h en contra "
@@ -2713,6 +2723,15 @@ class ZoneRunner:
                     self._ha_call("humidifier", "set_humidity", entity_id, {"humidity": self.target_humidity})
             elif state.get("state") != "off":
                 self._ha_call("humidifier", "turn_off", entity_id)
+
+    def _off_reason(self) -> str:
+        """Motivo con la zona en "off". Una zona sin actuador termico solo puede
+        estar "off" (su unico modo): decir "apagado desde el termostato" hacia
+        creer que alguien la apago (2-nov, Baño Arriba: solo sensor + extractor)."""
+        if not (self.zone.get(CONF_HEAT_SWITCHES) or self.zone.get(CONF_COOL_SWITCHES)
+                or self.zone.get(CONF_CLIMATE_ENTITIES)):
+            return "zona sin calefacción ni frío declarados (solo extractor/humedad) — nada que climatizar aquí"
+        return "apagado desde el termostato"
 
     def _update_extractor_baseline(self, humidity: float, now: datetime) -> float:
         """Linea base ASIMETRICA de la humedad de reposo de la zona: baja
