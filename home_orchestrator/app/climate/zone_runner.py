@@ -2659,14 +2659,20 @@ class ZoneRunner:
             if simulate:
                 continue
             state = self._get_state(entity_id)
-            attrs = (state or {}).get("attributes") or {}
+            # Desconectado: ninguna orden llega, y como no esta en "off" se le
+            # mandaba apagar en cada ciclo (2-nov: ~4 llamadas por minuto a un
+            # humidificador sin conexion desde la noche anterior). Se retoma
+            # solo en cuanto vuelve.
+            if state is None or state.get("state") in ("unknown", "unavailable"):
+                continue
+            attrs = state.get("attributes") or {}
             if active:
-                if state is None or state.get("state") != "on":
+                if state.get("state") != "on":
                     self.ws.call_service("humidifier", "turn_on", target={"entity_id": entity_id})
                 current_humidity = _safe_float(attrs.get("humidity"))
                 if current_humidity is None or abs(current_humidity - self.target_humidity) >= HUMIDITY_SEND_TOLERANCE_PCT:
                     self.ws.call_service("humidifier", "set_humidity", service_data={"humidity": self.target_humidity}, target={"entity_id": entity_id})
-            elif state is not None and state.get("state") != "off":
+            elif state.get("state") != "off":
                 self.ws.call_service("humidifier", "turn_off", target={"entity_id": entity_id})
 
     def _update_extractor_baseline(self, humidity: float, now: datetime) -> float:
@@ -2722,17 +2728,21 @@ class ZoneRunner:
             return
         for entity_id in self.zone.get(CONF_EXTRACTOR_SWITCHES) or []:
             state = self._get_state(entity_id)
+            if state is None or state.get("state") in ("unknown", "unavailable"):
+                continue                # desconectado: ver _drive_humidifiers
             if active:
-                if state is None or state.get("state") != "on":
+                if state.get("state") != "on":
                     self.ws.call_service("switch", "turn_on", target={"entity_id": entity_id})
-            elif state is not None and state.get("state") != "off":
+            elif state.get("state") != "off":
                 self.ws.call_service("switch", "turn_off", target={"entity_id": entity_id})
         for entity_id in self.zone.get(CONF_EXTRACTOR_FANS) or []:
             state = self._get_state(entity_id)
+            if state is None or state.get("state") in ("unknown", "unavailable"):
+                continue                # desconectado: ver _drive_humidifiers
             if active:
-                if state is None or state.get("state") != "on":
+                if state.get("state") != "on":
                     self.ws.call_service("fan", "turn_on", target={"entity_id": entity_id})
-            elif state is not None and state.get("state") != "off":
+            elif state.get("state") != "off":
                 self.ws.call_service("fan", "turn_off", target={"entity_id": entity_id})
 
     # ---------------------------------------------------------- comandos --

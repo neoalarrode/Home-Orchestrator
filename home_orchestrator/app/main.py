@@ -3613,8 +3613,13 @@ def _load_follow_send(b: dict, watts: float) -> bool:
     cfg = config_store.load_config()
     address, user_id = b["ecoflow_ble_address"], cfg.get("ecoflow_user_id")
     try:
-        if watts > 0 and b["id"] not in _load_follow_prepared and not _load_follow_prepare(b):
-            return False
+        if watts > 0 and b["id"] not in _load_follow_prepared:
+            # La carga base ANTES de activar la descarga: con la tarea activa el
+            # equipo entrega al momento la base que ya tuviera (1200 W de fabrica
+            # en un grupo nuevo, o la de una liberacion que no se confirmo).
+            if not ecoflow_ble.set_base_load(address, user_id, watts):
+                return False
+            return _load_follow_prepare(b)
         return ecoflow_ble.set_base_load(address, user_id, watts)
     except Exception:
         log.exception(f"[{b.get('name')}] fallo mandando carga base {watts:.0f} W")
