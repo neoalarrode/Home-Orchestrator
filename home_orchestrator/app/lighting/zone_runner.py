@@ -970,7 +970,12 @@ class ZoneRunner:
         self.postponed = bool(presence_entities) and not any(e in states for e in presence_entities)
         if self.postponed:
             self.reason = "estado de HA no disponible -> sin cambios"
-            log.warning(
+            # Sin ningun estado es el arranque (el WebSocket aun no se ha
+            # sembrado) o un hipo: normal, salia como aviso de las 10 zonas en
+            # cada reinicio. Con estados pero sin sus entidades de presencia, si
+            # es un problema (sensor renombrado o borrado).
+            log.log(
+                logging.INFO if not states else logging.WARNING,
                 "Zona lighting %s: ninguna entidad de presencia presente en el estado de HA "
                 "(%d entidades leidas) -- se omite el ciclo en vez de tratarlo como 'sin presencia'",
                 self.zone_id, len(states),
