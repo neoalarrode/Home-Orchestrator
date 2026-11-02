@@ -1196,7 +1196,10 @@ def run_cycle():
     # La decision en si (agregados de capacidad/SOC, modo de prioridad,
     # colchon de reserva y `scheduler.build_plan`) vive en cycle_planner.py
     # como funcion pura, para ejecutar el MISMO codigo en las simulaciones.
-    _dec = cycle_planner.decide(now, cfg["general"], usable_batteries, socs, pv_forecast, load_forecast, prices_tiers)
+    # `load_forecast` sigue siendo la prevision historica para la deteccion de
+    # anomalias (compara precisamente lo medido con lo previsto).
+    planning_load = cycle_planner.load_with_live_now(load_forecast, live_total_load_w)
+    _dec = cycle_planner.decide(now, cfg["general"], usable_batteries, socs, pv_forecast, planning_load, prices_tiers)
     plan, reserve_wh = _dec.plan, _dec.reserve_wh
     total_capacity_wh, current_soc_wh, current_soc_pct = _dec.total_capacity_wh, _dec.current_soc_wh, _dec.current_soc_pct
 

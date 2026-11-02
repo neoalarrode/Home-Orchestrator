@@ -116,6 +116,19 @@ def decide(
     )
 
 
+def load_with_live_now(load_forecast: list[float], live_total_load_w: float | None) -> list[float]:
+    """La hora ACTUAL se planifica con el consumo medido AHORA, no con la media
+    historica de esa hora (el sol de la hora actual ya se corrige igual con la
+    medida en vivo, ver pv_source). BUG REAL (2-nov, 12:00 punta): previsto
+    663 W, real 1,5-2 kW (radiador + bomba de calor). Con 565 W de sol el plan
+    solo veia ~100 W de deficit y oscilaba cada pocos segundos entre "descarga",
+    "sin accion" y "carga con excedente solar"; cada cambio reiniciaba el
+    seguimiento y las baterias apenas daban 200 W mientras se importaban 1,9 kW."""
+    if live_total_load_w is None or not load_forecast:
+        return load_forecast
+    return [max(0.0, float(live_total_load_w))] + list(load_forecast[1:])
+
+
 def ac_charge_for_now(now_hp, hybrid_pv_now_w: float) -> float:
     """Lo que ya se autoconsume directo en paneles 'hybrid' no hay que
     mandarlo otra vez por AC: se descuenta de la carga a ordenar."""
