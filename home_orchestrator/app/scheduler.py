@@ -443,7 +443,12 @@ def build_plan(
         #    haga falta reservar para TODA la punta que quede por delante.
         elif deficit_w[i] > 0 and tier == "llano":
             reserved_for_future_punta = future_punta_after[i + 1]
-            available = max(0.0, soc - min_soc_wh - reserved_for_future_punta - reserve_safety_margin_wh)
+            # Sin punta por delante antes del valle, y pudiendo cargar de red en
+            # el valle, el colchon no protege nada: lo que se gaste ahora se
+            # repone mas barato y a mas potencia (decision del usuario, 2-nov:
+            # a las 23:00 se paraba con un 17 % y se compraba esa hora en llano).
+            cushion = 0.0 if (reserved_for_future_punta <= 0 and allow_grid_charging) else reserve_safety_margin_wh
+            available = max(0.0, soc - min_soc_wh - reserved_for_future_punta - cushion)
             discharge = min(deficit_w[i], max_discharge_w, available)
             if discharge >= MIN_DISCHARGE_W:
                 soc -= discharge
