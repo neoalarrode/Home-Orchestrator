@@ -462,6 +462,9 @@ const TEMP_STEP = 0.5;
 
 function renderThermostat(id, live) {
   if (live.available === false || !live.hvac_modes) return "";
+  // Zona sin calefaccion ni frio (solo extractor/humedad, p.ej. Baño Arriba):
+  // su unico modo es "off" y los controles de temperatura no hacen nada.
+  if (live.hvac_modes.length === 1 && live.hvac_modes[0] === "off") return "";
   const modes = live.hvac_modes.length ? live.hvac_modes : [live.hvac_mode].filter(Boolean);
   const modeLabel = {off: "Apagado", heat: "Calor", cool: "Frío", heat_cool: "Auto", fan_only: "Vent.", dry: "Seco"};
   const modeButtons = modes.map(m => `<button type="button" class="${m === live.hvac_mode ? "current" : ""}" onclick="setHvacMode('${id}','${esc(m)}')">${esc(modeLabel[m] || m)}</button>`).join("");
