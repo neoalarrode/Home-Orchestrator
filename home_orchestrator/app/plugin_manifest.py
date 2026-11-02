@@ -150,6 +150,11 @@ def fetch(force: bool = False) -> dict[str, dict]:
         return entradas
 
 
+# (slug, tag) ya anunciados: el catalogo se fusiona varias veces en cada
+# arranque y el mismo aviso salia ~6 veces por plugin.
+_pins_logged: set[tuple[str, str]] = set()
+
+
 def catalogo_efectivo(base: dict[str, dict], force: bool = False) -> dict[str, dict]:
     """`base` (el catalogo de la imagen) con el manifiesto remoto por encima.
 
@@ -166,7 +171,8 @@ def catalogo_efectivo(base: dict[str, dict], force: bool = False) -> dict[str, d
             for campo in ("tag", "sha256", "files", "version"):
                 if r.get(campo):
                     entrada[campo] = r[campo]
-            if r.get("tag") != meta.get("tag"):
+            if r.get("tag") != meta.get("tag") and (slug, r.get("tag")) not in _pins_logged:
+                _pins_logged.add((slug, r.get("tag")))
                 log.info(
                     "Plugin '%s': el manifiesto pinea %s (la imagen traia %s)",
                     slug, r.get("tag"), meta.get("tag"),

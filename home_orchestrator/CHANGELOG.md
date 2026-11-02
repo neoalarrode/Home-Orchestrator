@@ -1,5 +1,9 @@
 # Changelog
 
+## core 0.77.64
+
+- Carga de plugins — el aviso «el manifiesto pinea …» sale una vez por plugin y versión. El catálogo se fusiona varias veces al arrancar y salían 48 líneas iguales en cada reinicio.
+
 ## core 0.77.63
 
 - WebSocket de HA — suscripción filtrada funcionando de verdad. HA la rechazaba siempre porque se le pedían refs de puente de HO (`tuya:…`), así que el add-on recibía TODOS los cambios de la casa. Ahora solo se piden entidades de HA, y lo que un plugin lee con `get_state` sin haberlo declarado se añade solo a la suscripción (nada se queda con el valor del arranque).
