@@ -73,6 +73,15 @@ RELEASE_RETRY_S = 10.0
 ASYNC_CALLS = True
 
 
+def _num_or(value, default: float) -> float:
+    """`value` como numero, o `default` si no esta puesto. Con `value or
+    default`, un margen de 0 W (apurar al maximo) se convertia en el de fabrica."""
+    try:
+        return float(value) if value is not None and value != "" else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 def read_shelly_w(host: str, session: requests.Session | None = None) -> float | None:
     """Potencia activa total del Shelly Pro 3EM (positiva = importando)."""
     try:
@@ -337,7 +346,7 @@ class LoadFollower:
         others = ctx.get("others") or []
         delivered = {k: self._estimate.get(k, v) for k, v in self._current.items()}
         args = (meter, delivered, followers, bool(ctx.get("discharge_allowed")),
-                float(ctx.get("contracted_w") or 0), float(ctx.get("margin_w") or DEFAULT_MARGIN_W),
+                float(ctx.get("contracted_w") or 0), _num_or(ctx.get("margin_w"), DEFAULT_MARGIN_W),
                 float(ctx.get("other_charging_w") or 0), others, float(ctx.get("own_charging_w") or 0))
         wanted = wanted_total(*args)
         pool = followers + others
@@ -406,7 +415,7 @@ class LoadFollower:
 
     def _apply(self, targets: dict[str, float], ctx: dict, why: str) -> None:
         mode = ctx.get("mode") or "off"
-        deadband = float(ctx.get("deadband_w") or DEFAULT_DEADBAND_W)
+        deadband = float(ctx.get("deadband_w") or DEFAULT_DEADBAND_W)  # 0 = una orden BLE por lectura: no
         by_id = {b["id"]: b for b in ctx.get("batteries_cfg") or []}
         # Un equipo que aun no hemos mandado nunca recibe su objetivo aunque sea
         # 0: puede traer una carga base de antes (el grupo de tres tenia 510 W)
