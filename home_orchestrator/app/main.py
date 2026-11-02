@@ -549,6 +549,18 @@ def _energy_counter_kwh(entity_id: str | None) -> float | None:
         return None
 
 
+def _net_grid_now_w(cfg: dict, label: str = "net_grid_sensor") -> float | None:
+    """Red neta en el punto de conexion AHORA MISMO (positivo importando). Si el
+    seguimiento de carga esta leyendo el contador directamente (Shelly por RPC,
+    1/s), se usa esa lectura: es la misma medida que la entidad de HA pero sin
+    los ~15 s de retraso con que HA la refresca. Si no, la entidad de HA."""
+    follower = globals().get("_load_follower")
+    meter = follower.meter_now_w() if follower is not None else None
+    if meter is not None:
+        return _plausible_power_w(meter, f"{label} (contador directo)")
+    return _plausible_power_w(ha_client.get_numeric_state(cfg.get("net_grid_sensor"), default=None), label)
+
+
 def _live_export_w(cfg: dict, known_net_grid_w: float | None = None) -> float | None:
     """
     Vertido a red AHORA MISMO, leido en vivo — deriva del mismo modo
@@ -567,8 +579,7 @@ def _live_export_w(cfg: dict, known_net_grid_w: float | None = None) -> float | 
     """
     mode = cfg.get("load_sensor_mode") or "separate"
     if mode == "combined" and cfg.get("net_grid_sensor"):
-        net = known_net_grid_w if known_net_grid_w is not None else _plausible_power_w(
-            ha_client.get_numeric_state(cfg.get("net_grid_sensor"), default=None), "net_grid_sensor (vertido)")
+        net = known_net_grid_w if known_net_grid_w is not None else _net_grid_now_w(cfg, "net_grid_sensor (vertido)")
         return max(0.0, -net) if net is not None else None
     if cfg.get("export_sensor"):
         return _plausible_power_w(
@@ -1005,8 +1016,7 @@ def run_cycle():
             net_grid_sensor, solar_sensors_for_load, horizon, days=history_days,
             battery_power_sensor=battery_power_sensor,
         )
-        net_grid_now_w = _plausible_power_w(
-            ha_client.get_numeric_state(net_grid_sensor, default=None), "net_grid_sensor")
+        net_grid_now_w = _net_grid_now_w(cfg)
         if net_grid_now_w is not None and pv_now_actual is not None and live_battery_data_ok:
             live_base_load_w = max(0.0, pv_now_actual + net_grid_now_w + live_discharge_w - live_charge_w)
         else:
@@ -1158,7 +1168,9 @@ def run_cycle():
                 # ningun lado: si no hay load_sensor declarado aqui
                 # tampoco, esto va vacio y Climate Orchestrator sigue
                 # pidiendo su propio sensor a mano, como hoy.
-                "home_power_sensor": load_sensor or None,
+                # En modo "combined" no hay sensor de consumo de HA: el consumo
+                # real es el que reconstruye y publica el propio Energy.
+                "home_power_sensor": ("sensor.battery_orchestrator_load" if combined_mode else load_sensor) or None,
                 "friendly_name": "Battery Orchestrator Grid Signal",
             },
         )
@@ -2397,8 +2409,7 @@ def _live_total_load_w(cfg: dict, pv_now_w: float | None, live_charge_w: float,
         net_grid_sensor = cfg.get("net_grid_sensor")
         if not net_grid_sensor:
             return None
-        net_grid_now_w = _plausible_power_w(
-            ha_client.get_numeric_state(net_grid_sensor, default=None), "net_grid_sensor")
+        net_grid_now_w = _net_grid_now_w(cfg)
         if net_grid_now_w is None or pv_now_w is None or not live_battery_data_ok:
             return None
         return max(0.0, pv_now_w + net_grid_now_w + live_discharge_w - live_charge_w)
@@ -2694,8 +2705,7 @@ def api_live():
     net_grid_sensor = cfg.get("net_grid_sensor")
     net_grid_now_w = None
     if load_sensor_mode == "combined" and net_grid_sensor:
-        net_grid_now_w = _plausible_power_w(
-            ha_client.get_numeric_state(net_grid_sensor, default=None), "net_grid_sensor")
+        net_grid_now_w = _net_grid_now_w(cfg)
         load_now_w = None
         if net_grid_now_w is not None and pv_now_w is not None and live_battery_data_ok:
             load_now_w = max(0.0, pv_now_w + net_grid_now_w + live_discharge_w - live_charge_w)

@@ -286,6 +286,13 @@ class LoadFollower:
     def stop(self) -> None:
         self._stop.set()
 
+    def meter_now_w(self) -> float | None:
+        """Ultima lectura directa del contador (W, positivo importando) si es de
+        los ultimos METER_LOST_SECONDS; None si no se esta leyendo."""
+        if self._last_meter is None or time.monotonic() - self._last_meter_ts > METER_LOST_SECONDS:
+            return None
+        return self._last_meter
+
     def run(self) -> None:
         session = requests.Session()
         while not self._stop.wait(POLL_SECONDS):
