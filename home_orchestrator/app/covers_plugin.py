@@ -30,6 +30,15 @@ from covers import zone_store
 from covers.zone_runner import ZoneRunner
 from plugin_base import Plugin
 
+NO_DATA_RETRY_SECONDS = 30
+
+
+def needs_quick_retry(runner) -> bool:
+    """La zona aun no ha podido decidir por falta de datos de HA."""
+    reason = runner.reason or ""
+    return runner.desired_position is None and (
+        reason.startswith("sun.sun no disponible") or reason.startswith("sin evaluar"))
+
 log = logging.getLogger("covers_plugin")
 
 DEFAULT_REAPPLY_MINUTES = 5
@@ -253,7 +262,11 @@ class CoversPlugin(Plugin):
 
     def _periodic_loop(self, zone_id: str, reapply_minutes: int, runner: ZoneRunner, stop: threading.Event) -> None:
         interval = max(reapply_minutes, 1) * 60
-        while not stop.wait(interval):
+        # Tras un arranque la primera decision puede llegar antes de que el
+        # WebSocket haya sembrado los estados ("sun.sun no disponible"): se
+        # reintenta pronto en vez de esperar el intervalo entero (2-nov: 5 min
+        # sin decision tras cada reinicio).
+        while not stop.wait(NO_DATA_RETRY_SECONDS if needs_quick_retry(runner) else interval):
             if self._runners.get(zone_id) is not runner:
                 return
             try:
