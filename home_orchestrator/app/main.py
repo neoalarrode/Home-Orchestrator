@@ -142,8 +142,14 @@ ANOMALY_NOTIFICATION_ID = "battery_orchestrator_anomaly"
 # instalacion con muchas entidades esto es carga real y evitable. Se
 # publica como mucho cada PUBLISH_MIN_INTERVAL_SECONDS, salvo la PRIMERA
 # vez (para no dejar al resto de HA sin dato ninguno mientras arranca).
-PUBLISH_MIN_INTERVAL_SECONDS = 120
+PUBLISH_MIN_INTERVAL_SECONDS = 0
+# Se publica en cuanto el valor cambia (decision del usuario, 3-nov: "segun
+# obtenemos datos nuevos"); un valor IGUAL al ultimo publicado solo se reenvia
+# cada PUBLISH_HEARTBEAT_SECONDS, para que la entidad reaparezca sola tras un
+# reinicio de HA (un estado creado por REST no sobrevive al reinicio).
+PUBLISH_HEARTBEAT_SECONDS = 300
 _last_published_at: dict[str, float] = {}
+_last_published_value: dict[str, tuple] = {}
 # Ciclo de fondo y peticiones API (p.ej. un recalculo manual que tambien
 # publique sensores) pueden llamar a _publish_sensor_throttled casi a la
 # vez -- sin lock, dos hilos podian leer "toca publicar" a la vez para el
@@ -176,6 +182,10 @@ def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
         last = _last_published_at.get(entity_id)
         if last is not None and (now_ts - last) < min_interval:
             return
+        value = (state, json.dumps(attributes, sort_keys=True, default=str))
+        if (last is not None and _last_published_value.get(entity_id) == value
+                and (now_ts - last) < PUBLISH_HEARTBEAT_SECONDS):
+            return
         try:
             ha_client.publish_sensor(entity_id, state, attributes)
         except Exception:
@@ -185,6 +195,7 @@ def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
             )
             return
         _last_published_at[entity_id] = now_ts
+        _last_published_value[entity_id] = value
 
 
 def _int_setting(section: dict, key: str, default: int, lo: int, hi: int) -> int:
@@ -1478,8 +1489,7 @@ def run_cycle():
     # medidor: se publica al momento (antes hasta 120 s de retraso respecto
     # al medidor). Por potencia integrada cambia en cada ciclo, y ahi se
     # mantiene el ritmo de siempre para no llenar el recorder.
-    _imp_pub_s = 5 if imp_declared else PUBLISH_MIN_INTERVAL_SECONDS
-    _exp_pub_s = 5 if exp_declared else PUBLISH_MIN_INTERVAL_SECONDS
+    _imp_pub_s = _exp_pub_s = PUBLISH_MIN_INTERVAL_SECONDS
     try:
         _publish_sensor_throttled(
             "sensor.battery_orchestrator_grid_imported_energy",
@@ -1527,7 +1537,6 @@ def run_cycle():
                 "device_class": "power", "state_class": "measurement",
                 "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Potencia importada de red",
             },
-            min_interval=15,
         )
         _publish_sensor_throttled(
             # Sin sensor de vertido no se publica nada: publicar la
@@ -1539,7 +1548,6 @@ def run_cycle():
                 "device_class": "power", "state_class": "measurement",
                 "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Potencia vertida a red",
             },
-            min_interval=15,
         )
     except Exception:
         log.exception("Fallo publicando potencia/energia importada/vertida")
@@ -1920,7 +1928,7 @@ def background_loop():
         time.sleep(_int_setting(cfg["general"], "cycle_seconds", 60, 15, 3600))
 
 
-LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS = 10
+LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS = 1   # el contador se lee 1/s: se publica al ritmo de los datos
 # Tope de cuanto tiempo "de golpe" se deja integrar en una sola vuelta del
 # bucle -- si el add-on estuvo parado un rato (reinicio, fallo...) no se
 # quiere sumar esas horas enteras como si hubiera habido sol todo ese
@@ -1969,8 +1977,7 @@ def _live_sensor_loop():
                             "device_class": "battery", "state_class": "measurement",
                             "unit_of_measurement": "%", "friendly_name": "Battery Orchestrator SOC",
                         },
-                        min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
-                    )
+                                            )
                 if live["live_battery_data_ok"]:
                     # Descargando = positivo, cargando = negativo (al
                     # reves del criterio anterior, a peticion expresa).
@@ -1981,8 +1988,7 @@ def _live_sensor_loop():
                             "device_class": "power", "state_class": "measurement",
                             "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Potencia",
                         },
-                        min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
-                    )
+                                            )
             solar_w = _live_solar_now_w(cfg)
             now_ts = time.time()
             if solar_w is not None:
@@ -1992,8 +1998,7 @@ def _live_sensor_loop():
                         "device_class": "power", "state_class": "measurement",
                         "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Potencia solar",
                     },
-                    min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
-                )
+                                    )
                 # Un sensor MAS por cada array/panel declarado en
                 # Configuración → Solar, ademas del agregado de arriba --
                 # a peticion expresa del usuario, para poder comparar
@@ -2006,8 +2011,7 @@ def _live_sensor_loop():
                             "unit_of_measurement": "W",
                             "friendly_name": f"Battery Orchestrator Potencia solar — {array_name}",
                         },
-                        min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
-                    )
+                                            )
                 # Energia ACUMULADA (kWh, total_increasing) -- distinta del
                 # sensor de potencia de arriba: la pide el Panel de Energia
                 # oficial de HA para "Produccion de energia solar".
@@ -2028,11 +2032,33 @@ def _live_sensor_loop():
                         "unit_of_measurement": "kWh", "since": total["since"],
                         "friendly_name": "Battery Orchestrator Energía de producción solar",
                     },
-                    min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
-                )
+                                    )
             _solar_energy_last_ts = now_ts
 
             total_load_w = _live_total_load_w(cfg, solar_w, live_charge_w, live_discharge_w, live_battery_data_ok)
+            # Potencia de red al ritmo del contador (antes solo desde el ciclo de
+            # planificacion, cada 30 s): misma formula que run_cycle (grid_flow).
+            net_grid_now = (_net_grid_now_w(cfg) if (cfg.get("load_sensor_mode") or "separate") == "combined"
+                            and cfg.get("net_grid_sensor") else None)
+            if total_load_w is not None and solar_w is not None and live_battery_data_ok \
+                    and not grid_flow.shared_solar(cfg):
+                _fl_live = grid_flow.flows(total_load_w, solar_w, live_charge_w, live_discharge_w, net_grid_now)
+                _publish_sensor_throttled(
+                    "sensor.battery_orchestrator_grid_imported_power", round(_fl_live["grid_total_w"]),
+                    {
+                        "device_class": "power", "state_class": "measurement",
+                        "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Potencia importada de red",
+                    },
+                )
+            vertido_live = _live_export_w(cfg, known_net_grid_w=net_grid_now)
+            _publish_sensor_throttled(
+                "sensor.battery_orchestrator_grid_exported_power",
+                round(vertido_live) if vertido_live is not None else None,
+                {
+                    "device_class": "power", "state_class": "measurement",
+                    "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Potencia vertida a red",
+                },
+            )
             if total_load_w is not None:
                 _publish_sensor_throttled(
                     "sensor.battery_orchestrator_load", round(total_load_w),
@@ -2040,8 +2066,7 @@ def _live_sensor_loop():
                         "device_class": "power", "state_class": "measurement",
                         "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Consumo total de la casa",
                     },
-                    min_interval=LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS - 1,
-                )
+                                    )
         except Exception:
             log.exception("Fallo publicando los sensores en vivo")
         time.sleep(LIVE_SENSOR_PUBLISH_INTERVAL_SECONDS)
