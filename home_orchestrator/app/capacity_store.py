@@ -51,6 +51,12 @@ MAX_PLAUSIBLE_CAPACITY_RATIO = 4.0
 
 _lock = threading.RLock()
 
+# Version de la forma de medir. 2 (2-nov): una STREAM sola en su grupo se mide
+# con `battery_power` (ver main._live_battery_totals); las observaciones de antes
+# venian de la red (sin el sol por DC, y del grupo cuando iban enlazadas: Ultra X
+# al 150-180 %, EF-60999 de 290 a 7000 Wh) y se descartan una vez.
+MEASURE_VERSION = 2
+
 
 def _load() -> dict:
     data = json_store.load(CAPACITY_PATH)
@@ -81,6 +87,7 @@ def _default_entry(name: str) -> dict:
         # mediana de cada direccion por separado y se combinan las dos.
         "observations_charge": [],
         "observations_discharge": [],
+        "measure_version": MEASURE_VERSION,
     }
 
 
@@ -165,6 +172,10 @@ def update(battery_id: str, battery_name: str, soc_pct: float | None,
             entry = _default_entry(battery_name)
         _migrate_legacy_observations(entry)
         entry["name"] = battery_name
+        if entry.get("measure_version") != MEASURE_VERSION:
+            entry["observations_charge"], entry["observations_discharge"] = [], []
+            entry["segment_action"], entry["segment_start_soc"], entry["segment_energy_wh"] = None, None, 0.0
+            entry["measure_version"] = MEASURE_VERSION
 
         if action != entry["segment_action"]:
             _close_segment(entry, soc_pct, declared_capacity_wh, battery_name)
