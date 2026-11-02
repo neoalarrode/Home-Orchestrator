@@ -449,8 +449,14 @@ def build_plan(
                 soc -= discharge
                 hp.discharge_w = discharge
                 hp.reason = "descarga para cubrir consumo en llano"
-            else:
+            elif soc - min_soc_wh < MIN_DISCHARGE_W:
+                # Antes decia "reservado para punta posterior" tambien aqui, sin
+                # punta por delante antes del proximo valle (2-nov, 23:00).
+                hp.reason = "sin descargar en llano: bateria en su minimo"
+            elif reserved_for_future_punta > 0:
                 hp.reason = "sin descargar en llano: reservado para punta posterior"
+            else:
+                hp.reason = "sin descargar en llano: reservado como colchon de seguridad"
 
         # 5) Descarga en VALLE con lo que sobre por encima de la reserva:
         #    si ya hay mas SOC del que hace falta para cubrir toda la punta
