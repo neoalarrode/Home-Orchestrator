@@ -1654,14 +1654,27 @@ class ZoneRunner:
         breakdown: dict[str, dict] = {}
         total = 0.0
         any_known = False
+        unknown_active = False
         for entity_id in self._climate_actuators():
             if not self._actuator_active(entity_id):
                 continue
             watts, source = self._actuator_power_w(entity_id)
             if watts is None:
+                unknown_active = True
                 continue
             breakdown[entity_id] = {"watts": watts, "source": source}
             total += watts
+            any_known = True
+        # Aparatos sin potencia propia (los aires del puente Tuya no tienen
+        # historico en HA): la potencia de la ZONA aprendida de sus arranques.
+        # Solo con la zona calentando/enfriando de verdad: un aire de puente en
+        # reposo se queda aparcado en su modo y cuenta como "activo" arriba.
+        # 2-nov: el Dormitorio tenia 529 W aprendidos y publicaba None, y Energy
+        # no podia descontar su consumo.
+        zone_learned = self._zone_power.get("learned_power_w") if self._zone_power.get("reliable") else None
+        if unknown_active and zone_learned and getattr(self, "hvac_action", None) in ("heating", "cooling"):
+            breakdown["zone"] = {"watts": float(zone_learned), "source": "learned_zone"}
+            total += float(zone_learned)
             any_known = True
         return (total if any_known else None), breakdown
 
