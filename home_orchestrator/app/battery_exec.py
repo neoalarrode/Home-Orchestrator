@@ -748,7 +748,10 @@ def execute(batteries: list[Battery], distribution: dict, dry_run: bool = True,
             if is_ecoflow:
                 def apply(b=b, power=power):
                     ok_off = b.ecoflow_set_discharging_task(enable=False)
-                    ok_on = b.ecoflow_set_charging_task(enable=True, power_limit_w=power)
+                    # El SOC objetivo del equipo se lleva al maximo configurado:
+                    # con el 95 % puesto en la app (Ultra X y Despacho, 2-nov) se
+                    # paraban antes y el plan contaba con llegar al 100 %.
+                    ok_on = b.ecoflow_set_charging_task(enable=True, power_limit_w=power, target_soc=b.max_soc_pct)
                     if not (ok_off and ok_on):
                         raise RuntimeError("EcoFlow no confirmo el comando de carga")
             else:

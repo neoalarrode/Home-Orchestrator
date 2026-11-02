@@ -40,7 +40,7 @@ class SemiHoldExecute(unittest.TestCase):
     def test_charge_still_works(self):
         b = _bat("mp")
         be.execute([b], _dist("charge", True, 160), dry_run=False, semi_hold_ids={"mp"})
-        b.ecoflow_set_charging_task.assert_called_once_with(enable=True, power_limit_w=160)
+        b.ecoflow_set_charging_task.assert_called_once_with(enable=True, power_limit_w=160, target_soc=100)
 
     def test_not_held_discharges_as_before(self):
         b = _bat("mp")
