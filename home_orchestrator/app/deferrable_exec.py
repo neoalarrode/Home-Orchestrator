@@ -22,6 +22,8 @@ Ademas:
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
 
 import deferrable_store
@@ -37,6 +39,30 @@ INTERRUPT_CONFIRM_SECONDS = 120
 # estaba).
 SWITCH_REASSERT_SECONDS = 60
 _last_turn_on: dict[str, datetime] = {}
+
+# BUG REAL (2-nov): el lavavajillas apuntaba a `switch.lavavajillas` y
+# `sensor.lavavajillas_consumo_actual`, que ya no existen en HA (ahora `_2` y
+# `_potencia`). La carga decia "ENCENDIDA"/"apagada" sin mover nada y sin un
+# solo aviso. Se comprueba que existan y se avisa (como mucho cada 6 h).
+log = logging.getLogger("deferrable_exec")
+MISSING_ENTITY_WARN_SECONDS = 6 * 3600
+_missing_warned_at: dict[str, float] = {}
+
+
+def _missing_entities(load: dict) -> list[str]:
+    missing = []
+    for key in ("switch_entity", "power_sensor"):
+        entity_id = load.get(key)
+        if not entity_id:
+            continue
+        try:
+            ha_client.get_state(entity_id)
+        except ha_client.HAError as e:
+            if "no encontrada" in str(e):
+                missing.append(entity_id)
+        except Exception:
+            pass  # HA sin responder ahora: no es lo mismo que no existir
+    return missing
 
 # BUG REAL DE SEGURIDAD, confirmado por fuzzing adversarial: hasta ahora,
 # cuando la ventana ESTIMADA de una carga terminaba, `execute()` apagaba el
@@ -113,6 +139,16 @@ def execute(loads: list[dict], schedules: dict[str, dict], now: datetime,
             continue
         load_id, name, switch = load["id"], load["name"], load["switch_entity"]
         power_sensor = load.get("power_sensor")
+        missing = _missing_entities(load)
+        if missing:
+            line = (f"{prefix}[{name}] AVISO: {', '.join(missing)} no existe en Home Assistant -- "
+                    "esta carga no se puede controlar; revisa su configuracion")
+            log_lines.append(line)
+            last = _missing_warned_at.get(load_id)
+            if last is None or time.time() - last >= MISSING_ENTITY_WARN_SECONDS:
+                _missing_warned_at[load_id] = time.time()
+                log.warning(line)
+            continue
         # BUG REAL, confirmado por fuzzing adversarial: `int(...)` directo
         # tira `ValueError` sin capturar con un `duration_hours` no
         # numerico -- a diferencia de `deferrable_scheduler.plan_for_load`
