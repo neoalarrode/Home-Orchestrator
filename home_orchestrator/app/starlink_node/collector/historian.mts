@@ -731,8 +731,11 @@ async function pollObstruction(): Promise<void> {
       maxThetaDeg: map.maxThetaDeg,
     });
     console.log(`[historian] obstruction snapshot recorded (${snapshots.length} kept)`);
+    dishReachability.up();
   } catch (error) {
-    console.warn(`[historian] obstruction snapshot failed: ${(error as Error).message}`);
+    // Same once-on-the-edge logging as the history poll: with the dish off
+    // (2-nov) this retried every 5 min and logged each failure.
+    dishReachability.down(error);
   }
 }
 
