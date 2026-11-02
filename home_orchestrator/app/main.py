@@ -1266,6 +1266,8 @@ def run_cycle():
             config_store.update_deferrable_load(cfg, load_id, {"done": True})
 
     now_hp = plan[0]
+    global _charge_source_now
+    _charge_source_now = now_hp.charge_source if now_hp.charge_w > 0 else None
 
     # Precision de la previsión: la primera vez que se ve esta hora se
     # guarda que SOC agregado predice el plan para el final de la misma;
@@ -1312,8 +1314,17 @@ def run_cycle():
                 e = {**e, "enabled": False, "power_w": 0, "note": "en reposo durante la prueba de seguimiento"}
             rest.append(e)
         distribution = {**distribution, "per_battery": rest}
+    # Las que estan cargando con excedente las lleva el seguimiento (su limite
+    # de carga sigue al contador): el plan no les manda nada mientras tanto.
+    solar_charging = _load_follower.solar_charging_ids() if "_load_follower" in globals() else set()
+    if solar_charging:
+        distribution = {**distribution, "per_battery": [e for e in distribution["per_battery"]
+                                                        if e["id"] not in solar_charging]}
     log_lines = battery_exec.execute(batteries, distribution, dry_run=dry_run,
                                      semi_hold_ids=_semi_hold_ids(cfg))
+    for b in batteries:
+        if b.id in solar_charging:
+            log_lines.append(f"[{b.name}] cargando con excedente solar (la lleva el seguimiento, no el plan)")
     for b in batteries:
         if b.id in following:
             log_lines.append(f"[{b.name}] en prueba de seguimiento de carga (la controla el seguimiento, no el plan)")
@@ -3569,15 +3580,17 @@ def _load_follow_context() -> dict:
             continue
         key = b.get("ecoflow_main_sn") or b["id"]
         g = groups.setdefault(key, {"units": [], "soc_wh": 0.0, "cap_wh": 0.0, "available_wh": 0.0,
-                                    "main": None, "out_max": None})
+                                    "main": None, "out_max": None, "headroom_wh": 0.0, "in_max": None})
         capacity = float(b.get("capacity_wh") or 0)
         g["units"].append(b)
+        g["headroom_wh"] += max(0.0, (float(b.get("max_soc_pct", 100)) - float(soc)) / 100 * capacity)
         g["available_wh"] += max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity)
         g["soc_wh"] += float(soc) / 100 * capacity
         g["cap_wh"] += capacity
         if b.get("ecoflow_sn") and b.get("ecoflow_sn") == key:
             g["main"] = b
             g["out_max"] = state.get("max_ac_out_power")
+            g["in_max"] = state.get("max_ac_in_power")
     followers = []
     own_charging_w = 0.0     # lo que cargan ahora los propios seguidores (del grupo)
     for key, g in groups.items():
@@ -3586,7 +3599,13 @@ def _load_follow_context() -> dict:
         cap = float(g["out_max"]) if g["out_max"] else max(declared)
         own_state = ecoflow_ble.get_state(main["ecoflow_ble_address"], user_id) or {}
         own_charging_w += max(0.0, float(own_state.get("battery_power") or 0))
+        charge_declared = sum(float(u.get("max_charge_w", 1200)) for u in g["units"])
+        max_charge = min(float(g["in_max"]), charge_declared) if g["in_max"] else charge_declared
+        grid_w = own_state.get("grid_power")
         followers.append({"id": main["id"], "max_w": min(cap, sum(declared)), "available_wh": g["available_wh"],
+                          "headroom_wh": g["headroom_wh"], "max_charge_w": max_charge,
+                          "grid_w": float(grid_w) if grid_w is not None else None,
+                          "outlets_w": _ecoflow_outlet_w(own_state, _ECOFLOW_OUTLET_FIELDS_BLE) or 0.0,
                           "soc": 100 * g["soc_wh"] / g["cap_wh"] if g["cap_wh"] else 0,
                           "units": [u["id"] for u in g["units"]]})
     testing = _load_follow_test_ids(cfg)
@@ -3647,10 +3666,16 @@ def _load_follow_context() -> dict:
         "deadband_w": general.get("load_follow_deadband_w"),
         "contracted_w": general.get("contracted_power_w"),
         "discharge_allowed": bool(testing) or action == "discharge",
+        "solar_charge": general.get("load_follow_solar_charge", True) is not False,
+        "grid_charge_now": _charge_source_now == "grid",
         "followers": followers,
         "batteries_cfg": cfg.get("batteries") or [],
     }
 
+
+# Origen de la carga planificada esta hora ("grid"/"solar"/None): con carga de
+# red planificada el seguimiento no toca el limite de carga (lo fija el plan).
+_charge_source_now: str | None = None
 
 _load_follow_prepared: set[str] = set()
 # Cuando se preparo cada equipo: la comprobacion periodica (cache BLE, hasta 10 s
@@ -3741,6 +3766,42 @@ def _load_follow_verify(b: dict, watts: float, check_base: bool = True) -> bool:
     return False
 
 
+def _load_follow_charge(b: dict, watts: float) -> bool:
+    """Limite de carga de una bateria que absorbe excedente (placas en alterna).
+    Al empezar: carga base a 0, descarga desactivada y carga activada hasta su
+    SOC maximo; despues solo se ajusta el limite. 0 = dejar de cargar."""
+    cfg = config_store.load_config()
+    address, user_id = b["ecoflow_ble_address"], cfg.get("ecoflow_user_id")
+    try:
+        if watts <= 0:
+            _load_follow_charging.discard(b["id"])
+            ok = ecoflow_ble.set_charging_task(address, user_id, enable=False)
+            # Vuelve al plan: que le reenvie su orden aunque sea "la misma de antes".
+            group = b.get("ecoflow_main_sn") or b["id"]
+            for u in cfg.get("batteries") or []:
+                if (u.get("ecoflow_main_sn") or u["id"]) == group:
+                    battery_exec._last_command.pop(u["id"], None)
+            return ok
+        if b["id"] not in _load_follow_charging:
+            ecoflow_ble.set_base_load(address, user_id, 0)
+            if not ecoflow_ble.set_discharging_task(address, user_id, enable=False):
+                return False
+            _load_follow_prepared.discard(b["id"])   # para descargar luego hay que volver a prepararla
+            if not ecoflow_ble.set_charging_task(address, user_id, enable=True, power_limit_w=watts,
+                                                 target_soc=float(b.get("max_soc_pct", 100))):
+                return False
+            _load_follow_charging.add(b["id"])
+            log.info(f"[{b.get('name')}] seguimiento: carga con excedente solar activada ({watts:.0f} W)")
+            return True
+        return ecoflow_ble.set_charging_task(address, user_id, power_limit_w=watts)
+    except Exception:
+        log.exception(f"[{b.get('name')}] fallo ajustando la carga con excedente a {watts:.0f} W")
+        return False
+
+
+_load_follow_charging: set[str] = set()
+
+
 def _load_follow_release(b: dict) -> bool:
     """Fin del seguimiento de esta bateria: carga base 0 y descarga desactivada;
     el siguiente ciclo del plan vuelve a mandarla."""
@@ -3763,8 +3824,14 @@ def _load_follow_release(b: dict) -> bool:
         return False
 
 
+# Respuesta aprendida de cada bateria (retraso y ritmo): se guarda para no
+# empezar de cero en cada reinicio.
+FOLLOW_RESPONSE_PATH = os.environ.get("FOLLOW_RESPONSE_PATH", "/data/follow_response.json")
+_follow_learner = load_follower.ResponseLearner(
+    store=(lambda: json_store.load(FOLLOW_RESPONSE_PATH), lambda d: json_store.save(FOLLOW_RESPONSE_PATH, d)))
 _load_follower = load_follower.LoadFollower(_load_follow_context, _load_follow_send, _load_follow_release,
-                                            _load_follow_ensure, _load_follow_verify)
+                                            _load_follow_ensure, _load_follow_verify, _load_follow_charge,
+                                            learner=_follow_learner)
 
 
 def start_background_threads() -> None:

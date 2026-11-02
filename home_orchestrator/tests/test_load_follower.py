@@ -271,7 +271,7 @@ class Follower(unittest.TestCase):
             lf.read_shelly_w = orig
         self.assertEqual(sent, [])
         # subida limitada: no salta de golpe a los 950 W
-        self.assertLessEqual(max(f.status["targets"].values()), lf.MAX_STEP_UP_W)
+        self.assertLessEqual(max(f.status["targets"].values()), f._step_up_w("ultra", "base"))
         # ...pero llega en unas pocas lecturas (misma casa: 1000 W)
         for i in range(6):
             lf.read_shelly_w = lambda *a, **k: 1000.0 - sum(f._current.values()) + 0.1 * (i + 1)
