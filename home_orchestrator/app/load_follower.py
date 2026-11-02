@@ -415,7 +415,11 @@ class LoadFollower:
 
     def _apply(self, targets: dict[str, float], ctx: dict, why: str) -> None:
         mode = ctx.get("mode") or "off"
-        deadband = float(ctx.get("deadband_w") or DEFAULT_DEADBAND_W)  # 0 = una orden BLE por lectura: no
+        # 0 = seguir cada lectura (decision del usuario, 2-nov: hay un adaptador
+        # BLE por cada dos baterias y el hilo de cada equipo agrupa las ordenes
+        # que lleguen antes de poder mandarlas). Por debajo de 1 W no se reenvia
+        # la misma orden.
+        deadband = max(1.0, _num_or(ctx.get("deadband_w"), DEFAULT_DEADBAND_W))
         by_id = {b["id"]: b for b in ctx.get("batteries_cfg") or []}
         # Un equipo que aun no hemos mandado nunca recibe su objetivo aunque sea
         # 0: puede traer una carga base de antes (el grupo de tres tenia 510 W)

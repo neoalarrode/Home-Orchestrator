@@ -16,5 +16,28 @@ class ZeroMargin(unittest.TestCase):
             self.assertEqual(lf._num_or(v, lf.DEFAULT_MARGIN_W), float(lf.DEFAULT_MARGIN_W))
 
 
+
+class ZeroDeadband(unittest.TestCase):
+    def _sent(self, deadband):
+        sent = []
+        cfg = [{"id": "u"}]
+        ctx = {"mode": "on", "followers": [{"id": "u", "max_w": 1200, "available_wh": 2000, "soc": 50}],
+               "batteries_cfg": cfg, "discharge_allowed": True, "margin_w": 0}
+        if deadband is not None:
+            ctx["deadband_w"] = deadband
+        f = lf.LoadFollower(lambda: ctx, lambda b, w: sent.append(w) or True)
+        f.asynchronous = False
+        f._apply({"u": 400.0}, ctx, "t")
+        f._apply({"u": 406.0}, ctx, "t")      # 6 W de diferencia
+        f._apply({"u": 406.4}, ctx, "t")      # misma orden
+        return sent
+
+    def test_zero_follows_every_small_change(self):
+        self.assertEqual(self._sent(0), [400.0, 406.0])
+
+    def test_default_still_ignores_small_changes(self):
+        self.assertEqual(self._sent(None), [400.0])
+
+
 if __name__ == "__main__":
     unittest.main()
