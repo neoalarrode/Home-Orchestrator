@@ -43,6 +43,9 @@ REQUEST_TIMEOUT_SECONDS = 10
 MIN_SECONDS_BETWEEN_CONTROL = 3.0
 
 _last_control_at: dict[str, float] = {}
+# Dispositivos cuya lectura esta fallando ahora mismo: se avisa una vez al
+# empezar y otra al recuperarse, no en cada intento con la traza entera.
+_read_failing: set[str] = set()
 _last_control_lock = threading.Lock()
 
 
@@ -59,8 +62,8 @@ def list_devices(api_key: str) -> list[dict] | None:
         r = requests.get(f"{BASE_URL}/devices", headers=_headers(api_key), timeout=REQUEST_TIMEOUT_SECONDS)
         r.raise_for_status()
         data = r.json()
-    except requests.RequestException:
-        log.exception("Govee Cloud: fallo listando dispositivos")
+    except requests.RequestException as e:
+        log.warning("Govee Cloud: fallo listando dispositivos: %s", e)
         return None
     devices = (data.get("data") or {}).get("devices")
     return devices if isinstance(devices, list) else None
@@ -79,9 +82,14 @@ def get_state(api_key: str, device_mac: str, sku: str) -> dict | None:
         )
         r.raise_for_status()
         data = r.json()
-    except requests.RequestException:
-        log.exception("Govee Cloud: fallo leyendo estado de %s", device_mac)
+    except requests.RequestException as e:
+        if device_mac not in _read_failing:
+            _read_failing.add(device_mac)
+            log.warning("Govee Cloud: fallo leyendo estado de %s: %s (se avisara al recuperarse)", device_mac, e)
         return None
+    if device_mac in _read_failing:
+        _read_failing.discard(device_mac)
+        log.info("Govee Cloud: %s vuelve a responder", device_mac)
     properties = (data.get("data") or {}).get("properties")
     if not isinstance(properties, list):
         return None
@@ -134,8 +142,8 @@ def control(api_key: str, device_mac: str, sku: str, cmd_name: str, cmd_value) -
         r = requests.put(f"{BASE_URL}/devices/control", headers=_headers(api_key), json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
         r.raise_for_status()
         data = r.json()
-    except requests.RequestException:
-        log.exception("Govee Cloud: fallo mandando '%s' a %s", cmd_name, device_mac)
+    except requests.RequestException as e:
+        log.warning("Govee Cloud: fallo mandando '%s' a %s: %s", cmd_name, device_mac, e)
         return False
     finally:
         _note_control(device_mac, cmd_name)

@@ -65,6 +65,8 @@ SCAN_WINDOW_SECONDS = 4
 # optimista, asi que lo unico que tarda mas en verse es un cambio hecho desde
 # la app de Govee.
 CLOUD_STATE_CACHE_SECONDS = 120
+# Espera tras una lectura cloud fallida antes de reintentar ese dispositivo.
+CLOUD_FAILURE_BACKOFF_SECONDS = 60
 # Cambios por debajo de esto no se mandan por la nube (cada propiedad es una
 # peticion): Lighting da por aplicado lo que este a menos de 4 % / 150 K (ver
 # lighting/zone_runner.py), y su deriva circadiana pedia 1 % y 15 K cada minuto.
@@ -112,6 +114,7 @@ class GoveeDeviceManager:
         self._cloud_identity: dict[str, tuple[str, str]] = {}  # device_id -> (mac, sku)
         self._cloud_api_key: str | None = None
         self._cloud_state_cache: dict[str, dict] = {}  # mac -> {"status", "fetched_at"}
+        self._cloud_failed_at: dict[str, float] = {}  # mac -> ultima lectura cloud fallida
         # Rango REAL de temperatura de color por dispositivo (Kelvin),
         # detectado automaticamente contra la API Cloud de Govee -- ver
         # `detect_color_temp_ranges`. Sin esto, un valor generico
@@ -182,9 +185,17 @@ class GoveeDeviceManager:
         cached = self._cloud_state_cache.get(mac)
         if not fresh and cached is not None and (time.time() - cached["fetched_at"]) < CLOUD_STATE_CACHE_SECONDS:
             return cached["status"]
+        # Tras un fallo se espera antes de volver a preguntar (tambien con
+        # `fresh`): sin esto cada pasada del sondeo repetia la peticion -- 2-nov,
+        # caida de DNS de 70 min: ~15 lecturas/min y 14.000 lineas de traza.
+        failed_at = self._cloud_failed_at.get(mac)
+        if failed_at is not None and time.time() - failed_at < CLOUD_FAILURE_BACKOFF_SECONDS:
+            return cached["status"] if cached is not None else None
         raw = govee_cloud.get_state(self._cloud_api_key, mac, sku)
         if raw is None:
+            self._cloud_failed_at[mac] = time.time()
             return cached["status"] if cached is not None else None
+        self._cloud_failed_at.pop(mac, None)
         status = {}
         if "powerState" in raw:
             status["onOff"] = 1 if raw["powerState"] == "on" else 0
