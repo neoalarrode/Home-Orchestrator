@@ -43,6 +43,9 @@ REQUEST_TIMEOUT_SECONDS = 10
 MIN_SECONDS_BETWEEN_CONTROL = 3.0
 
 _last_control_at: dict[str, float] = {}
+# Ultimo valor mandado CON EXITO por (dispositivo, comando): repetir ese mismo
+# valor dentro de la ventana no es un fallo, ya esta mandado.
+_last_control_ok: dict[tuple[str, str], object] = {}
 # Dispositivos cuya lectura esta fallando ahora mismo: se avisa una vez al
 # empezar y otra al recuperarse, no en cada intento con la traza entera.
 _read_failing: set[str] = set()
@@ -103,6 +106,9 @@ def get_state(api_key: str, device_mac: str, sku: str) -> dict | None:
     return merged
 
 
+_MISSING = object()
+
+
 def _control_allowed(device_mac: str, cmd_name: str) -> bool:
     with _last_control_lock:
         last = _last_control_at.get((device_mac, cmd_name))
@@ -132,6 +138,14 @@ def control(api_key: str, device_mac: str, sku: str, cmd_name: str, cmd_value) -
     repetir la MISMA propiedad demasiado seguido, sin impedir mandar
     varias propiedades distintas en la misma operacion."""
     if not _control_allowed(device_mac, cmd_name):
+        # 2-nov (Escalera): dos ciclos reactivos seguidos piden el mismo
+        # encendido; el segundo se descartaba como FALLO -> Lighting volcaba
+        # la traza y reintentaba, reenviando el mismo `turn` 3 s despues.
+        with _last_control_lock:
+            already_sent = _last_control_ok.get((device_mac, cmd_name), _MISSING) == cmd_value
+        if already_sent:
+            log.debug("Govee Cloud: '%s'=%s a %s ya mandado hace un momento", cmd_name, cmd_value, device_mac)
+            return True
         log.warning(
             "Govee Cloud: comando '%s' a %s omitido -- se mando el mismo comando hace menos de %ss",
             cmd_name, device_mac, MIN_SECONDS_BETWEEN_CONTROL,
@@ -144,10 +158,17 @@ def control(api_key: str, device_mac: str, sku: str, cmd_name: str, cmd_value) -
         data = r.json()
     except requests.RequestException as e:
         log.warning("Govee Cloud: fallo mandando '%s' a %s: %s", cmd_name, device_mac, e)
+        with _last_control_lock:
+            _last_control_ok.pop((device_mac, cmd_name), None)
         return False
     finally:
         _note_control(device_mac, cmd_name)
     ok = data.get("code") == 200
+    with _last_control_lock:
+        if ok:
+            _last_control_ok[(device_mac, cmd_name)] = cmd_value
+        else:
+            _last_control_ok.pop((device_mac, cmd_name), None)
     if ok:
         log.info("Govee Cloud: '%s'=%s mandado a %s", cmd_name, cmd_value, device_mac)
     else:
