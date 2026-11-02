@@ -369,6 +369,9 @@ class ZoneRunner:
             real = self._current_position(states, entity_id)
             if cmd is None or real is None:
                 continue
+            # A medio recorrido la posicion aun es la de antes: no es un cambio a mano.
+            if ((states.get(entity_id) or {}).get("state")) in ("opening", "closing"):
+                continue
             if abs(real - cmd) > POSITION_TOLERANCE_PCT:
                 overrides[entity_id] = True
 
@@ -419,7 +422,10 @@ class ZoneRunner:
         for entity_id in covers:
             current = self._current_position(states, entity_id)
             if current is not None and abs(current - desired) <= POSITION_TOLERANCE_PCT:
-                continue  # ya esta donde tiene que estar
+                # Ya esta donde tiene que estar: se anota como objetivo para no
+                # compararla luego con la orden de la transicion anterior.
+                self._state.setdefault("commanded", {})[entity_id] = desired
+                continue
             self._apply_position(states, entity_id, desired)
             overrides.pop(entity_id, None)
 

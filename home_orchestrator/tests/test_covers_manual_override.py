@@ -44,5 +44,20 @@ class ManualOverride(unittest.TestCase):
         self.assertEqual(ws.calls, [("set_cover_position", 100, "cover.c")])
 
 
+    def test_moving_or_already_in_place_is_not_manual(self):
+        # 2-nov 18:13: la del Despacho se marcaba al leerla "closing" a 100 %, y la
+        # puerta del patio (ya cerrada) se comparaba con la apertura de la manana.
+        ws = _WS()
+        z = zr.ZoneRunner("z", {"cover_entities": ["cover.c", "cover.d"], "night_close_enabled": True, "day_open_enabled": True}, ws,
+                          state={"commanded": {"cover.c": 100, "cover.d": 100}, "last_desired": 100})
+        st = _states(False, 100)
+        st["cover.d"] = {"state": "closed", "attributes": {"current_position": 0, "supported_features": 15}}
+        z.decide_and_act(st)
+        self.assertEqual(ws.calls, [("set_cover_position", 0, "cover.c")])
+        st["cover.c"] = {"state": "closing", "attributes": {"current_position": 100, "supported_features": 15}}
+        z.decide_and_act(st)
+        self.assertEqual(z._state["manual_override"], {})
+
+
 if __name__ == "__main__":
     unittest.main()
