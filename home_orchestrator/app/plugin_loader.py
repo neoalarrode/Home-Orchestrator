@@ -240,7 +240,7 @@ PLUGIN_CATALOG = {
     },
     "lighting": {
         "name": "Lighting Orchestrator",
-        "description": "Iluminación adaptativa por zona — color y brillo por hora, encendido/apagado por presencia y reglas condicionales (p.ej. TV encendida -> luces laterales en vez del techo)",
+        "description": "Iluminación adaptativa por zona — color y brillo según la posición real del sol, encendido/apagado por presencia y reglas condicionales (p.ej. TV encendida -> luces laterales en vez del techo)",
         "version": "0.7.16",
         "downloadable": True,
         "tag": "v0.77.35",
@@ -267,7 +267,7 @@ PLUGIN_CATALOG = {
     },
     "govee": {
         "name": "Govee Orchestrator",
-        "description": "Puente de ingesta para bombillas Govee — LAN API local del propio dispositivo (sin cuenta ni nube) — consumo interno por Lighting y/o exposición opcional a HA por MQTT",
+        "description": "Puente de ingesta para bombillas Govee — LAN local como vía principal (se adopta sola) y la API Cloud oficial de respaldo — consumo interno por Lighting y/o exposición opcional a HA por MQTT",
         "version": "0.1.2",
         "downloadable": True,
         "tag": "v0.77.28",
@@ -296,7 +296,7 @@ PLUGIN_CATALOG = {
     # redescubrirlo.
     "covers": {
         "name": "Covers Orchestrator",
-        "description": "Persianas/toldos por zona — protección solar por orientación de ventana, cierre nocturno y apertura diurna, sobre cover.* ya expuestas en HA",
+        "description": "Persianas/toldos por zona — protección solar (orientación y % de cierre aprendidos), cierre nocturno y apertura diurna por luz real o por el sol, sobre cover.* ya expuestas en HA",
         "version": "0.1.0",
         "downloadable": True,
         "tag": "v0.77.51",

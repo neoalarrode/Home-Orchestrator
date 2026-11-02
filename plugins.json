@@ -85,7 +85,7 @@
     {
       "slug": "lighting",
       "name": "Lighting Orchestrator",
-      "description": "Iluminacion adaptativa por zona -- color y brillo por hora, encendido/apagado por presencia y reglas condicionales",
+      "description": "Iluminacion adaptativa por zona -- color y brillo segun la posicion real del sol, encendido/apagado por presencia y reglas condicionales",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
       "version": "0.7.32",
