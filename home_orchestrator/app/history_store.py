@@ -139,6 +139,7 @@ def get_recent_days_consumption(now: datetime, days: int = 7) -> dict | None:
     current_hour = now.hour
 
     by_date: dict[str, float] = {}
+    hours_by_date: dict[str, int] = {}
     for k, v in data.items():
         date_part, hour_part = k.split("T")
         if int(hour_part) >= current_hour:
@@ -147,9 +148,14 @@ def get_recent_days_consumption(now: datetime, days: int = 7) -> dict | None:
         if load_w is None:
             continue
         by_date[date_part] = by_date.get(date_part, 0.0) + load_w / 1000.0  # Wh -> kWh (1 entrada = 1 hora)
+        hours_by_date[date_part] = hours_by_date.get(date_part, 0) + 1
 
     today_kwh = by_date.pop(today_prefix, 0.0)
-    past_dates = sorted(by_date.keys())[-days:]
+    # Solo dias con el tramo completo (una hora de tolerancia por el cambio de
+    # hora): un dia con medio historico (addon parado, primer dia) bajaba la
+    # media y el panel daba "consumo muy por encima de lo normal" sin serlo.
+    complete = [d for d in by_date if hours_by_date.get(d, 0) >= current_hour - 1]
+    past_dates = sorted(complete)[-days:]
     if not past_dates:
         return None
 
