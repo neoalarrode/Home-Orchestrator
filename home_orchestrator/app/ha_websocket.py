@@ -182,13 +182,15 @@ class HAWebSocketClient:
         se queda esperando para siempre)."""
         if not self.connected or self._ws is None:
             raise RuntimeError("WebSocket de HA no conectado todavia")
-        msg_id = self._next_msg_id()
         q: queue.Queue = queue.Queue(maxsize=1)
-        self._pending[msg_id] = q
-        payload = {"id": msg_id, "type": msg_type, **kwargs}
+        msg_id = None
+
+        def register(mid: int) -> None:
+            nonlocal msg_id
+            msg_id = mid
+            self._pending[mid] = q
         try:
-            with self._send_lock:
-                self._ws.send(json.dumps(payload))
+            self._send_new({"type": msg_type, **kwargs}, before_send=register)
             try:
                 result = q.get(timeout=timeout)
             except queue.Empty:
@@ -197,7 +199,8 @@ class HAWebSocketClient:
                 raise RuntimeError(f"WebSocket de HA devolvio error para '{msg_type}': {result.get('error')}")
             return result.get("result")
         finally:
-            self._pending.pop(msg_id, None)
+            if msg_id is not None:
+                self._pending.pop(msg_id, None)
 
     # ---------------------------------------------------- atajos comunes --
 
@@ -410,15 +413,13 @@ class HAWebSocketClient:
             anterior_id = self._sub_id
             if anterior_id is not None:
                 try:
-                    unsub_id = self._next_msg_id()
-                    self._send({"id": unsub_id, "type": "unsubscribe_events", "subscription": anterior_id})
+                    unsub_id = self._send_new({"type": "unsubscribe_events", "subscription": anterior_id})
                     self._await_result(unsub_id)  # descartar el ack -- ver bug real arriba
                 except Exception:
                     log.debug("No se ha podido cancelar la suscripcion anterior", exc_info=True)
 
-        sub_id = self._next_msg_id()
         if objetivo:
-            self._send({"id": sub_id, "type": "subscribe_entities", "entity_ids": sorted(objetivo)})
+            sub_id = self._send_new({"type": "subscribe_entities", "entity_ids": sorted(objetivo)})
             ack = self._await_result(sub_id)
             if ack.get("success"):
                 self._sub_id, self._subscribed, self._compressed = sub_id, set(objetivo), True
@@ -432,9 +433,8 @@ class HAWebSocketClient:
                 "WebSocket de HA: `subscribe_entities` rechazado (%s) -- se usa la suscripcion "
                 "completa, mas cara", ack.get("error"),
             )
-            sub_id = self._next_msg_id()
 
-        self._send({"id": sub_id, "type": "subscribe_events", "event_type": "state_changed"})
+        sub_id = self._send_new({"type": "subscribe_events", "event_type": "state_changed"})
         ack = self._await_result(sub_id)
         if not ack.get("success"):
             raise RuntimeError(f"No se pudo suscribir a state_changed: {ack}")
@@ -494,6 +494,20 @@ class HAWebSocketClient:
     def _send(self, payload: dict) -> None:
         with self._send_lock:
             self._ws.send(json.dumps(payload))
+
+    def _send_new(self, payload: dict, before_send=None) -> int:
+        """Envia `payload` con un id NUEVO, asignado dentro del mismo cerrojo que
+        el envio. HA exige ids crecientes por conexion; asignar el id y enviar en
+        dos pasos dejaba que otro hilo enviara uno mayor entremedias, y HA
+        rechazaba el menor (3-nov 09:14, Lighting: `id_reuse`, "Identifier values
+        have to increase", una orden de luz perdida). `before_send(id)` se llama
+        antes de enviar (p.ej. registrar a quien espera la respuesta)."""
+        with self._send_lock:
+            msg_id = self._next_msg_id()
+            if before_send is not None:
+                before_send(msg_id)
+            self._ws.send(json.dumps({**payload, "id": msg_id}))
+        return msg_id
 
     def _await_result(self, msg_id: int) -> dict:
         """Lee hasta la respuesta a `msg_id`, procesando lo que llegue entre
@@ -590,8 +604,7 @@ class HAWebSocketClient:
             # Con `subscribe_entities` HA manda ANTES un evento inicial con las
             # entidades suscritas, que se tomaba por la respuesta: la siembra
             # fallaba y el cache se quedaba vacio.
-            states_id = self._next_msg_id()
-            self._send({"id": states_id, "type": "get_states"})
+            states_id = self._send_new({"type": "get_states"})
             states_resp = self._await_result(states_id)
             if states_resp.get("success"):
                 with self._states_lock:

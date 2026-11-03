@@ -1,5 +1,10 @@
 # Changelog
 
+## core 0.77.66
+
+- WebSocket de HA — el número de cada mensaje se asigna en el mismo paso que el envío. Antes, si dos plugins mandaban a la vez, podía llegar antes el de número mayor y HA rechazaba el otro (`id_reuse`, "Identifier values have to increase"): el 3-nov se perdió así una orden de luz de Lighting.
+- Descripciones de Lighting (sigue la posición real del sol), Govee (LAN principal que se adopta sola, nube de respaldo) y Covers al día.
+
 ## core 0.77.65
 
 - Plugins — al instalar una versión se borran las antiguas de ese plugin; se guardan las 3 más recientes (para volver atrás sin descargar), la nueva y la que está usando el proceso en marcha. No se borraba ninguna: 76 versiones de Energy y 292 MB en `/data/plugins`, que entraban en cada copia de seguridad de HA. La limpieza ocurre la siguiente vez que se actualiza cada plugin.
