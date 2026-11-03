@@ -142,6 +142,8 @@ ANOMALY_NOTIFICATION_ID = "battery_orchestrator_anomaly"
 # instalacion con muchas entidades esto es carga real y evitable. Se
 # publica como mucho cada PUBLISH_MIN_INTERVAL_SECONDS, salvo la PRIMERA
 # vez (para no dejar al resto de HA sin dato ninguno mientras arranca).
+_PROCESS_START_MONOTONIC = time.monotonic()
+SKIPPED_BATTERY_GRACE_SECONDS = 60
 PUBLISH_MIN_INTERVAL_SECONDS = 0
 # Se publica en cuanto el valor cambia (decision del usuario, 3-nov: "segun
 # obtenemos datos nuevos"); un valor IGUAL al ultimo publicado solo se reenvia
@@ -1200,7 +1202,10 @@ def run_cycle():
     usable_batteries = [b for b in batteries if socs[b.id] is not None]
     skipped = [b.name for b in batteries if socs[b.id] is None]
     if skipped:
-        log.warning(f"Baterias omitidas este ciclo (sensor SOC no disponible): {', '.join(skipped)}")
+        # Nada mas arrancar la cache BLE aun se esta llenando: 13 avisos en 8 s
+        # tras cada reinicio (3-nov). Pasado el primer minuto si es un aviso.
+        log_fn = log.info if time.monotonic() - _PROCESS_START_MONOTONIC < SKIPPED_BATTERY_GRACE_SECONDS else log.warning
+        log_fn(f"Baterias omitidas este ciclo (sensor SOC no disponible): {', '.join(skipped)}")
 
     if not usable_batteries:
         with _state_lock:
