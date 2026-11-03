@@ -437,13 +437,18 @@ def _distribute(total_w: float, items: list[tuple[Battery, float, float]]) -> di
         assigned_this_round = 0.0
         for b, cap_w, headroom in pending:
             share = remaining * (headroom / total_headroom)
-            take = min(share, cap_w, headroom)
+            # BUG REAL (3-nov): el tope era tambien `headroom` -- Wh tomados como
+            # W, o sea "llenarla en una hora". A las 07:48 a la Max Patio (134 Wh
+            # por cargar) solo se le dejaban 134 W con 12 min de valle por delante:
+            # el plan pedia 3,3 kW, se cargaban ~600 W y acabaron en el 93-94 %.
+            # El hueco solo pesa en el reparto; el tope es su potencia (y el
+            # propio equipo para al llegar a su SOC objetivo).
+            take = min(share, cap_w)
             result[b.id] += take
             assigned_this_round += take
             leftover_cap = cap_w - take
-            leftover_headroom = headroom - take
-            if leftover_cap > 1e-6 and leftover_headroom > 1e-6:
-                next_pending.append((b, leftover_cap, leftover_headroom))
+            if leftover_cap > 1e-6:
+                next_pending.append((b, leftover_cap, headroom))
         remaining -= assigned_this_round
         pending = next_pending
         if assigned_this_round <= 1e-6:
