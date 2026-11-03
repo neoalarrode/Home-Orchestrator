@@ -175,6 +175,18 @@ class Simulation(unittest.TestCase):
                                      pv_profile=lambda s: 1400.0)
         self.assertEqual([c for c in plant.cmd_log if c[2] == "charge"], [])
 
+    def test_export_while_discharging_is_not_solar(self):
+        # 3-nov 08:22: el relevo de unidades provoco -350 W de vertido durante
+        # la descarga y se puso a cargar. Eso es exceso de descarga, no sol.
+        followers = [{"id": "a", "max_w": 1200, "available_wh": 500, "soc": 50, "headroom_wh": 900, "max_charge_w": 1050}]
+        ctx = {"mode": "on", "followers": followers, "discharge_allowed": True, "contracted_w": 5000,
+               "margin_w": 0, "solar_charge": True, "grid_charge_now": False, "batteries_cfg": [{"id": "a"}]}
+        charged = []
+        f = lf.LoadFollower(lambda: ctx, lambda b, w: True, charge=lambda b, w: charged.append(w) or True)
+        f._current = {"a": 300.0}; f._estimate = {"a": 300.0}
+        self.assertEqual(f._solar_charge_targets(-350.0, {"a": 300.0}, {}, followers, ctx), {})
+        self.assertEqual(f._solar_charge_targets(-350.0, {"a": 0.0}, {}, followers, ctx), {})   # aun no sostenido
+
     def test_small_export_does_not_start_charging(self):
         meters, plant, f = self._run(_Plant(400.0), 20, pv_profile=lambda s: 430.0)
         self.assertEqual([c for c in plant.cmd_log if c[2] == "charge"], [])

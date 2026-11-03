@@ -460,6 +460,7 @@ class LoadFollower:
         self._charge_estimate: dict[str, float] = {}
         self._charge_orders: dict[str, list[tuple[float, float]]] = {}
         self._last_charge_log = 0.0
+        self._surplus_since: float | None = None
         self._learner = learner if learner is not None else ResponseLearner()
         # `release(battery_cfg)`: devolver la bateria al planificador cuando deja
         # de seguir (fin de la prueba, cambio de modo...).
@@ -572,6 +573,16 @@ class LoadFollower:
                 self._last_swap = now
                 self._active = swapped
         targets = compute_targets(*args, active=self._active)
+        # Relevo de unidades: la que sale tarda en bajar (su retraso aprendido) y
+        # la que entra sube enseguida -- entregaban las dos a la vez (3-nov 08:22:
+        # -350 W de vertido). A la que entra solo se le da lo que falta
+        # descontando lo que la saliente aun entrega, y sube a medida que la otra baja.
+        lingering = sum(w for k, w in delivered.items() if k not in self._active and w > 0)
+        if lingering > 0:
+            total = sum(targets.get(k, 0.0) for k in self._active)
+            if total > 0:
+                factor = max(0.0, total - lingering) / total
+                targets = {k: (v * factor if k in self._active else v) for k, v in targets.items()}
         # Subida limitada respecto a lo que ya entrega (bajadas inmediatas).
         targets = {k: min(v, delivered.get(k, 0.0) + self._step_up_w(k, "base")) if v > delivered.get(k, 0.0) else v
                    for k, v in targets.items()}
@@ -633,7 +644,24 @@ class LoadFollower:
         if not on:
             return {bid: 0.0 for bid, w in self._charge_current.items() if w > 0}
         net = house_net_w(meter, delivered, charging)
-        targets = solar_charge_targets(net, followers, any(w > 0 for w in self._charge_current.values()))
+        charging_now = any(w > 0 for w in self._charge_current.values())
+        if not charging_now:
+            now = time.monotonic()
+            # Un vertido mientras alguna descarga o acaba de descargar es exceso
+            # de la DESCARGA (p.ej. un relevo de unidades, 3-nov 08:22: -350 W),
+            # no sol: lo que toca es reducirla, no cargar.
+            discharging = any(w > 0 for w in self._current.values()) or any(w > 1 for w in delivered.values())
+            if discharging or -net < SOLAR_CHARGE_START_W:
+                self._surplus_since = None
+                return {}
+            # Y tiene que mantenerse mas de lo que tardan las baterias en
+            # responder (lo aprendido de cada una), no un pico de un segundo.
+            if self._surplus_since is None:
+                self._surplus_since = now
+            hold = 2 * max([self._learner.get(f["id"], "charge_up")["delay"] for f in followers] or [CHARGE_RESPONSE_DELAY_S])
+            if now - self._surplus_since < hold:
+                return {}
+        targets = solar_charge_targets(net, followers, charging_now)
         # Subida limitada (como la descarga): no perseguir un claro corto de sol.
         targets = {k: min(v, charging.get(k, 0.0) + self._step_up_w(k, "charge")) if v > charging.get(k, 0.0) else v
                    for k, v in targets.items()}

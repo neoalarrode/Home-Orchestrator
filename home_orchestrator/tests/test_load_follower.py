@@ -280,5 +280,28 @@ class Follower(unittest.TestCase):
         self.assertAlmostEqual(sum(f.status["targets"].values()), 950, delta=2)
 
 
+
+
+class SwapWithoutOverlap(unittest.TestCase):
+    def test_incoming_unit_only_gets_what_the_outgoing_no_longer_gives(self):
+        # 3-nov 08:22: relevo Ultra X -> Despacho, las dos a la vez, -350 W.
+        F2 = [{"id": "u", "max_w": 1200, "available_wh": 100, "soc": 40},
+              {"id": "d", "max_w": 1200, "available_wh": 900, "soc": 90}]
+        ctx = {"mode": "on", "meter_host": "x", "followers": F2, "discharge_allowed": True,
+               "contracted_w": 5000, "margin_w": 0, "deadband_w": 0, "batteries_cfg": [{"id": "u"}, {"id": "d"}]}
+        f = lf.LoadFollower(lambda: ctx, lambda b, w: True)
+        f._active = ["d"]                      # ya se ha elegido la de mas SOC
+        f._current = {"u": 220.0}; f._estimate = {"u": 220.0}
+        orig = lf.read_shelly_w
+        lf.read_shelly_w = lambda *a, **k: 6.0
+        try:
+            f._tick(None)
+        finally:
+            lf.read_shelly_w = orig
+        t = f.status["targets"]
+        self.assertEqual(t.get("u"), 0.0)
+        self.assertLess(t.get("d", 0.0), 20)   # no 226 W de golpe mientras la otra aun da 220
+
+
 if __name__ == "__main__":
     unittest.main()
