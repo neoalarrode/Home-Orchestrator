@@ -30,18 +30,39 @@ class RepeatCommand(unittest.TestCase):
         self.assertTrue(govee_cloud.control("k", "AA", "H6008", "turn", "on"))
         self.assertEqual(len(self.sent), 1)
 
-    def test_different_value_is_still_deferred(self):
-        self.assertTrue(govee_cloud.control("k", "AA", "H6008", "turn", "on"))
-        with self.assertLogs("govee_cloud", "WARNING"):
-            self.assertFalse(govee_cloud.control("k", "AA", "H6008", "turn", "off"))
-        self.assertEqual(len(self.sent), 1)
+    def test_different_value_waits_the_window_and_is_sent(self):
+        # 4-nov 01:19 (Salon): apagar y a los 1,6 s volver a encender. Antes se
+        # rechazaba y la lampara tardaba 5 s; ahora espera lo que falta y manda.
+        clock = [1000.0]
+        slept = []
+        orig_time, orig_sleep = govee_cloud.time.time, govee_cloud.time.sleep
+        govee_cloud.time.time = lambda: clock[0]
+        govee_cloud.time.sleep = lambda s: (slept.append(s), clock.__setitem__(0, clock[0] + s))
+        try:
+            self.assertTrue(govee_cloud.control("k", "AA", "H6008", "turn", "off"))
+            clock[0] += 1.6
+            self.assertTrue(govee_cloud.control("k", "AA", "H6008", "turn", "on"))
+        finally:
+            govee_cloud.time.time, govee_cloud.time.sleep = orig_time, orig_sleep
+        self.assertEqual([c["value"] for c in self.sent], ["off", "on"])
+        self.assertAlmostEqual(slept[0], govee_cloud.MIN_SECONDS_BETWEEN_CONTROL - 1.6, places=3)
 
-    def test_failed_send_is_not_remembered(self):
+    def test_failed_send_is_retried_after_the_window(self):
+        # Un envio que fallo no cuenta como mandado: repetirlo espera la ventana
+        # y lo vuelve a intentar (antes se descartaba).
         self.code = 500
-        with self.assertLogs("govee_cloud", "WARNING"):
-            self.assertFalse(govee_cloud.control("k", "AA", "H6008", "turn", "on"))
-            self.assertFalse(govee_cloud.control("k", "AA", "H6008", "turn", "on"))
-        self.assertEqual(len(self.sent), 1)
+        clock = [1000.0]
+        orig_time, orig_sleep = govee_cloud.time.time, govee_cloud.time.sleep
+        govee_cloud.time.time = lambda: clock[0]
+        govee_cloud.time.sleep = lambda s: clock.__setitem__(0, clock[0] + s)
+        try:
+            with self.assertLogs("govee_cloud", "WARNING"):
+                self.assertFalse(govee_cloud.control("k", "AA", "H6008", "turn", "on"))
+                self.assertFalse(govee_cloud.control("k", "AA", "H6008", "turn", "on"))
+        finally:
+            govee_cloud.time.time, govee_cloud.time.sleep = orig_time, orig_sleep
+        self.assertEqual(len(self.sent), 2)
+        self.assertGreaterEqual(clock[0] - 1000.0, govee_cloud.MIN_SECONDS_BETWEEN_CONTROL)
 
 
 if __name__ == "__main__":

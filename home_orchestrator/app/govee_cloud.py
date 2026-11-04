@@ -146,11 +146,21 @@ def control(api_key: str, device_mac: str, sku: str, cmd_name: str, cmd_value) -
         if already_sent:
             log.debug("Govee Cloud: '%s'=%s a %s ya mandado hace un momento", cmd_name, cmd_value, device_mac)
             return True
-        log.warning(
-            "Govee Cloud: comando '%s' a %s omitido -- se mando el mismo comando hace menos de %ss",
-            cmd_name, device_mac, MIN_SECONDS_BETWEEN_CONTROL,
-        )
-        return False
+        # Valor DISTINTO dentro de la ventana (4-nov 01:19, Salon: apagar y a
+        # los 1,6 s volver a encender): antes se rechazaba como fallo y Lighting
+        # reintentaba dentro de la misma ventana, la lampara tardaba 5 s. Se
+        # espera lo que falta y se manda.
+        with _last_control_lock:
+            last = _last_control_at.get((device_mac, cmd_name))
+        wait = MIN_SECONDS_BETWEEN_CONTROL - (time.time() - last) if last is not None else 0.0
+        if 0 < wait <= MIN_SECONDS_BETWEEN_CONTROL:
+            time.sleep(wait)
+        if not _control_allowed(device_mac, cmd_name):
+            log.warning(
+                "Govee Cloud: comando '%s' a %s omitido -- se mando el mismo comando hace menos de %ss",
+                cmd_name, device_mac, MIN_SECONDS_BETWEEN_CONTROL,
+            )
+            return False
     payload = {"device": device_mac, "model": sku, "cmd": {"name": cmd_name, "value": cmd_value}}
     try:
         r = requests.put(f"{BASE_URL}/devices/control", headers=_headers(api_key), json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
