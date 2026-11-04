@@ -28,7 +28,7 @@ import math
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
-from . import ema as ema_module, grid_signal, occupancy, outdoor, power_model, presets as presets_module, scheduler, thermal_model, window_algorithm, zone_forecast
+from . import ema as ema_module, grid_signal, heat_forecast, occupancy, outdoor, power_model, presets as presets_module, scheduler, thermal_model, window_algorithm, zone_forecast
 from .const import (
     CONF_AUTO_WINDOW_DETECTION,
     CONF_CLIMATE_ENTITIES,
@@ -814,6 +814,8 @@ class ZoneRunner:
             "equipment_failure_suspected": self._equipment_failure_suspected,
             "zone_power_w": zone_power_w,
             "zone_power_breakdown": zone_power_breakdown,
+            # Previsión hora a hora para Energy (ver _compute_heat_forecast).
+            "heat_forecast": getattr(self, "_heat_forecast", {"start": None, "w": None}),
             "extractor_active": self._extractor_active,
             "extractor_humidity_baseline": self._extractor_baseline,
             "climate_orchestrator_zone": True,
@@ -1818,6 +1820,40 @@ class ZoneRunner:
             self._model_last_computed_ts = now_ts
 
         self.decide_and_act()
+        try:
+            self._heat_forecast = self._compute_heat_forecast()
+        except Exception:
+            _LOGGER.exception("%s: fallo calculando la previsión de consumo de climatizacion", self.zone.get("name"))
+            self._heat_forecast = {"start": None, "w": None}
+
+    HEAT_FORECAST_HOURS = 24
+
+    def _compute_heat_forecast(self) -> dict:
+        """Vatios de climatizacion previstos para las proximas horas (ver
+        heat_forecast.py), para Energy. `w` None = sin previsión fiable."""
+        now_local = datetime.now().astimezone().replace(minute=0, second=0, microsecond=0)
+        start = now_local.isoformat()
+        n = self.HEAT_FORECAST_HOURS
+        if not (self.zone.get(CONF_HEAT_SWITCHES) or self.zone.get(CONF_COOL_SWITCHES)
+                or self.zone.get(CONF_CLIMATE_ENTITIES)):
+            return {"start": start, "w": [0.0] * n}          # solo extractor: no climatiza
+        if getattr(self, "hvac_mode", None) == "off":
+            return {"start": start, "w": [0.0] * n}
+        thermal = self._thermal_model
+        if not thermal.get("reliable"):
+            return {"start": start, "w": None}
+        targets = []
+        for i in range(n):
+            hour = (now_local + timedelta(hours=i)).hour
+            heat_t, cool_t, _name = self.preset_targets_for_occupancy(
+                occupancy.likely(self._occupancy_by_hour.get(hour)))
+            targets.append((heat_t, cool_t))
+        w = heat_forecast.project(
+            self.current_temperature, list(self._outdoor_forecast or []), targets,
+            float(thermal.get("heating_rate_deg_h") or 0.0), float(thermal.get("cooling_rate_deg_h") or 0.0),
+            thermal.get("idle_loss_coeff"), self._zone_estimated_power_w(),
+        )
+        return {"start": start, "w": w}
 
     def _models_settled(self, entities_to_learn: list[str]) -> bool:
         if not self._thermal_model.get("reliable"):

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime
 
 import ha_client
 
@@ -156,15 +157,17 @@ def read_live_power_w(zone_ids: list[str]) -> dict:
     comprobar nada.
     """
     if not zone_ids:
-        return {"total_w": 0.0, "zones": [], "unknown_zone_names": []}
+        return {"total_w": 0.0, "zones": [], "unknown_zone_names": [], "heat_forecast": None}
 
     detail = []
     unknown_names = []
     total = 0.0
+    forecasts = []
     for entity_id in zone_ids:
         try:
             state = ha_client.get_state(entity_id)
         except Exception:
+            forecasts.append(None)
             continue
         entry = _entry_from_state(state)
         detail.append({"name": entry["name"], "power_w": entry["power_w"], "unknown": entry["unknown"]})
@@ -172,4 +175,45 @@ def read_live_power_w(zone_ids: list[str]) -> dict:
             unknown_names.append(entry["name"])
         else:
             total += entry["power_w"]
-    return {"total_w": total, "zones": detail, "unknown_zone_names": unknown_names}
+        forecasts.append((state.get("attributes") or {}).get("heat_forecast"))
+    return {"total_w": total, "zones": detail, "unknown_zone_names": unknown_names,
+            "heat_forecast": combine_heat_forecasts(forecasts)}
+
+
+def combine_heat_forecasts(forecasts: list, now: datetime | None = None) -> list[float] | None:
+    """Suma, hora a hora desde la hora actual, la previsión de climatizacion
+    que publica cada zona (`heat_forecast` = {"start": iso, "w": [...]}, ver
+    climate/heat_forecast.py). None si CUALQUIER zona no tiene previsión
+    fiable: mezclar zonas con y sin previsión subestimaria el consumo, y
+    entonces Energy sigue con su media historica de siempre."""
+    if not forecasts:
+        return None
+    now_h = (now or datetime.now().astimezone()).replace(minute=0, second=0, microsecond=0)
+    total: list[float] | None = None
+    for fc in forecasts:
+        if not isinstance(fc, dict) or not isinstance(fc.get("w"), list) or not fc.get("start"):
+            return None
+        try:
+            start = datetime.fromisoformat(fc["start"])
+        except (TypeError, ValueError):
+            return None
+        if start.tzinfo is None:
+            start = start.astimezone()
+        shift = int(round((now_h - start).total_seconds() / 3600))
+        if shift < 0 or shift >= len(fc["w"]):
+            return None                       # previsión del futuro o caducada
+        values = []
+        for v in fc["w"][shift:]:
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(f) or f < 0:
+                return None
+            values.append(f)
+        if total is None:
+            total = values
+        else:
+            n = min(len(total), len(values))
+            total = [total[i] + values[i] for i in range(n)]
+    return total

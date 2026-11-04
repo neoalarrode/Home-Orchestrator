@@ -200,6 +200,46 @@ def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
         _last_published_value[entity_id] = value
 
 
+CLIMATE_POWER_SENSOR = "sensor.battery_orchestrator_climate_power"
+CLIMATE_SPLIT_PATH = os.environ.get("CLIMATE_SPLIT_PATH", "/data/climate_split.json")
+# Dias de historico de la potencia de climatizacion antes de usar la previsión
+# de Climate: hace falta para quitar del historico la calefaccion de otros dias
+# (si no, se contaria dos veces).
+CLIMATE_SPLIT_MIN_DAYS = 3
+
+
+def _apply_climate_forecast(cfg: dict, load_forecast: list[float], climate_live: dict, horizon: int,
+                            history_days: int, now: datetime) -> tuple[list[float], list[float]]:
+    """Previsión de consumo = (historico SIN climatizacion) + (lo que Climate
+    preve gastar cada hora). Decision del usuario (4-nov): con frio, Energy
+    guardaba la reserva de un dia normal. Devuelve (previsión, base sin
+    climatizacion). Sin Climate, sin previsión fiable de TODAS sus zonas o sin
+    CLIMATE_SPLIT_MIN_DAYS de historico, todo sigue como antes."""
+    if not (cfg.get("climate_orchestrator_zones") or []):
+        return load_forecast, load_forecast
+    # El historico de la potencia de climatizacion: lo que permite separarla.
+    _publish_sensor_throttled(CLIMATE_POWER_SENSOR, round(float(climate_live.get("total_w") or 0.0)), {
+        "device_class": "power", "state_class": "measurement", "unit_of_measurement": "W",
+        "friendly_name": "Battery Orchestrator Potencia de climatizacion",
+    })
+    split = json_store.load(CLIMATE_SPLIT_PATH) or {}
+    if not split.get("since"):
+        split = {"since": now.isoformat()}
+        json_store.save(CLIMATE_SPLIT_PATH, split)
+    try:
+        days = (now - datetime.fromisoformat(split["since"])).total_seconds() / 86400
+    except (TypeError, ValueError):
+        days = 0.0
+    forecast = climate_live.get("heat_forecast")
+    if days < CLIMATE_SPLIT_MIN_DAYS or not forecast:
+        return load_forecast, load_forecast
+    past = ha_client.hourly_average_forecast(CLIMATE_POWER_SENSOR, horizon, history_days, default=0.0)
+    base = [max(0.0, load_forecast[i] - (past[i] if i < len(past) else 0.0)) for i in range(len(load_forecast))]
+    combined = [base[i] + (forecast[i] if i < len(forecast) else (past[i] if i < len(past) else 0.0))
+                for i in range(len(base))]
+    return combined, base
+
+
 def _int_setting(section: dict, key: str, default: int, lo: int, hi: int) -> int:
     """Ajuste entero de la configuracion, tolerante a un campo del formulario
     en blanco (llega como `None`): antes `int(None)` lanzaba TypeError en CADA
@@ -1071,6 +1111,11 @@ def run_cycle():
     # (Climate Orchestrator no instalado, o boton nunca pulsado), esto
     # devuelve {"total_w": 0.0, "zones": []} sin pedir nada a HA.
     climate_live = climate_link.read_live_power_w(cfg.get("climate_orchestrator_zones") or [])
+    # Calefaccion/frio: lo que Climate PREVE gastar en vez de la media de otros
+    # dias (ver `_apply_climate_forecast`). `base_load_forecast` = la casa SIN
+    # climatizacion (para el detector de anomalias, que ya suma la de ahora).
+    load_forecast, base_load_forecast = _apply_climate_forecast(
+        cfg, load_forecast, climate_live, horizon, history_days, now)
 
     # Señal para quien quiera coordinarse con el precio/sol de la casa (hoy,
     # Climate Orchestrator) SIN que haga falta declarar nada a mano en
@@ -1779,7 +1824,7 @@ def run_cycle():
             # el sensor publicado -- antes esta rama tenia su propia copia de
             # la cuenta.
             live_load_w = live_total_load_w if live_total_load_w is not None else live_base_load_w
-            expected_load_w = load_forecast[0] + deferrable_expected_now_w + climate_live["total_w"]
+            expected_load_w = base_load_forecast[0] + deferrable_expected_now_w + climate_live["total_w"]
             anomaly = anomaly_store.update(now, live_load_w, expected_load_w)
             if anomaly["changed"]:
                 if anomaly["status"] == "anomaly":
