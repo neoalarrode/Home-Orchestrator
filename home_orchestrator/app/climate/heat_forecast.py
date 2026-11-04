@@ -33,6 +33,12 @@ def project(start_temp: float | None, outdoor: list[float], targets: list[tuple[
     for i, (heat_t, cool_t) in enumerate(targets):
         ext = outdoor[i] if i < len(outdoor) else outdoor[-1]
         fraction = 0.0
+        # Hace falta calentar o enfriar pero la zona aun no sabe a que ritmo
+        # (p.ej. el primer dia de aire en verano): no hay previsión, mejor que
+        # un 0 que dejaria a Energy con menos reserva de la necesaria.
+        if (heat_t is not None and heating_rate <= 0 and (temp < heat_t or (temp <= heat_t and ext < heat_t))) or \
+                (cool_t is not None and cooling_rate <= 0 and (temp > cool_t or (temp >= cool_t and ext > cool_t))):
+            return None
         if heat_t is not None and temp <= heat_t and heating_rate > 0:
             reach = min(1.0, max(0.0, heat_t - temp) / heating_rate)
             hold = max(0.0, idle_loss * (heat_t - ext) / heating_rate) if heat_t > ext else 0.0

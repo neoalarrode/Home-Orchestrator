@@ -31,6 +31,14 @@ class Project(unittest.TestCase):
         self.assertEqual(w[:2], [1200.0, 1200.0])
         self.assertAlmostEqual(w[2], 0.05 * (32 - 25) / 1.0 * 1200, delta=1)
 
+    def test_cooling_needed_but_rate_not_learned_means_no_forecast(self):
+        # Primer dia de aire en verano: sin ritmo de enfriado aprendido.
+        self.assertIsNone(hf.project(27.0, [32.0] * 3, [(None, 25.0)] * 3, 1.0, 0.0, 0.05, 1200.0))
+        # Justo en la consigna con calor fuera: tambien hace falta saberlo.
+        self.assertIsNone(hf.project(25.0, [32.0], [(None, 25.0)], 1.0, 0.0, 0.05, 1200.0))
+        # Si no hace falta enfriar, no importa que no lo sepa.
+        self.assertEqual(hf.project(22.0, [20.0] * 2, [(None, 25.0)] * 2, 1.0, 0.0, 0.05, 1200.0), [0.0, 0.0])
+
     def test_no_model_or_power_means_no_forecast(self):
         self.assertIsNone(hf.project(20.0, [5.0], [(21.0, None)], 1.0, 0.0, None, 900.0))
         self.assertIsNone(hf.project(20.0, [5.0], [(21.0, None)], 1.0, 0.0, 0.05, None))
