@@ -520,6 +520,7 @@ class ZoneRunner:
         # Log de accion propia (ts_epoch, "heat"|"cool"|"off") -- solo transiciones.
         # Alimenta thermal_model.get_model(action_log=...) para aprender la inercia.
         self._action_log: deque[tuple[float, str]] = deque(maxlen=ACTION_LOG_MAXLEN)
+        self._action_outdoor: dict[float, float] = {}     # ts de arranque -> exterior
 
         self._min_humidity = DEFAULT_MIN_HUMIDITY
         self._max_humidity = DEFAULT_MAX_HUMIDITY
@@ -695,6 +696,13 @@ class ZoneRunner:
                 if (isinstance(entry, (list, tuple)) and len(entry) == 2
                         and isinstance(entry[0], (int, float)) and entry[1] in ("heat", "cool", "off", "hold", "dry", "fan_only")):
                     self._action_log.append((float(entry[0]), entry[1]))
+        saved_outdoor = state.get("action_outdoor")
+        if isinstance(saved_outdoor, dict):
+            for k, v in saved_outdoor.items():
+                try:
+                    self._action_outdoor[float(k)] = float(v)
+                except (TypeError, ValueError):
+                    pass
 
         # Margen de arranque aprendido por delegado: sin persistirlo, cada
         # reinicio volveria a dejar un radiador sin arrancar hasta re-aprenderlo.
@@ -732,13 +740,22 @@ class ZoneRunner:
         cambios, para que el log sea compacto y cubra varios dias."""
         if self._action_log and self._action_log[-1][1] == act:
             return
-        self._action_log.append((_utcnow().timestamp(), act))
+        ts = _utcnow().timestamp()
+        self._action_log.append((ts, act))
+        # Exterior en cada arranque de calor/frio: la potencia de una bomba de
+        # calor depende de el (ver power_model.learn_zone_power).
+        if act in ("heat", "cool") and self._outdoor_now is not None:
+            self._action_outdoor[ts] = round(float(self._outdoor_now), 1)
+            oldest = self._action_log[0][0] if self._action_log else ts
+            for k in [k for k in self._action_outdoor if k < oldest]:
+                del self._action_outdoor[k]
 
     def to_persisted_state(self) -> dict:
         """Lo que se guarda en config_store en cada cambio que importa —
         ver zone_store.py."""
         return {
             "action_log": [[ts, act] for ts, act in self._action_log],
+            "action_outdoor": {str(k): v for k, v in self._action_outdoor.items()},
             "activation_margins": dict(self._delegate_activation_margin),
             "running_power": dict(self._running_power),
             "known_hvac_modes": list(self._known_hvac_modes or []),
@@ -1717,6 +1734,13 @@ class ZoneRunner:
             return None
         return _safe_float(state.get("state"))
 
+    def zone_power_for(self, mode: str, outdoor: float | None) -> float | None:
+        """Potencia de la zona al `mode` ("heat"/"cool") con ese exterior: la
+        aprendida para ese modo (y su dependencia del exterior) si la hay; si
+        no, la de siempre (ver _zone_estimated_power_w)."""
+        learned = power_model.zone_power_at(self._zone_power, mode, outdoor)
+        return learned if learned is not None else self._zone_estimated_power_w()
+
     def _zone_estimated_power_w(self) -> float | None:
         """Lo que gasta la zona CUANDO ACTUA (para comparar con el excedente
         solar). Con medidor: su potencia en marcha aprendida, no la lectura en
@@ -1808,7 +1832,7 @@ class ZoneRunner:
                     self.ws, list(self._action_log), home_power_sensor,
                     int(self.zone.get(CONF_HISTORY_DAYS_FOR_INERTIA, DEFAULT_HISTORY_DAYS_FOR_INERTIA)),
                     other_starts=starts_of(self.zone_id) if starts_of else [],
-                    fallback=self._zone_power,
+                    fallback=self._zone_power, outdoor_at=dict(self._action_outdoor),
                 )
             # Mismo cadencia que el modelo termico (no en cada decision
             # reactiva, ver decide_and_act) -- barato para leer despues
@@ -1851,7 +1875,7 @@ class ZoneRunner:
         w = heat_forecast.project(
             self.current_temperature, list(self._outdoor_forecast or []), targets,
             float(thermal.get("heating_rate_deg_h") or 0.0), float(thermal.get("cooling_rate_deg_h") or 0.0),
-            thermal.get("idle_loss_coeff"), self._zone_estimated_power_w(),
+            thermal.get("idle_loss_coeff"), self.zone_power_for,
         )
         return {"start": start, "w": w}
 

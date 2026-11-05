@@ -383,8 +383,9 @@ def _avg_between(power_states: list, t0: datetime, t1: datetime, include_end: bo
     return total / weight if weight > 0 else None
 
 
-def _zone_starts(action_log: list, days: int) -> list[datetime]:
-    """Instantes en que la zona pasa de no actuar a calentar/enfriar."""
+def _zone_starts(action_log: list, days: int, with_detail: bool = False) -> list:
+    """Instantes en que la zona pasa de no actuar a calentar/enfriar. Con
+    `with_detail`, (instante, modo, ts) para cruzarlo con el exterior."""
     since = _utcnow() - timedelta(days=days)
     starts, prev = [], "off"
     for ts, act in action_log:
@@ -392,15 +393,60 @@ def _zone_starts(action_log: list, days: int) -> list[datetime]:
         # "hold" (bomba de calor modulando en banda) ya esta consumiendo: pasar de
         # hold a calentar no es un arranque.
         if act in ("heat", "cool") and prev not in ("heat", "cool", "hold", "dry") and when >= since:
-            starts.append(when)
+            starts.append((when, act, ts) if with_detail else when)
         prev = act
     return starts
 
 
+# Potencia por MODO y segun el EXTERIOR (decision del usuario, 4-nov): una bomba
+# de calor gasta distinto calentando que enfriando, y distinto con 0 C que con
+# 12 C fuera. Con suficientes arranques a exteriores distintos se ajusta una
+# recta potencia = a + b * exterior; si no, la mediana de ese modo.
+MODE_MIN_SAMPLES = 3
+FIT_MIN_SAMPLES = 6
+FIT_MIN_SPREAD_C = 4.0
+FIT_EXTRAPOLATE_C = 3.0          # fuera de lo visto, como mucho esto mas alla
+FIT_CLAMP = (0.5, 2.0)           # la recta nunca se aleja tanto de la mediana
+
+
+def _fit_mode(samples: list[tuple[float, float | None]]) -> dict:
+    """samples = [(vatios, exterior | None)] de un modo."""
+    watts = [w for w, _ in samples]
+    out = {"median_w": round(statistics.median(watts), 0), "samples": len(watts),
+           "reliable": len(watts) >= MODE_MIN_SAMPLES}
+    pts = [(t, w) for w, t in samples if t is not None]
+    if len(pts) >= FIT_MIN_SAMPLES:
+        ts = [t for t, _ in pts]
+        spread = max(ts) - min(ts)
+        if spread >= FIT_MIN_SPREAD_C:
+            mt, mw = statistics.fmean(ts), statistics.fmean(w for _, w in pts)
+            var = sum((t - mt) ** 2 for t in ts)
+            b = sum((t - mt) * (w - mw) for t, w in pts) / var if var > 0 else 0.0
+            out.update(a=round(mw - b * mt, 1), b=round(b, 2), t_min=min(ts), t_max=max(ts))
+    return out
+
+
+def zone_power_at(model: dict | None, mode: str, outdoor: float | None) -> float | None:
+    """Potencia aprendida de la zona en `mode` con ese exterior, o None si ese
+    modo aun no tiene arranques suficientes."""
+    m = ((model or {}).get("by_mode") or {}).get(mode)
+    if not m or not m.get("reliable"):
+        return None
+    median = float(m["median_w"])
+    if outdoor is None or "b" not in m:
+        return median
+    t = min(max(float(outdoor), m["t_min"] - FIT_EXTRAPOLATE_C), m["t_max"] + FIT_EXTRAPOLATE_C)
+    value = m["a"] + m["b"] * t
+    return round(min(max(value, median * FIT_CLAMP[0]), median * FIT_CLAMP[1]), 0)
+
+
 def _learn_zone_power_sync(ws, action_log: list, home_power_sensor: str, days: int,
-                           other_starts: list[float]) -> dict:
+                           other_starts: list[float], outdoor_at: dict | None = None) -> dict:
     model = {"learned_power_w": None, "reliable": False, "samples_used": 0, "samples_discarded_other_zone": 0}
-    starts = _zone_starts(action_log, max(days, ZONE_LEARN_DAYS))
+    detail = _zone_starts(action_log, max(days, ZONE_LEARN_DAYS), with_detail=True)
+    starts = [d[0] for d in detail]
+    mode_of = {d[0]: (d[1], (outdoor_at or {}).get(d[2])) for d in detail}
+    by_mode: dict[str, list] = {}
     if len(starts) < MIN_VALID_SAMPLES or not home_power_sensor:
         return model
     others = [_to_dt(t) for t in other_starts]
@@ -422,7 +468,10 @@ def _learn_zone_power_sync(ws, action_log: list, home_power_sensor: str, days: i
         delta = after - before
         if delta >= MIN_DELTA_W:
             deltas.append(delta)
+            mode, outdoor = mode_of.get(start, ("heat", None))
+            by_mode.setdefault(mode, []).append((delta, outdoor))
     model["samples_discarded_other_zone"] = discarded
+    model["by_mode"] = {mode: _fit_mode(samples) for mode, samples in by_mode.items()}
     if len(deltas) >= MIN_VALID_SAMPLES:
         model["learned_power_w"] = round(statistics.median(deltas), 0)
         model["reliable"] = True
@@ -431,14 +480,15 @@ def _learn_zone_power_sync(ws, action_log: list, home_power_sensor: str, days: i
 
 
 def learn_zone_power(ws, action_log: list, home_power_sensor: str, days: int,
-                     other_starts: list[float] | None = None, fallback: dict | None = None) -> dict:
+                     other_starts: list[float] | None = None, fallback: dict | None = None,
+                     outdoor_at: dict | None = None) -> dict:
     """Potencia tipica de la ZONA al calentar/enfriar, aprendida del salto del
     consumo de la casa en cada arranque registrado por Climate (mediana, minimo
     MIN_VALID_SAMPLES arranques limpios). Mismo hilo/timeout que get_power_model."""
     if not action_log or not home_power_sensor:
         return fallback or {}
     future = _power_executor.submit(_learn_zone_power_sync, ws, list(action_log), home_power_sensor, days,
-                                    list(other_starts or []))
+                                    list(other_starts or []), dict(outdoor_at or {}))
     try:
         result = future.result(timeout=POWER_MODEL_COMPUTE_TIMEOUT_SECONDS)
     except FutureTimeoutError:

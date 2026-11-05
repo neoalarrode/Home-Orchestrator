@@ -22,12 +22,19 @@ from __future__ import annotations
 
 def project(start_temp: float | None, outdoor: list[float], targets: list[tuple[float | None, float | None]],
             heating_rate: float, cooling_rate: float, idle_loss: float | None,
-            power_w: float | None) -> list[float] | None:
+            power_w) -> list[float] | None:
     """Vatios previstos para cada hora de `targets` ((consigna_calor,
     consigna_frio) por hora; None = sin consigna en ese sentido). `outdoor[i]`
-    es el exterior previsto esa hora (se repite el ultimo si falta)."""
-    if start_temp is None or idle_loss is None or not power_w or power_w <= 0 or not outdoor:
+    es el exterior previsto esa hora (se repite el ultimo si falta).
+    `power_w`: vatios de la zona, o una funcion (modo, exterior) -> vatios
+    (la bomba de calor gasta distinto en frio que en calor y segun el exterior)."""
+    if start_temp is None or idle_loss is None or not outdoor:
         return None
+    if not callable(power_w):
+        if not power_w or power_w <= 0:
+            return None
+        fixed = float(power_w)
+        power_w = lambda mode, ext: fixed
     temp = start_temp
     out: list[float] = []
     for i, (heat_t, cool_t) in enumerate(targets):
@@ -39,12 +46,15 @@ def project(start_temp: float | None, outdoor: list[float], targets: list[tuple[
         if (heat_t is not None and heating_rate <= 0 and (temp < heat_t or (temp <= heat_t and ext < heat_t))) or \
                 (cool_t is not None and cooling_rate <= 0 and (temp > cool_t or (temp >= cool_t and ext > cool_t))):
             return None
+        mode = None
         if heat_t is not None and temp <= heat_t and heating_rate > 0:
+            mode = "heat"
             reach = min(1.0, max(0.0, heat_t - temp) / heating_rate)
             hold = max(0.0, idle_loss * (heat_t - ext) / heating_rate) if heat_t > ext else 0.0
             fraction = reach + (1.0 - reach) * min(1.0, hold)
             temp = min(heat_t, temp + heating_rate) if reach >= 1.0 else heat_t
         elif cool_t is not None and temp >= cool_t and cooling_rate > 0:
+            mode = "cool"
             reach = min(1.0, max(0.0, temp - cool_t) / cooling_rate)
             hold = max(0.0, idle_loss * (ext - cool_t) / cooling_rate) if ext > cool_t else 0.0
             fraction = reach + (1.0 - reach) * min(1.0, hold)
@@ -52,5 +62,11 @@ def project(start_temp: float | None, outdoor: list[float], targets: list[tuple[
         else:
             # Sin pedir nada: deriva hacia el exterior con sus perdidas.
             temp = temp + idle_loss * (ext - temp)
-        out.append(round(min(1.0, fraction) * power_w, 1))
+        if fraction <= 0:
+            out.append(0.0)
+            continue
+        watts = power_w(mode, ext)
+        if not watts or watts <= 0:
+            return None                      # hace falta y no se sabe cuanto gasta
+        out.append(round(min(1.0, fraction) * watts, 1))
     return out
