@@ -398,6 +398,32 @@ def _zone_starts(action_log: list, days: int, with_detail: bool = False) -> list
     return starts
 
 
+def _hold_transitions(action_log: list, days: int) -> list:
+    """Instantes en que una bomba de calor entra en "mantener" desde parada o
+    sale de el a parada: (instante, signo, modo, ts). signo +1 = entra (el
+    consumo de la casa sube lo que gasta manteniendo), -1 = sale (baja). El
+    modo es el del ultimo calentar/enfriar registrado."""
+    since = _utcnow() - timedelta(days=days)
+    out, prev, mode = [], "off", None
+    for ts, act in action_log:
+        when = _to_dt(ts)
+        if act in ("heat", "cool"):
+            mode = act
+        if mode and when >= since:
+            if act == "hold" and prev == "off":
+                out.append((when, +1, mode, ts))
+            elif act == "off" and prev == "hold":
+                out.append((when, -1, mode, ts))
+        prev = act
+    return out
+
+
+def zone_hold_power_at(model: dict | None, mode: str, outdoor: float | None) -> float | None:
+    """Lo que gasta la zona MANTENIENDO en `mode` con ese exterior, aprendido
+    comparando el consumo de la casa al entrar/salir de mantener, o None."""
+    return zone_power_at({"by_mode": (model or {}).get("hold_by_mode") or {}}, mode, outdoor)
+
+
 # Potencia por MODO y segun el EXTERIOR (decision del usuario, 4-nov): una bomba
 # de calor gasta distinto calentando que enfriando, y distinto con 0 C que con
 # 12 C fuera. Con suficientes arranques a exteriores distintos se ajusta una
@@ -447,7 +473,7 @@ def _learn_zone_power_sync(ws, action_log: list, home_power_sensor: str, days: i
     starts = [d[0] for d in detail]
     mode_of = {d[0]: (d[1], (outdoor_at or {}).get(d[2])) for d in detail}
     by_mode: dict[str, list] = {}
-    if len(starts) < MIN_VALID_SAMPLES or not home_power_sensor:
+    if not home_power_sensor:
         return model
     others = [_to_dt(t) for t in other_starts]
     guard = timedelta(minutes=ZONE_OTHER_START_GUARD_MINUTES)
@@ -472,6 +498,25 @@ def _learn_zone_power_sync(ws, action_log: list, home_power_sensor: str, days: i
             by_mode.setdefault(mode, []).append((delta, outdoor))
     model["samples_discarded_other_zone"] = discarded
     model["by_mode"] = {mode: _fit_mode(samples) for mode, samples in by_mode.items()}
+    # Lo que gasta MANTENIENDO (5-nov, decision del usuario: aprenderlo de forma
+    # comparativa, sin restar aparatos): el salto del consumo de la casa al
+    # entrar en mantener desde parada o al salir de el, con la misma ventana y
+    # la misma guarda frente a otras zonas que los arranques.
+    hold_by_mode: dict[str, list] = {}
+    for when, sign, mode, ts in _hold_transitions(action_log, max(days, ZONE_LEARN_DAYS))[-ZONE_MAX_SAMPLES:]:
+        if any(abs(o - when) <= guard for o in others):
+            continue
+        t0 = when - timedelta(minutes=ZONE_SAMPLE_BEFORE_MINUTES)
+        t_end = when + timedelta(minutes=ZONE_SAMPLE_AFTER_MINUTES)
+        window = _power_window(ws, home_power_sensor, t0, t_end)
+        before = _avg_between(window, t0, when, include_end=False)
+        after = _avg_between(window, when + timedelta(minutes=ZONE_SAMPLE_SETTLE_MINUTES), t_end)
+        if before is None or after is None:
+            continue
+        delta = (after - before) * sign
+        if delta >= MIN_DELTA_W:
+            hold_by_mode.setdefault(mode, []).append((delta, (outdoor_at or {}).get(ts)))
+    model["hold_by_mode"] = {mode: _fit_mode(samples) for mode, samples in hold_by_mode.items()}
     if len(deltas) >= MIN_VALID_SAMPLES:
         model["learned_power_w"] = round(statistics.median(deltas), 0)
         model["reliable"] = True

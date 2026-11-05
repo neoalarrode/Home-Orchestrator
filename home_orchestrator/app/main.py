@@ -1112,6 +1112,8 @@ def run_cycle():
     # (Climate Orchestrator no instalado, o boton nunca pulsado), esto
     # devuelve {"total_w": 0.0, "zones": []} sin pedir nada a HA.
     climate_live = climate_link.read_live_power_w(cfg.get("climate_orchestrator_zones") or [])
+    if cfg.get("climate_orchestrator_zones"):
+        _publish_heat_pump_sensors(climate_live.get("unmetered_w") or 0.0)
     # Calefaccion/frio: lo que Climate PREVE gastar en vez de la media de otros
     # dias (ver `_apply_climate_forecast`). `base_load_forecast` = la casa SIN
     # climatizacion (para el detector de anomalias, que ya suma la de ahora).
@@ -2006,6 +2008,43 @@ _solar_energy_last_ts: float | None = None
 
 
 _outlet_last_ts: dict[str, float] = {}
+
+HEAT_PUMP_ENERGY_KEY = "aires"
+HEAT_PUMP_MAX_GAP_SECONDS = 600   # el ciclo de planificacion puede tardar minutos
+_heat_pump_last: tuple[float, float] | None = None   # (ts, vatios) de la lectura anterior
+
+
+def _publish_heat_pump_sensors(watts: float, now_ts: float | None = None) -> None:
+    """"Aires (estimado)": lo que gastan los aires sin medidor propio, segun lo
+    que Climate APRENDE comparando el consumo de la casa al arrancar, entrar y
+    salir de mantener (peticion del usuario, 5-nov: aprendido, no restando
+    aparatos ni con valores fijos). W y kWh (total_increasing, para el Panel
+    de Energia de HA). La energia se integra con la potencia de la lectura
+    ANTERIOR (es la que ha estado vigente hasta ahora)."""
+    global _heat_pump_last
+    now_ts = time.time() if now_ts is None else now_ts
+    _publish_sensor_throttled(
+        "sensor.battery_orchestrator_heat_pump_power", round(watts),
+        {"device_class": "power", "state_class": "measurement", "unit_of_measurement": "W",
+         "friendly_name": "Battery Orchestrator Aires (estimado)"},
+    )
+    wh = 0.0
+    if _heat_pump_last is not None and now_ts > _heat_pump_last[0]:
+        wh = _heat_pump_last[1] * min(now_ts - _heat_pump_last[0], HEAT_PUMP_MAX_GAP_SECONDS) / 3600
+    _heat_pump_last = (now_ts, float(watts))
+    total = outlet_energy_store.accumulate(HEAT_PUMP_ENERGY_KEY, wh)
+    if total.get("since") is None:
+        return
+    energy_id = "sensor.battery_orchestrator_heat_pump_energy"
+    _publish_sensor_throttled(
+        energy_id,
+        round(monotonic_sensor.publishable(
+            energy_id, float(total["wh"]) / 1000,
+            get_known_ha_state=lambda: ha_client.get_numeric_state(energy_id, default=None),
+        ), 3),
+        {"device_class": "energy", "state_class": "total_increasing", "unit_of_measurement": "kWh",
+         "since": total["since"], "friendly_name": "Battery Orchestrator Aires (estimado, energía)"},
+    )
 
 
 def _outlet_slug(battery: dict, n: int) -> str:

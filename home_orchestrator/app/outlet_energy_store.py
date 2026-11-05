@@ -3,7 +3,8 @@ Contador de por vida de la energia que sale por cada enchufe Schuko de las
 baterias EcoFlow (peticion del usuario, 5-nov: lo enchufado ahi no lo ve el
 Shelly de la casa mientras tira de bateria, y sin estos sensores la auditoria
 de consumo no puede repartirlo). Mismo mecanismo que solar_energy_store.py,
-una entrada por enchufe: {"<clave>": {"since": iso, "wh": float}}.
+una entrada por enchufe: {"<clave>": {"since": iso, "wh": float}}. Tambien
+guarda el acumulado de "Aires (estimado)" (clave "aires", ver main.py).
 """
 
 from __future__ import annotations

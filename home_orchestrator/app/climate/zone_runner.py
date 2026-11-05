@@ -1813,6 +1813,13 @@ class ZoneRunner:
         Sin modelo termico fiable, exterior o potencia: None (nunca inventa)."""
         thermal = self._thermal_model or {}
         temp, outdoor = getattr(self, "current_temperature", None), self._outdoor_now
+        # Primero lo aprendido comparando el consumo de la casa al entrar/salir
+        # de mantener (power_model.zone_hold_power_at); el modelo termico solo
+        # mientras no haya suficientes transiciones.
+        if temp is not None and outdoor is not None:
+            learned = power_model.zone_hold_power_at(self._zone_power, "heat" if outdoor < temp else "cool", outdoor)
+            if learned is not None:
+                return float(learned)
         if not thermal.get("reliable") or temp is None or outdoor is None:
             return None
         heating = outdoor < temp

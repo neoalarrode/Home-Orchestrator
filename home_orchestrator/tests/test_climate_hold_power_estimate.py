@@ -12,6 +12,7 @@ class _S:
         self._thermal_model = thermal
         self.current_temperature = temp
         self._outdoor_now = outdoor
+        self._zone_power = {}
         self.zone_power_for = lambda mode, ext: power
         self._hold_power_estimate_w = zr.ZoneRunner._hold_power_estimate_w.__get__(self)
 

@@ -93,10 +93,23 @@ def _entry_from_state(state: dict) -> dict:
     active = attrs.get("hvac_action") in ACTIVE_HVAC_ACTIONS
     unknown = active and power is None
 
+    # Lo que NO viene de un medidor propio (aires sin enchufe medible: potencia
+    # aprendida comparando el consumo de la casa, ver climate/power_model.py)
+    # -- para el sensor de energia "Aires (estimado)" de Energy.
+    unmetered = 0.0
+    for item in (attrs.get("zone_power_breakdown") or {}).values():
+        try:
+            if isinstance(item, dict) and item.get("source") != "measured":
+                w = float(item.get("watts") or 0.0)
+                if math.isfinite(w) and w > 0:
+                    unmetered += w
+        except (TypeError, ValueError):
+            continue
     return {
         "entity_id": state["entity_id"],
         "name": attrs.get("friendly_name") or state["entity_id"],
         "power_w": 0.0 if power is None else power,
+        "unmetered_w": unmetered,
         "unknown": unknown,
     }
 
@@ -157,11 +170,12 @@ def read_live_power_w(zone_ids: list[str]) -> dict:
     comprobar nada.
     """
     if not zone_ids:
-        return {"total_w": 0.0, "zones": [], "unknown_zone_names": [], "heat_forecast": None}
+        return {"total_w": 0.0, "unmetered_w": 0.0, "zones": [], "unknown_zone_names": [], "heat_forecast": None}
 
     detail = []
     unknown_names = []
     total = 0.0
+    unmetered_total = 0.0
     forecasts = []
     for entity_id in zone_ids:
         try:
@@ -175,8 +189,9 @@ def read_live_power_w(zone_ids: list[str]) -> dict:
             unknown_names.append(entry["name"])
         else:
             total += entry["power_w"]
+            unmetered_total += entry.get("unmetered_w") or 0.0
         forecasts.append((state.get("attributes") or {}).get("heat_forecast"))
-    return {"total_w": total, "zones": detail, "unknown_zone_names": unknown_names,
+    return {"total_w": total, "unmetered_w": unmetered_total, "zones": detail, "unknown_zone_names": unknown_names,
             "heat_forecast": combine_heat_forecasts(forecasts)}
 
 
