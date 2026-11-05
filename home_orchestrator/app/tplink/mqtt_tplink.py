@@ -49,6 +49,16 @@ def _color_temp_active(light) -> bool:
     return bool(light.color_temp)
 
 
+
+def _energy_today_kwh(energy) -> float | None:
+    """kWh de hoy que da el propio enchufe (python-kasa `consumption_today`),
+    o None si el modelo no lo informa."""
+    try:
+        value = getattr(energy, "consumption_today", None)
+        return float(value) if value is not None else None
+    except Exception:
+        return None
+
 class MqttTplinkDevice:
     def __init__(self, mqtt_client, manager, device_id: str, device_name: str) -> None:
         self._mqtt = mqtt_client
@@ -88,6 +98,8 @@ class MqttTplinkDevice:
         energy = device.modules.get(Module.Energy)
         if energy is not None:
             self._publish_power_sensor()
+            if _energy_today_kwh(energy) is not None:
+                self._publish_energy_sensor()
 
     def _publish_light(self, light) -> None:
         base = self._base("light").format(domain="light")
@@ -172,6 +184,27 @@ class MqttTplinkDevice:
         self._mqtt.publish(f"{base}/config", payload, retain=True)
         self._mqtt.publish(f"{base}/availability", "online", retain=True)
 
+    def _publish_energy_sensor(self) -> None:
+        """Energia del dia (kWh, total_increasing) para el Panel de Energia de
+        HA. 5-nov: al pasar los Tapo a este plugin se deshabilito la
+        integracion nativa y con ella sus "Consumo hoy"; el panel se quedo
+        con la lavadora, el lavavajillas, el frigorifico... sin datos desde
+        entonces. El contador vuelve a 0 cada dia: HA lo trata como un nuevo
+        ciclo (igual que hacia con el sensor nativo)."""
+        base = self._base("energy").format(domain="sensor")
+        payload = {
+            "name": "Energía hoy",
+            "unique_id": f"{NODE_ID}_{self.device_id}_energy_today",
+            "state_topic": f"{base}/state",
+            "availability_topic": f"{base}/availability",
+            "device_class": "energy",
+            "state_class": "total_increasing",
+            "unit_of_measurement": "kWh",
+            "device": self._device_block,
+        }
+        self._mqtt.publish(f"{base}/config", payload, retain=True)
+        self._mqtt.publish(f"{base}/availability", "online", retain=True)
+
     def remove_discovery(self) -> None:
         device = self._device()
         if device is None:
@@ -181,6 +214,7 @@ class MqttTplinkDevice:
         self._mqtt.publish(self._base(suffix).format(domain=domain) + "/config", "", retain=True)
         if device.modules.get(Module.Energy) is not None:
             self._mqtt.publish(self._base("power").format(domain="sensor") + "/config", "", retain=True)
+            self._mqtt.publish(self._base("energy").format(domain="sensor") + "/config", "", retain=True)
 
     # -------------------------------------------------------------- estado
 
@@ -243,6 +277,13 @@ class MqttTplinkDevice:
                 f"{base}/availability", "online" if available else "offline", retain=True,
             )
             self._mqtt.publish(f"{base}/state", round(energy.current_consumption, 1), retain=True)
+        today = _energy_today_kwh(energy) if energy is not None else None
+        if today is not None:
+            base = self._base("energy").format(domain="sensor")
+            self._mqtt.publish(
+                f"{base}/availability", "online" if available else "offline", retain=True,
+            )
+            self._mqtt.publish(f"{base}/state", round(today, 3), retain=True)
 
     # ------------------------------------------------------------- comandos
 
