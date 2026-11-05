@@ -46,6 +46,19 @@ class IdleModulating(unittest.TestCase):
         self.assertEqual(s._drive_climate_idle("e", 21.0, 0.3, False, maintain=True), "hold")
         self.assertEqual(s.temps(), [21.0])          # consigna de zona (+ desviacion 0 aqui), no 16
 
+    def setUp(self):
+        self._soft = zr.SOFT_PARK_ENABLED
+        zr.SOFT_PARK_ENABLED = True
+
+    def tearDown(self):
+        zr.SOFT_PARK_ENABLED = self._soft
+
+    def test_soft_park_disabled_parks_hard(self):
+        zr.SOFT_PARK_ENABLED = False
+        s = _Stub()
+        self.assertEqual(s._drive_climate_idle("e", 22.1, 0.3, False, maintain=True), "idle")
+        self.assertEqual(s.temps(), [16.0])
+
     def test_overshoot_soft_parks_and_resumes_at_setpoint(self):
         # 5-nov: aparcar a 16 C paraba el compresor del todo y lo hacia volver a
         # arrancar a fondo; ahora se queda 1,5 C por debajo (al minimo, sin apagar).

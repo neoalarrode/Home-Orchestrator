@@ -156,6 +156,7 @@ HOLD_TRIM_ERR_CAP_DEG = 0.5    # un pico del sensor no arrastra el recorte de go
 HOLD_PARK_EXTRA_DEG = 0.7
 # Aparcado suave de una bomba de calor en banda (ver _soft_park_setpoint).
 SOFT_PARK_OFFSET_DEG = 1.5
+SOFT_PARK_ENABLED = False
 # Tiempo minimo en un modo de equipo (calor/frio/dry/ventilar) antes de que una
 # decision AUTOMATICA lo cambie por otro: sin esto, la anticipacion entrando y
 # saliendo + la deshumidificacion en reposo hacian saltar un AC calor<->dry cada
@@ -2742,7 +2743,11 @@ class ZoneRunner:
             # propia sonda: el inverter baja al minimo o para solo, suave, y retoma
             # sin pico (decision del usuario, 5-nov: el aire del dormitorio se
             # aparcaba a 16 C ~30 veces al dia y volvia a 24,5 C cada vez).
-            soft = self._soft_park_setpoint(entity_id, state, mode, current_temp, parked)
+            # 5-nov 22:19: con el Salon 1,4 C pasado y el aire "al minimo" a 21,5
+            # (sonda 26) la exterior seguia en ~620 W y la sala subiendo: el
+            # aparcado suave NO para este compresor. Desactivado hasta medir otra
+            # cosa; se aparca como siempre (16 C), que si lo para.
+            soft = self._soft_park_setpoint(entity_id, state, mode, current_temp, parked) if SOFT_PARK_ENABLED else None
             if soft is not None:
                 now = _utcnow()
                 current_sp = _safe_float(attrs.get("temperature"))
