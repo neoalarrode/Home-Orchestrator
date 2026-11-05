@@ -44,7 +44,8 @@
         "solar_energy_store.py",
         "tariff_source.py",
         "templates",
-        "load_follower.py"
+        "load_follower.py",
+        "outlet_energy_store.py"
       ]
     },
     {
