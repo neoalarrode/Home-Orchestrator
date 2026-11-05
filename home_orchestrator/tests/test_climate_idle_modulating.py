@@ -135,7 +135,7 @@ class HoldTrim(unittest.TestCase):
         temps = s.temps()
         self.assertTrue(all(abs(a - b) <= 0.5 for a, b in zip(temps, temps[1:])), temps)
         self.assertLess(temps[-1], 21.0)
-        self.assertGreater(temps[-1], 18.0)
+        self.assertGreater(temps[-1], 15.9)
 
     def test_cooling_trim_raises_setpoint(self):
         from datetime import datetime, timedelta, timezone

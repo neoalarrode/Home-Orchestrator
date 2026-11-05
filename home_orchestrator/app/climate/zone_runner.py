@@ -145,8 +145,9 @@ HOLD_TRIM_MIN_DEG = -1.0  # como mucho 1 C mas
 HOLD_TRIM_VERSION = 3
 HOLD_TRIM_STALE_CAP_DEG = 2.5   # recortes de versiones anteriores: como mucho esto
 # Control integral del recorte (ver _learn_hold_trim): °C de recorte por °C de
-# error y hora. Con la zona 0,3 °C pasada durante media hora, 0,3 °C menos.
-HOLD_TRIM_KI = 2.0
+# error y hora. Con la zona 0,3 °C pasada durante media hora, 0,6 °C menos (5-nov: con 2
+# el Salon seguia pasandose de 22,8 a 23,3 manteniendo).
+HOLD_TRIM_KI = 4.0
 HOLD_TRIM_MAX_GAP_SECONDS = 600
 HOLD_TRIM_ERR_CAP_DEG = 0.5    # un pico del sensor no arrastra el recorte de golpe
 # Mantener una bomba de calor aguanta hasta este margen POR ENCIMA del deadband
