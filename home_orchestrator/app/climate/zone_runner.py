@@ -1793,7 +1793,36 @@ class ZoneRunner:
             breakdown["zone"] = {"watts": float(zone_learned), "source": "learned_zone"}
             total += float(zone_learned)
             any_known = True
+        elif unknown_active and getattr(self, "_holding", False):
+            hold_w = self._hold_power_estimate_w()
+            if hold_w is not None:
+                breakdown["zone"] = {"watts": hold_w, "source": "estimated_hold"}
+                total += hold_w
+                any_known = True
         return (total if any_known else None), breakdown
+
+    def _hold_power_estimate_w(self) -> float | None:
+        """Lo que gasta una bomba de calor MANTENIENDO (modulando) sin medidor
+        propio (decision del usuario, 5-nov: estimarlo con el modelo). En
+        regimen, lo que da es lo que pierde la zona: perdida = coef * (dentro -
+        fuera) en °C/h; el ritmo aprendido de calentar es NETO (ya descontada la
+        perdida), asi que a plena potencia daria perdida + ritmo. La fraccion
+        perdida / (perdida + ritmo) por la potencia de la zona es la estimacion.
+        Sin modelo termico fiable, exterior o potencia: None (nunca inventa)."""
+        thermal = self._thermal_model or {}
+        temp, outdoor = getattr(self, "current_temperature", None), self._outdoor_now
+        if not thermal.get("reliable") or temp is None or outdoor is None:
+            return None
+        heating = outdoor < temp
+        rate = float(thermal.get("heating_rate_deg_h" if heating else "cooling_rate_deg_h") or 0.0)
+        coef = thermal.get("idle_loss_coeff")
+        if rate <= 0 or coef is None or coef < 0:
+            return None
+        loss = coef * abs(temp - outdoor)
+        power = self.zone_power_for("heat" if heating else "cool", outdoor)
+        if not power or power <= 0 or loss <= 0:
+            return None
+        return round(power * loss / (loss + rate), 1)
 
     def _measured_power_w(self, entity_id: str) -> float | None:
         """Lectura EN VIVO del medidor declarado para este actuador, o None."""
@@ -2252,6 +2281,7 @@ class ZoneRunner:
         # ENFRIANDO o ninguna (ventilar/secar/idle = "off", no condiciona pasivamente).
         # dry/ventilar con nombre propio: el dry enfria y contaminaba la perdida
         # pasiva si se registraba como "off" (thermal_model solo usa "off" como reposo).
+        self._holding = real_action == "hold"
         self._record_action(real_action if real_action in ("heat", "cool", "hold", "dry", "fan_only") else "off")
         # Ventilar es un RESPALDO, no la accion de un termostato de temperatura.
         # Estando en un modo de temperatura (calor/frio/ambos) la zona puede
