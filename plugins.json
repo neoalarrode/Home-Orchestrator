@@ -45,7 +45,8 @@
         "tariff_source.py",
         "templates",
         "load_follower.py",
-        "outlet_energy_store.py"
+        "outlet_energy_store.py",
+        "energy_mqtt.py"
       ]
     },
     {
@@ -89,10 +90,10 @@
       "description": "Iluminacion adaptativa por zona -- color y brillo segun la posicion real del sol, encendido/apagado por presencia y reglas condicionales",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.7.33",
+      "version": "0.7.34",
       "downloadable": true,
-      "tag": "v0.77.155",
-      "sha256": "b527bf481c98ec86271f37bef70b9ac0d026d5a2e00abc1b87f87d5e10934e26",
+      "tag": "v0.77.178",
+      "sha256": "611ff1a9c9b7cb8c7ec9624d0b83860d304a3ce4d56706ebf163feec4ea53b32",
       "files": [
         "lighting_plugin.py",
         "lighting",
