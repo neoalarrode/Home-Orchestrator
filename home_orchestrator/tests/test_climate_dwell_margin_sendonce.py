@@ -108,6 +108,8 @@ class _MarginStub:
         self._delegate_activation_margin = {}
         self._activation_probe = {}
         self.learn = zr.ZoneRunner._learn_activation_margin.__get__(self)
+        self._activation_ok_streak = {}
+        self._relax_activation_margin = zr.ZoneRunner._relax_activation_margin.__get__(self)
 
 
 class ActivationMargin(unittest.TestCase):

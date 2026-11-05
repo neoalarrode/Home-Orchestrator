@@ -158,6 +158,7 @@ ACTIVATION_MIN_ZONE_MOVE_DEG = 0.1
 ACTIVATION_MIN_DEVICE_MOVE_DEG = 0.3
 ACTIVATION_MARGIN_STEP_DEG = 0.5
 ACTIVATION_MARGIN_MAX_DEG = 3.0
+ACTIVATION_RELAX_STREAK = 3
 # Con medidor de potencia propio la verdad es si CONSUME: por encima de esto esta
 # actuando; si mandado a calentar/enfriar no lo supera en ningun momento durante
 # ACTIVATION_POWER_PROBE_SECONDS, no arranca (no confunde el ciclado normal de su
@@ -523,6 +524,7 @@ class ZoneRunner:
         # Alimenta thermal_model.get_model(action_log=...) para aprender la inercia.
         self._action_log: deque[tuple[float, str]] = deque(maxlen=ACTION_LOG_MAXLEN)
         self._action_outdoor: dict[float, float] = {}     # ts de arranque -> exterior
+        self._activation_ok_streak: dict[str, int] = {}
         self._heat_calibrator = heat_forecast.Calibrator()
 
         self._min_humidity = DEFAULT_MIN_HUMIDITY
@@ -2718,7 +2720,10 @@ class ZoneRunner:
                 probe["fired"] = True
             if (now - probe["since"]).total_seconds() < ACTIVATION_POWER_PROBE_SECONDS:
                 return margin
+            if probe["fired"]:
+                margin = self._relax_activation_margin(entity_id, margin, attrs)
             if not probe["fired"]:
+                self._activation_ok_streak[entity_id] = 0
                 step = max(ACTIVATION_MARGIN_STEP_DEG, _safe_float(attrs.get("target_temp_step")) or 0.0)
                 new_margin = min(ACTIVATION_MARGIN_MAX_DEG, margin + step)
                 if new_margin != margin:
@@ -2744,6 +2749,10 @@ class ZoneRunner:
         sign = 1.0 if action == "heat" else -1.0
         zone_moved = sign * (zone_temp - probe["zone0"])
         device_moved = sign * (device_temp - probe["dev0"])
+        if zone_moved >= ACTIVATION_MIN_ZONE_MOVE_DEG or device_moved >= ACTIVATION_MIN_DEVICE_MOVE_DEG:
+            margin = self._relax_activation_margin(entity_id, margin, attrs)
+        else:
+            self._activation_ok_streak[entity_id] = 0
         if zone_moved < ACTIVATION_MIN_ZONE_MOVE_DEG and device_moved < ACTIVATION_MIN_DEVICE_MOVE_DEG:
             step = max(ACTIVATION_MARGIN_STEP_DEG, _safe_float(attrs.get("target_temp_step")) or 0.0)
             new_margin = min(ACTIVATION_MARGIN_MAX_DEG, margin + step)
@@ -2757,6 +2766,26 @@ class ZoneRunner:
                 margin = new_margin
         self._activation_probe[entity_id] = {"action": action, "since": now, "zone0": zone_temp, "dev0": device_temp}
         return margin
+
+    def _relax_activation_margin(self, entity_id: str, margin: float, attrs: dict) -> float:
+        """El margen de arranque tambien BAJA (5-nov): solo subia, y con el tiempo
+        el aire del dormitorio arrancaba siempre con +3 C a tope de compresor y
+        se pasaba de la consigna. Tras ACTIVATION_RELAX_STREAK comprobaciones
+        seguidas en las que el equipo arranco bien, se quita un paso: se queda en
+        lo minimo que de verdad necesita."""
+        if margin <= 0:
+            return margin
+        streak = self._activation_ok_streak.get(entity_id, 0) + 1
+        self._activation_ok_streak[entity_id] = streak
+        if streak < ACTIVATION_RELAX_STREAK:
+            return margin
+        step = max(ACTIVATION_MARGIN_STEP_DEG, _safe_float(attrs.get("target_temp_step")) or 0.0)
+        new_margin = max(0.0, margin - step)
+        self._activation_ok_streak[entity_id] = 0
+        self._delegate_activation_margin[entity_id] = new_margin
+        _LOGGER.info("%s: %s arranca bien -- margen de arranque %.1f -> %.1fC",
+                     self.zone.get("name"), entity_id, margin, new_margin)
+        return new_margin
 
     def _compensate_delegate_target(self, entity_id: str, state: dict | None, target_temp: float,
                                     current_temp: float | None, extra: float = 0.0) -> float:

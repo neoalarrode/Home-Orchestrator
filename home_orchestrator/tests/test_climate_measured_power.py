@@ -17,7 +17,9 @@ class _Stub:
         self._running_power, self._power_model = {}, {}
         self._zone_power = zone_power or {}
         self._delegate_activation_margin, self._activation_probe = {}, {}
-        for n in ("_zone_estimated_power_w", "_measured_power_w", "_actuator_power_w", "_learn_activation_margin"):
+        self._activation_ok_streak = {}
+        for n in ("_zone_estimated_power_w", "_measured_power_w", "_actuator_power_w", "_learn_activation_margin",
+                  "_relax_activation_margin"):
             setattr(self, n, getattr(zr.ZoneRunner, n).__get__(self))
     def _climate_actuators(self): return self._actuators
     def _get_state(self, e):
