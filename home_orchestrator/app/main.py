@@ -38,6 +38,7 @@ import lifetime_store
 import monotonic_sensor
 import pv_source
 import savings_store
+import outlet_energy_store
 import solar_energy_store
 import tariff_source
 
@@ -2004,6 +2005,48 @@ SOLAR_ENERGY_MAX_GAP_SECONDS = 120
 _solar_energy_last_ts: float | None = None
 
 
+_outlet_last_ts: dict[str, float] = {}
+
+
+def _outlet_slug(battery: dict, n: int) -> str:
+    raw = f"{battery.get('id') or battery.get('name')}_{n}"
+    return "".join(c if c.isalnum() else "_" for c in str(raw).lower())
+
+
+def _publish_outlet_sensors(battery_live: list[dict], now_ts: float | None = None) -> None:
+    """Un sensor de potencia (W) y otro de energia (kWh, total_increasing,
+    para el Panel de Energia de HA) por cada enchufe de bateria que informa
+    (peticion del usuario, 5-nov). La energia se integra aqui con el tiempo
+    real transcurrido, como la solar (tope SOLAR_ENERGY_MAX_GAP_SECONDS)."""
+    now_ts = time.time() if now_ts is None else now_ts
+    for b in battery_live:
+        for n, watts in sorted((b.get("outlets_each_w") or {}).items()):
+            slug = _outlet_slug(b, n)
+            name = f"Battery Orchestrator Enchufe {n} — {b.get('name') or b.get('id')}"
+            _publish_sensor_throttled(
+                f"sensor.battery_orchestrator_outlet_{slug}", round(watts),
+                {"device_class": "power", "state_class": "measurement",
+                 "unit_of_measurement": "W", "friendly_name": name},
+            )
+            last = _outlet_last_ts.get(slug)
+            _outlet_last_ts[slug] = now_ts
+            wh = watts * min(now_ts - last, SOLAR_ENERGY_MAX_GAP_SECONDS) / 3600 if last is not None and now_ts > last else 0.0
+            total = outlet_energy_store.accumulate(slug, wh)
+            if total.get("since") is None:
+                continue
+            energy_id = f"sensor.battery_orchestrator_outlet_{slug}_energy"
+            _publish_sensor_throttled(
+                energy_id,
+                round(monotonic_sensor.publishable(
+                    energy_id, float(total["wh"]) / 1000,
+                    get_known_ha_state=lambda eid=energy_id: ha_client.get_numeric_state(eid, default=None),
+                ), 3),
+                {"device_class": "energy", "state_class": "total_increasing",
+                 "unit_of_measurement": "kWh", "since": total["since"],
+                 "friendly_name": f"{name} (energía)"},
+            )
+
+
 def _live_sensor_loop():
     """
     Publica SOC, potencia y solar en HA cada pocos segundos, INDEPENDIENTE
@@ -2050,6 +2093,7 @@ def _live_sensor_loop():
                             "unit_of_measurement": "W", "friendly_name": "Battery Orchestrator Potencia",
                         },
                                             )
+                _publish_outlet_sensors(live["battery_live"])
             solar_w = _live_solar_now_w(cfg)
             now_ts = time.time()
             if solar_w is not None:
@@ -2530,6 +2574,19 @@ _ECOFLOW_OUTLET_FIELDS_BLE = ("ac_power_1", "ac_power_2")
 _ECOFLOW_OUTLET_FIELDS_CLOUD = ("powGetSchuko1", "powGetSchuko2")
 
 
+def _ecoflow_outlets_each_w(state: dict | None, fields: tuple[str, ...]) -> dict[int, float]:
+    """{numero de enchufe (1, 2): vatios} de los que el equipo informa."""
+    out: dict[int, float] = {}
+    for n, f in enumerate(fields, start=1):
+        v = (state or {}).get(f)
+        try:
+            if v is not None:
+                out[n] = abs(float(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _ecoflow_outlet_w(state: dict | None, fields: tuple[str, ...]) -> float | None:
     """Suma de lo que sale por los enchufes, o None si el equipo no lo informa
     (modelo sin enchufes, puente antiguo, o aun no ha llegado el dato)."""
@@ -2603,6 +2660,7 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
             # entrando de verdad y 125 W saliendo por su Schuko, 1-nov) y con
             # ella la capacidad/salud aprendidas.
             outlets_w = None
+            outlets_each: dict[int, float] = {}
             own_battery_power = False
             ecoflow_mode = b.get("ecoflow_mode")
             # De donde ha venido el dato de ESTE ciclo -- para el iconito
@@ -2649,6 +2707,7 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                             net_power = -float(state["grid_power"])
                             ecoflow_source = ecoflow_source or "bluetooth"
                             outlets_w = _ecoflow_outlet_w(state, _ECOFLOW_OUTLET_FIELDS_BLE)
+                            outlets_each = _ecoflow_outlets_each_w(state, _ECOFLOW_OUTLET_FIELDS_BLE)
                         # Unidad sola en su grupo (2-nov: las cuatro STREAM son
                         # independientes): `battery_power` ya es SU bateria, con el
                         # sol que entra por DC y los enchufes incluidos. Por la red
@@ -2709,6 +2768,7 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                             net_power = -float(own_state["gridConnectionPower"])
                             ecoflow_source = ecoflow_source or "cloud"
                             outlets_w = _ecoflow_outlet_w(own_state, _ECOFLOW_OUTLET_FIELDS_CLOUD)
+                            outlets_each = _ecoflow_outlets_each_w(own_state, _ECOFLOW_OUTLET_FIELDS_CLOUD)
                     if (group_power is None and main_sn
                             and main_sn not in ecoflow_main_sns_counted
                             and group_owners.get(main_sn, b.get("id")) == b.get("id")):
@@ -2726,6 +2786,7 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
                 client = ecoflow_cloud.get_client(access_key, secret_key) if (access_key and secret_key) else None
                 cloud_state = client.get_live_state(b["ecoflow_sn"], required_fields=("gridConnectionPower",)) if client else None
                 outlets_w = _ecoflow_outlet_w(cloud_state, _ECOFLOW_OUTLET_FIELDS_CLOUD)
+                outlets_each = _ecoflow_outlets_each_w(cloud_state, _ECOFLOW_OUTLET_FIELDS_CLOUD)
             if net_power is not None and outlets_w and not own_battery_power:
                 net_power -= outlets_w
             net_power = _plausible_power_w(net_power, f"batería {b.get('name', b.get('id'))} (EcoFlow)")
@@ -2762,6 +2823,7 @@ def _live_battery_totals(cfg: dict, *, fresh: bool = False) -> dict:
         battery_live.append({
             "id": b["id"], "name": b["name"], "soc_pct": soc, "power_w": power, "net_power_w": net_power,
             "outlets_w": round(outlets_w, 1) if source == "ecoflow" and outlets_w is not None else None,
+            "outlets_each_w": dict(outlets_each) if source == "ecoflow" else {},
             "ecoflow_source": ecoflow_source if source == "ecoflow" else None,
         })
         # Para el TOTAL del sistema, una bateria EcoFlow aporta `group_power`
