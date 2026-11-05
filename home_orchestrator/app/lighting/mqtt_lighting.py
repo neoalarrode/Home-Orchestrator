@@ -207,9 +207,12 @@ class MqttLightingZone:
                 "luces_sin_aprender": power.unlearned,
                 "vatios_aprendidos_al_100": {e: w for e, w in power.learned().items() if w is not None},
             }, retain=True)
+            # Siempre con valor, aunque aun no haya aprendido nada (0 kWh): sin
+            # estado HA no crea estadisticas y el Panel de Energia avisa de
+            # "entidad no disponible" (5-nov).
+            eb = self._sensor_base("energy")
+            self._mqtt.publish(f"{eb}/state", power.energy_kwh, retain=True)
             if power.state.get("energy_since"):
-                eb = self._sensor_base("energy")
-                self._mqtt.publish(f"{eb}/state", power.energy_kwh, retain=True)
                 self._mqtt.publish(f"{eb}/attributes", {"since": power.state["energy_since"]}, retain=True)
 
     # ----------------------------------------------------------- comandos -
