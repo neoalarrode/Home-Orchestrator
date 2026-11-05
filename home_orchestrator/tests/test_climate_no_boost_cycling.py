@@ -37,7 +37,7 @@ class _S:
         self._hold_run = {}
         self._hold_trim = {"ac": 1.0}
         self._drive_at = {}
-        self._bump_hold_trim = zr.ZoneRunner._bump_hold_trim.__get__(self)
+        self._nudge_hold_trim = zr.ZoneRunner._nudge_hold_trim.__get__(self)
         self._learn_hold_trim = zr.ZoneRunner._learn_hold_trim.__get__(self)
 
 
@@ -45,21 +45,29 @@ class HoldTrim(unittest.TestCase):
     def setUp(self):
         self.t0 = datetime(2026, 11, 5, 19, 0, tzinfo=timezone.utc)
 
-    def _quick_overshoot(self, s, drove_before):
+    def _hold_above(self, s, drove_before, minutes=15):
         if drove_before is not None:
             s._drive_at["ac"] = self.t0 - timedelta(seconds=drove_before)
-        s._learn_hold_trim("ac", 21.0, 21.1, True, False, self.t0)
-        s._learn_hold_trim("ac", 21.0, 21.3, True, True, self.t0 + timedelta(minutes=5))
+        s._learn_hold_trim("ac", 21.0, 21.5, True, False, self.t0)
+        for m in range(1, minutes + 1):
+            s._learn_hold_trim("ac", 21.0, 21.5, True, False, self.t0 + timedelta(minutes=m))
 
-    def test_overshoot_right_after_boost_does_not_count(self):
-        s = _S(); self._quick_overshoot(s, drove_before=60)
+    def test_heat_left_over_from_a_boost_does_not_count(self):
+        s = _S(); self._hold_above(s, drove_before=60)
         self.assertEqual(s._hold_trim["ac"], 1.0)
 
-    def test_overshoot_of_a_real_hold_still_counts(self):
-        s = _S(); self._quick_overshoot(s, drove_before=3600)
-        self.assertEqual(s._hold_trim["ac"], 1.0 + zr.HOLD_TRIM_STEP_DEG)
-        s = _S(); self._quick_overshoot(s, drove_before=None)
-        self.assertEqual(s._hold_trim["ac"], 1.0 + zr.HOLD_TRIM_STEP_DEG)
+    def test_a_real_hold_still_learns(self):
+        s = _S(); self._hold_above(s, drove_before=3600)
+        self.assertAlmostEqual(s._hold_trim["ac"], 1.0 + 0.5 * 15 / 60 * zr.HOLD_TRIM_KI, delta=0.01)
+        s = _S(); self._hold_above(s, drove_before=None)
+        self.assertAlmostEqual(s._hold_trim["ac"], 1.0 + 0.5 * 15 / 60 * zr.HOLD_TRIM_KI, delta=0.01)
+
+    def test_soft_parked_overshoot_keeps_learning_but_capped(self):
+        s = _S()
+        s._learn_hold_trim("ac", 21.0, 22.5, True, True, self.t0)
+        for m in range(1, 600):
+            s._learn_hold_trim("ac", 21.0, 22.5, True, True, self.t0 + timedelta(minutes=m))
+        self.assertEqual(s._hold_trim["ac"], zr.HOLD_TRIM_MAX_DEG)
 
 
 class StaleTrims(unittest.TestCase):

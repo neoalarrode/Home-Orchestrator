@@ -143,6 +143,14 @@ HOLD_TRIM_STEP_DEG = 0.5
 HOLD_TRIM_MAX_DEG = 5.0   # como mucho 5 C menos de lo compensado
 HOLD_TRIM_MIN_DEG = -1.0  # como mucho 1 C mas
 HOLD_TRIM_VERSION = 2
+# Control integral del recorte (ver _learn_hold_trim): °C de recorte por °C de
+# error y hora. Con la zona 0,3 °C pasada durante media hora, 0,3 °C menos.
+HOLD_TRIM_KI = 2.0
+HOLD_TRIM_MAX_GAP_SECONDS = 600
+# Mantener una bomba de calor aguanta hasta este margen POR ENCIMA del deadband
+# antes de aparcar: a baja velocidad la zona oscila un poco, y aparcar en cuanto
+# roza el deadband es volver a arrancar y parar.
+HOLD_PARK_EXTRA_DEG = 0.7
 # Aparcado suave de una bomba de calor en banda (ver _soft_park_setpoint).
 SOFT_PARK_OFFSET_DEG = 1.5
 # Tiempo minimo en un modo de equipo (calor/frio/dry/ventilar) antes de que una
@@ -1439,7 +1447,8 @@ class ZoneRunner:
         if target is None or current_temp is None:
             return False
         heating = mode == "heat"
-        overshoot = current_temp >= target + deadband if heating else current_temp <= target - deadband
+        limit = deadband + HOLD_PARK_EXTRA_DEG
+        overshoot = current_temp >= target + limit if heating else current_temp <= target - limit
         back = current_temp <= target if heating else current_temp >= target
         now = _utcnow()
         was_stopped = self._hold_overshoot.get(entity_id, False)
@@ -1485,30 +1494,43 @@ class ZoneRunner:
 
     def _learn_hold_trim(self, entity_id: str, target: float, current_temp: float, heating: bool,
                          stopped: bool, now: datetime) -> None:
-        """Ajusta `_hold_trim` con lo que hizo la zona (NUESTRO sensor) en el
-        ultimo tramo de mantener -- ver HOLD_*. Un tramo empieza cuando el
-        mantener arranca y acaba al pasarse (aparca) o al salir de banda."""
+        """Ajusta `_hold_trim` de forma CONTINUA mientras mantiene (control
+        integral con NUESTRO sensor): cada minuto que la zona esta por encima de
+        la consigna (en calor) el recorte crece HOLD_TRIM_KI °C por °C y hora, y
+        por debajo decrece. Asi la consigna del equipo se va asentando en la que
+        deja al inverter a baja velocidad sosteniendo la zona, en vez de saltar
+        entre arranques a tope y paradas (5-nov, decision del usuario).
+        Los primeros HOLD_SHORT_SECONDS tras calentar/enfriar a tope no cuentan:
+        lo que se pasa ahi es el calor que traia, no la consigna de mantener
+        (asi se clavo el recorte en 5 C)."""
+        # Tambien cuenta aparcado suave (`stopped`): si se ha pasado, la consigna
+        # de mantener era alta y el recorte debe crecer -- si no, cada vuelta
+        # repetiria la misma rafaga. El tope HOLD_TRIM_MAX_DEG acota la deriva.
         run = self._hold_run.get(entity_id)
-        if stopped:
-            if run is not None:
-                # Si el tramo empezo justo despues de calentar/enfriar a tope, lo
-                # que le hace pasarse es el calor que traia, no la consigna de
-                # mantener: no cuenta (5-nov: asi se clavo el recorte en 5 C).
-                if (now - run["since"]).total_seconds() < HOLD_SHORT_SECONDS and not run.get("after_drive"):
-                    self._bump_hold_trim(entity_id, +HOLD_TRIM_STEP_DEG, "se pasa enseguida")
-                self._hold_run.pop(entity_id, None)
-            return
         if run is None:
             drove = self._drive_at.get(entity_id)
             after_drive = drove is not None and (now - drove).total_seconds() < HOLD_SHORT_SECONDS
-            self._hold_run[entity_id] = {"since": now, "reached": False, "after_drive": after_drive}
+            self._hold_run[entity_id] = {"since": now, "last": now, "after_drive": after_drive}
             return
-        if (current_temp >= target) if heating else (current_temp <= target):
-            run["reached"] = True
-        if (now - run["since"]).total_seconds() >= HOLD_LONG_SECONDS:
-            if not run["reached"]:
-                self._bump_hold_trim(entity_id, -HOLD_TRIM_STEP_DEG, "no llega a la consigna")
-            self._hold_run[entity_id] = {"since": now, "reached": False}
+        last = run.get("last") or run["since"]
+        run["last"] = now
+        if run.get("after_drive") and (now - run["since"]).total_seconds() < HOLD_SHORT_SECONDS:
+            return
+        dt_h = min(max(0.0, (now - last).total_seconds()), HOLD_TRIM_MAX_GAP_SECONDS) / 3600.0
+        err = (current_temp - target) if heating else (target - current_temp)
+        if dt_h > 0 and err:
+            self._nudge_hold_trim(entity_id, HOLD_TRIM_KI * err * dt_h)
+
+    def _nudge_hold_trim(self, entity_id: str, delta: float) -> None:
+        old = self._hold_trim.get(entity_id, 0.0)
+        new = round(max(HOLD_TRIM_MIN_DEG, min(HOLD_TRIM_MAX_DEG, old + delta)), 3)
+        if new == old:
+            return
+        self._hold_trim[entity_id] = new
+        # Solo se registra al cruzar un paso de HOLD_TRIM_STEP_DEG (no cada minuto).
+        if math.floor(new / HOLD_TRIM_STEP_DEG) != math.floor(old / HOLD_TRIM_STEP_DEG):
+            _LOGGER.info("%s: mantener de %s -- recorte %.1f -> %.1f C",
+                         self.zone.get("name"), entity_id, old, new)
 
     def _bump_hold_trim(self, entity_id: str, delta: float, why: str) -> None:
         old = self._hold_trim.get(entity_id, 0.0)
