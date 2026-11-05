@@ -45,5 +45,40 @@ class Project(unittest.TestCase):
         self.assertIsNone(hf.project(None, [5.0], [(21.0, None)], 1.0, 0.0, 0.05, 900.0))
 
 
+
+class Calibration(unittest.TestCase):
+    def _hours(self, cal, n, pred, real_w):
+        for h in range(n):
+            key = f"2026-11-05T{h % 24:02d}:00:00+01:00" if h < 24 else f"2026-11-06T{h - 24:02d}:00:00+01:00"
+            cal.note_forecast(key, pred)
+            t0 = 1_000_000 + h * 3600
+            cal.add_energy(key, t0, real_w)
+            for m in range(1, 7):                       # cada 10 min
+                cal.add_energy(key, t0 + m * 600, real_w)
+        cal.close_hours("2026-11-07T00:00:00+01:00")
+
+    def test_learns_that_the_raw_forecast_triples_reality(self):
+        # 4-nov: previsión cruda ~3x lo real (inverter modulando en la consigna).
+        cal = hf.Calibrator()
+        self._hours(cal, 30, pred=900.0, real_w=300.0)
+        self.assertAlmostEqual(cal.factor(), 1 / 3, delta=0.03)
+
+    def test_no_factor_until_a_day_of_comparison(self):
+        cal = hf.Calibrator()
+        self._hours(cal, 10, pred=900.0, real_w=300.0)
+        self.assertIsNone(cal.factor())
+
+    def test_zone_that_barely_heats_keeps_factor_one(self):
+        cal = hf.Calibrator()
+        self._hours(cal, 30, pred=20.0, real_w=35.0)
+        self.assertEqual(cal.factor(), 1.0)
+
+    def test_survives_a_restart(self):
+        cal = hf.Calibrator()
+        self._hours(cal, 30, pred=900.0, real_w=300.0)
+        again = hf.Calibrator(cal.to_state())
+        self.assertAlmostEqual(again.factor(), cal.factor(), places=3)
+
+
 if __name__ == "__main__":
     unittest.main()

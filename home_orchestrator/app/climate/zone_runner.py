@@ -521,6 +521,7 @@ class ZoneRunner:
         # Alimenta thermal_model.get_model(action_log=...) para aprender la inercia.
         self._action_log: deque[tuple[float, str]] = deque(maxlen=ACTION_LOG_MAXLEN)
         self._action_outdoor: dict[float, float] = {}     # ts de arranque -> exterior
+        self._heat_calibrator = heat_forecast.Calibrator()
 
         self._min_humidity = DEFAULT_MIN_HUMIDITY
         self._max_humidity = DEFAULT_MAX_HUMIDITY
@@ -696,6 +697,7 @@ class ZoneRunner:
                 if (isinstance(entry, (list, tuple)) and len(entry) == 2
                         and isinstance(entry[0], (int, float)) and entry[1] in ("heat", "cool", "off", "hold", "dry", "fan_only")):
                     self._action_log.append((float(entry[0]), entry[1]))
+        self._heat_calibrator = heat_forecast.Calibrator(state.get("heat_calibration"))
         saved_outdoor = state.get("action_outdoor")
         if isinstance(saved_outdoor, dict):
             for k, v in saved_outdoor.items():
@@ -760,6 +762,7 @@ class ZoneRunner:
             "running_power": dict(self._running_power),
             "known_hvac_modes": list(self._known_hvac_modes or []),
             "hold_trims": dict(self._hold_trim),
+            "heat_calibration": self._heat_calibrator.to_state(),
             "rest_deviations": {e: self._delegate_deviations[e] for e in self._deviation_at_rest
                                 if e in self._delegate_deviations},
             "hvac_mode": self.hvac_mode,
@@ -1845,7 +1848,8 @@ class ZoneRunner:
 
         self.decide_and_act()
         try:
-            self._heat_forecast = self._compute_heat_forecast()
+            raw = self._compute_heat_forecast()
+            self._heat_forecast = self._calibrated_heat_forecast(raw)
         except Exception:
             _LOGGER.exception("%s: fallo calculando la previsión de consumo de climatizacion", self.zone.get("name"))
             self._heat_forecast = {"start": None, "w": None}
@@ -1879,6 +1883,27 @@ class ZoneRunner:
         )
         return {"start": start, "w": w}
 
+    def _hour_key(self) -> str:
+        return datetime.now().astimezone().replace(minute=0, second=0, microsecond=0).isoformat()
+
+    def _track_heat_energy(self) -> None:
+        """Lo que gasta la zona de verdad, para calibrar su previsión."""
+        zone_power, _ = self._zone_power_w()
+        self._heat_calibrator.add_energy(self._hour_key(), _utcnow().timestamp(), zone_power or 0.0)
+
+    def _calibrated_heat_forecast(self, raw: dict) -> dict:
+        key = self._hour_key()
+        cal = self._heat_calibrator
+        cal.close_hours(key)
+        w = raw.get("w")
+        if w:
+            cal.note_forecast(key, w[0])
+        factor = cal.factor()
+        if not w or factor is None:
+            return {"start": raw.get("start"), "w": None, "raw_w": w, "calibration_hours": cal.hours}
+        return {"start": raw.get("start"), "w": [round(x * factor, 1) for x in w],
+                "factor": round(factor, 3), "calibration_hours": cal.hours}
+
     def _models_settled(self, entities_to_learn: list[str]) -> bool:
         if not self._thermal_model.get("reliable"):
             return False
@@ -1887,6 +1912,10 @@ class ZoneRunner:
     # ---------------------------------------------------- decision barata -
 
     def decide_and_act(self) -> None:
+        try:
+            self._track_heat_energy()
+        except Exception:
+            _LOGGER.debug("No se pudo anotar el consumo para calibrar la previsión", exc_info=True)
         if self._capability_pending:
             # Bug real, confirmado en produccion: Climate arranca SIEMPRE
             # antes que Tuya (orden fijo en core_app.py), asi que una zona
