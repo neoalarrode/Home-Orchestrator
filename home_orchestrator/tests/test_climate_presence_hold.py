@@ -20,7 +20,7 @@ def _st(state, minutes_ago):
 
 class PresenceHold(unittest.TestCase):
     def test_present(self):
-        self.assertTrue(_Stub({"p": _st("on", 1)}).presence())
+        self.assertTrue(_Stub({"p": _st("on", 5)}).presence())   # 6-nov: presencia de mas de PRESENCE_MIN_ON_SECONDS
 
     def test_left_five_minutes_ago_still_occupied(self):
         self.assertTrue(_Stub({"p": _st("off", 5)}).presence())

@@ -188,6 +188,13 @@ DOOR_OPEN_MIN_SECONDS = 60
 # retardo de ausencia de segundos y la casa apenas se enfria en una ausencia corta:
 # cambiar de preset en cada salida corta subia y bajaba la consigna sin ahorrar.
 PRESENCE_ABSENCE_HOLD_SECONDS = 1800
+# 6-nov: el radiador del cuarto de juegos (1,4 kW) arrancaba 15 min por una
+# presencia de UN minuto (el gato, alguien que pasa) y el margen de ausencia
+# alargaba el confort media hora mas. Una presencia solo cuenta a partir de
+# PRESENCE_MIN_ON_SECONDS seguidos, y el margen de ausencia solo se aplica tras
+# una estancia de al menos PRESENCE_MIN_STAY_SECONDS.
+PRESENCE_MIN_ON_SECONDS = 120
+PRESENCE_MIN_STAY_SECONDS = 300
 # Deshumidificar con un AC es hacer frio: si la zona esta en el borde de pedir
 # calor, el dry la enfria, salta la calefaccion y se paga dos veces (dormitorio:
 # 58 cambios calor<->dry en 24 h). Solo se seca con este margen sobre la consigna
@@ -616,6 +623,8 @@ class ZoneRunner:
 
         self._temp_ema = ema_module.Ema(TEMP_EMA_HALFLIFE_SECONDS)
         self._sensor_stale = False
+        self._presence_on_since: dict[str, datetime] = {}
+        self._presence_last_stay: dict[str, float] = {}
         self._window_detector = window_algorithm.WindowSlopeDetector()
         self._equipment_run: tuple[str, datetime, float] | None = None
         self._equipment_failure_suspected = False
@@ -1372,11 +1381,25 @@ class ZoneRunner:
             if state is None or state.get("state") in ("unknown", "unavailable", None):
                 continue
             present = state.get("state") in ("on", "home")
-            if not present:
+            since = _ha_state_since(state)
+            on_since = getattr(self, "_presence_on_since", {})
+            last_stay = getattr(self, "_presence_last_stay", {})
+            if present:
+                if since is not None:
+                    on_since[e] = since
+                # Un paso fugaz (el gato, alguien que cruza) no es estar.
+                if since is not None and (now - since).total_seconds() < PRESENCE_MIN_ON_SECONDS:
+                    present = False
+            else:
+                started = on_since.pop(e, None)
+                if started is not None and since is not None:
+                    last_stay[e] = (since - started).total_seconds()
                 # Recien vaciada: sigue contando como ocupada hasta PRESENCE_ABSENCE_HOLD_
-                # SECONDS (se mira cuando cambio en HA, asi vale tambien tras un reinicio).
-                since = _ha_state_since(state)
-                if since is not None and (now - since).total_seconds() < PRESENCE_ABSENCE_HOLD_SECONDS:
+                # SECONDS (se mira cuando cambio en HA, asi vale tambien tras un reinicio),
+                # pero solo si de verdad hubo alguien un rato (sin dato: como siempre).
+                stay = last_stay.get(e)
+                if since is not None and (now - since).total_seconds() < PRESENCE_ABSENCE_HOLD_SECONDS \
+                        and (stay is None or stay >= PRESENCE_MIN_STAY_SECONDS):
                     present = True
             known.append(present)
         return any(known) if known else None
