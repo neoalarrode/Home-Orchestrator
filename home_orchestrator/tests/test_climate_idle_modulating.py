@@ -27,7 +27,7 @@ class _Stub:
             setattr(self, a, {})
         self._delegate_last_active["e"] = (mode, 21.0)
         for n in ("_drive_climate_idle", "_send_delegate_once", "_note_delegate_command",
-                  "_compensate_delegate_target", "_fallback_thermal_mode", "_learn_rest_deviation", "_maintain_heat_pump", "_side_target", "_learn_hold_trim", "_bump_hold_trim"):
+                  "_compensate_delegate_target", "_fallback_thermal_mode", "_learn_rest_deviation", "_maintain_heat_pump", "_side_target", "_learn_hold_trim", "_bump_hold_trim", "_soft_park_setpoint"):
             setattr(self, n, getattr(zr.ZoneRunner, n).__get__(self))
     def _get_state(self, e): return self.state
     def _respect_delegate_override(self, *a): return False
@@ -46,15 +46,19 @@ class IdleModulating(unittest.TestCase):
         self.assertEqual(s._drive_climate_idle("e", 21.0, 0.3, False, maintain=True), "hold")
         self.assertEqual(s.temps(), [21.0])          # consigna de zona (+ desviacion 0 aqui), no 16
 
-    def test_overshoot_parks_and_resumes_at_setpoint(self):
+    def test_overshoot_soft_parks_and_resumes_at_setpoint(self):
+        # 5-nov: aparcar a 16 C paraba el compresor del todo y lo hacia volver a
+        # arrancar a fondo; ahora se queda 1,5 C por debajo (al minimo, sin apagar).
         s = _Stub()
-        s._drive_climate_idle("e", 21.4, 0.3, False, maintain=True)   # se ha pasado: aparca
-        self.assertEqual(s.temps(), [16.0])
+        self.assertEqual(s._drive_climate_idle("e", 21.4, 0.3, False, maintain=True), "soft_park")
+        # 1,5 C por debajo de la consigna, en lo que lee SU sonda (21,0 con la zona a 21,4).
+        self.assertEqual(s.temps(), [round(21.0 - zr.SOFT_PARK_OFFSET_DEG - 0.4, 1)])
         s.calls.clear()
-        self.assertEqual(s._drive_climate_idle("e", 21.1, 0.3, False, maintain=True), "idle")  # aun por encima
+        self.assertEqual(s._drive_climate_idle("e", 21.1, 0.3, False, maintain=True), "soft_park")  # aun por encima
         self.assertEqual(s.temps(), [])
         self.assertEqual(s._drive_climate_idle("e", 21.0, 0.3, False, maintain=True), "hold")  # vuelve
-        self.assertEqual(s.temps(), [21.0])
+        # Vuelve a mantener en la consigna (ya con el recorte aprendido al pasarse).
+        self.assertAlmostEqual(s.temps()[-1], 21.0, delta=0.5)
 
     def test_cooling_side(self):
         s = _Stub(mode="cool", setpoint=30.0)

@@ -142,6 +142,8 @@ HOLD_TRIM_STEP_DEG = 0.5
 # el recorte sigue bajando hasta la consigna que deja al inverter modular.
 HOLD_TRIM_MAX_DEG = 5.0   # como mucho 5 C menos de lo compensado
 HOLD_TRIM_MIN_DEG = -1.0  # como mucho 1 C mas
+# Aparcado suave de una bomba de calor en banda (ver _soft_park_setpoint).
+SOFT_PARK_OFFSET_DEG = 1.5
 # Tiempo minimo en un modo de equipo (calor/frio/dry/ventilar) antes de que una
 # decision AUTOMATICA lo cambie por otro: sin esto, la anticipacion entrando y
 # saliendo + la deshumidificacion en reposo hacian saltar un AC calor<->dry cada
@@ -1448,6 +1450,28 @@ class ZoneRunner:
         self._drive_delegate_fan_mode(entity_id, state, urgent=False)
         return True
 
+    def _soft_park_setpoint(self, entity_id: str, state: dict | None, mode: str,
+                            current_temp: float | None, hard_park: float | None) -> float | None:
+        """Consigna de 'aparcado suave' de una bomba de calor que se ha pasado
+        (ver _drive_climate_idle): SOFT_PARK_OFFSET_DEG por debajo (calor) o por
+        encima (frio) de la habitacion -- o de la consigna, si la habitacion ya
+        esta por debajo -- traducida a la sonda del equipo. Nunca mas alla del
+        aparcado de siempre. None si no se puede calcular."""
+        target = self._side_target(mode)
+        if target is None or current_temp is None:
+            return None
+        heating = mode == "heat"
+        base = min(target, current_temp) if heating else max(target, current_temp)
+        trim = self._hold_trim.get(entity_id, 0.0)
+        offset = SOFT_PARK_OFFSET_DEG + max(0.0, trim)
+        sp = self._compensate_delegate_target(entity_id, state, base, current_temp,
+                                              extra=-offset if heating else offset)
+        if sp is None:
+            return None
+        if hard_park is not None:
+            sp = max(sp, hard_park) if heating else min(sp, hard_park)
+        return _fit_to_delegate((state or {}).get("attributes") or {}, sp)
+
     def _learn_hold_trim(self, entity_id: str, target: float, current_temp: float, heating: bool,
                          stopped: bool, now: datetime) -> None:
         """Ajusta `_hold_trim` con lo que hizo la zona (NUESTRO sensor) en el
@@ -2300,7 +2324,7 @@ class ZoneRunner:
         safety_emergency: bool = False,
     ) -> str:
         simulate = bool(self.zone.get(CONF_SIMULATE, True))
-        real_heat = real_cool = real_hold = False
+        real_heat = real_cool = real_hold = real_soft = False
         real_other: str | None = None
         # `or 20.0` trataba una lectura real de 0.0C como "sin dato" y la
         # sustituia por 20.0 -- justo lo contrario de "fallar seguro con
@@ -2353,6 +2377,8 @@ class ZoneRunner:
                 real_other = result
             elif result == "hold":
                 real_hold = True
+            elif result == "soft_park":
+                real_soft = True
 
         if real_heat:
             return "heat"
@@ -2363,6 +2389,8 @@ class ZoneRunner:
         if real_hold:
             self.reason += " — bomba de calor modulando para sostener la consigna"
             return "hold"
+        if real_soft:
+            self.reason += " — bomba de calor al mínimo (se ha pasado un poco: aparcado suave, sin apagar)"
         return "idle"
 
     def _drive_climate_actuator(
@@ -2631,6 +2659,22 @@ class ZoneRunner:
             if held:
                 self._park_since.pop(entity_id, None)
                 return "hold"
+            # Se ha pasado de la consigna: en vez de aparcarla en el limite de la
+            # zona (16 C en calor: el compresor para del todo y vuelve a arrancar a
+            # fondo), consigna un poco por DEBAJO de la habitacion, en lo que lee su
+            # propia sonda: el inverter baja al minimo o para solo, suave, y retoma
+            # sin pico (decision del usuario, 5-nov: el aire del dormitorio se
+            # aparcaba a 16 C ~30 veces al dia y volvia a 24,5 C cada vez).
+            soft = self._soft_park_setpoint(entity_id, state, mode, current_temp, parked)
+            if soft is not None:
+                now = _utcnow()
+                current_sp = _safe_float(attrs.get("temperature"))
+                if current_sp is None or abs(current_sp - soft) > TEMP_SEND_TOLERANCE_DEG:
+                    if self._delegate_send_allowed(entity_id, now):
+                        self._send_delegate_once(entity_id, "temperature", soft, "set_temperature",
+                                                 {"temperature": soft}, now)
+                self._park_since.pop(entity_id, None)
+                return "soft_park"
         # Aparcado de verdad: momento de aprender su desfase de sonda en reposo.
         if not maintain:
             self._hold_run.pop(entity_id, None)
