@@ -105,10 +105,10 @@
       "description": "Puente de ingesta para dispositivos TP-Link (Kasa/Tapo) via python-kasa -- consumo interno por Lighting y/o exposicion opcional a HA por MQTT",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.2.9",
+      "version": "0.2.10",
       "downloadable": true,
-      "tag": "v0.77.155",
-      "sha256": "b527bf481c98ec86271f37bef70b9ac0d026d5a2e00abc1b87f87d5e10934e26",
+      "tag": "v0.77.176",
+      "sha256": "be16d164ebafdb30606ee9eb7a071ea17cbda3093014dbf89cd0fcd5a391577e",
       "files": [
         "tplink_plugin.py",
         "tplink",
