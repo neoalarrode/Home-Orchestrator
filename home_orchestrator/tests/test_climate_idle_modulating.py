@@ -21,7 +21,7 @@ class _Stub:
         self.target_temperature_low, self.target_temperature_high = 21.0, 25.0
         self.zone = {"name": "Salón", "min_temp": 16.0, "max_temp": 30.0}
         self.calls = []
-        self._deviation_at_rest = set(); self._hold_run = {}; self._hold_trim = {}; self._rest_dev_at = {}
+        self._deviation_at_rest = set(); self._hold_run = {}; self._drive_at = {}; self._hold_trim = {}; self._rest_dev_at = {}
         for a in ("_delegate_last_command", "_delegate_last_active", "_delegate_deviations",
                   "_activation_probe", "_delegate_pre_temp", "_park_since", "_hold_overshoot"):
             setattr(self, a, {})

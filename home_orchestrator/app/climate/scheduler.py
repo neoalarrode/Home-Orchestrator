@@ -548,6 +548,13 @@ def _anticipate(heating: bool, current_temp: float, target_temp: float, deadband
     if idle_loss_coeff is None or idle_loss_coeff < 0:
         return "idle", ""
 
+    # Ya en la consigna (o pasada): no hay nada que anticipar -- el mantener
+    # de la bomba de calor / el tramo reactivo la sostienen. 5-nov: con la
+    # zona a 21,2-21,3 °C y consigna 21 esto arrancaba el aire A TOPE cada
+    # ~35 min (5 min a 2,5 kW, aparcado, y otra vez): justo lo contrario de
+    # "de forma sostenida".
+    if (current_temp >= target_temp) if heating else (current_temp <= target_temp):
+        return "idle", ""
     threshold = (target_temp - deadband) if heating else (target_temp + deadband)
     temp = current_temp
     for hours_ahead, outdoor_h in enumerate(outdoor_forecast[:ANTICIPATE_LOOKAHEAD_HOURS], start=1):
@@ -555,7 +562,12 @@ def _anticipate(heating: bool, current_temp: float, target_temp: float, deadband
         crossed = (temp < threshold) if heating else (temp > threshold)
         if not crossed:
             continue
-        gap = abs(target_temp - temp)
+        # Lo que habra que recuperar si se espera a que cruce el umbral (alli
+        # arranca el tramo reactivo): del umbral a la consigna. Antes se medía
+        # desde la temperatura proyectada AL FINAL de la hora, que ya ha
+        # seguido bajando sin nadie que la frene y daba un hueco inflado (1 °C
+        # en vez de 0,3) -- con eso cualquier zona "necesitaba" anticipar.
+        gap = abs(target_temp - threshold)
         recover_hours = gap / rate_deg_h
         # Comparacion con el valor FRACCIONARIO de `recover_hours`, sin
         # redondear hacia arriba a un minimo de 1h: una zona muy rapida

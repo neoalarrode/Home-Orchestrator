@@ -142,6 +142,7 @@ HOLD_TRIM_STEP_DEG = 0.5
 # el recorte sigue bajando hasta la consigna que deja al inverter modular.
 HOLD_TRIM_MAX_DEG = 5.0   # como mucho 5 C menos de lo compensado
 HOLD_TRIM_MIN_DEG = -1.0  # como mucho 1 C mas
+HOLD_TRIM_VERSION = 2
 # Aparcado suave de una bomba de calor en banda (ver _soft_park_setpoint).
 SOFT_PARK_OFFSET_DEG = 1.5
 # Tiempo minimo en un modo de equipo (calor/frio/dry/ventilar) antes de que una
@@ -581,6 +582,7 @@ class ZoneRunner:
         self._hold_overshoot: dict[str, bool] = {}
         self._hold_trim: dict[str, float] = {}
         self._hold_run: dict[str, dict] = {}
+        self._drive_at: dict[str, datetime] = {}
         self._rest_dev_at: dict[str, datetime] = {}
         self._maintain_ok: bool = False
         self._last_thermal_mode: str | None = None
@@ -726,10 +728,16 @@ class ZoneRunner:
                 if isinstance(entity_id, str) and value is not None and value > 0:
                     self._running_power[entity_id] = value
         saved_trims = state.get("hold_trims")
+        # Los recortes aprendidos antes de HOLD_TRIM_VERSION se inflaron con las
+        # rafagas a tope de la anticipacion (cada mantener empezaba con el calor
+        # sobrante y "se pasaba enseguida"): se conserva la mitad y se reaprende.
+        stale_trims = state.get("hold_trims_version") != HOLD_TRIM_VERSION
         if isinstance(saved_trims, dict):
             for entity_id, trim in saved_trims.items():
                 value = _safe_float(trim)
                 if isinstance(entity_id, str) and value is not None:
+                    if stale_trims:
+                        value = round(value / 2 * 2) / 2   # mitad, en pasos de 0,5
                     self._hold_trim[entity_id] = max(HOLD_TRIM_MIN_DEG, min(HOLD_TRIM_MAX_DEG, value))
         saved_margins = state.get("activation_margins")
         if isinstance(saved_margins, dict):
@@ -766,6 +774,7 @@ class ZoneRunner:
             "running_power": dict(self._running_power),
             "known_hvac_modes": list(self._known_hvac_modes or []),
             "hold_trims": dict(self._hold_trim),
+            "hold_trims_version": HOLD_TRIM_VERSION,
             "heat_calibration": self._heat_calibrator.to_state(),
             "rest_deviations": {e: self._delegate_deviations[e] for e in self._deviation_at_rest
                                 if e in self._delegate_deviations},
@@ -1482,12 +1491,17 @@ class ZoneRunner:
         run = self._hold_run.get(entity_id)
         if stopped:
             if run is not None:
-                if (now - run["since"]).total_seconds() < HOLD_SHORT_SECONDS:
+                # Si el tramo empezo justo despues de calentar/enfriar a tope, lo
+                # que le hace pasarse es el calor que traia, no la consigna de
+                # mantener: no cuenta (5-nov: asi se clavo el recorte en 5 C).
+                if (now - run["since"]).total_seconds() < HOLD_SHORT_SECONDS and not run.get("after_drive"):
                     self._bump_hold_trim(entity_id, +HOLD_TRIM_STEP_DEG, "se pasa enseguida")
                 self._hold_run.pop(entity_id, None)
             return
         if run is None:
-            self._hold_run[entity_id] = {"since": now, "reached": False}
+            drove = self._drive_at.get(entity_id)
+            after_drive = drove is not None and (now - drove).total_seconds() < HOLD_SHORT_SECONDS
+            self._hold_run[entity_id] = {"since": now, "reached": False, "after_drive": after_drive}
             return
         if (current_temp >= target) if heating else (current_temp <= target):
             run["reached"] = True
@@ -2425,6 +2439,8 @@ class ZoneRunner:
         if can_do:
             self._park_since.pop(entity_id, None)  # actua: ya no esta en reposo
             self._hold_run.pop(entity_id, None)    # ni mantiene
+            if action in ("heat", "cool"):
+                self._drive_at[entity_id] = _utcnow()
         if can_do:
             if action in ("heat", "cool"):
                 self._delegate_last_active[entity_id] = (action, target_temp)
