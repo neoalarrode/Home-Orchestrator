@@ -48,7 +48,7 @@ import threading
 import time
 from collections import deque
 
-from lighting import rules, schedule
+from lighting import power_learning, rules, schedule
 
 log = logging.getLogger("lighting.zone_runner")
 
@@ -225,6 +225,12 @@ class ZoneRunner:
         }
         self._returned: set[str] = set()
         self._verify_timer: threading.Timer | None = None
+        # Consumo aprendido de las luces de la zona (ver power_learning.py),
+        # persistido con el resto del estado de la zona.
+        if not isinstance(self._state.get("light_power"), dict):
+            self._state["light_power"] = {}
+        self._power = power_learning.LightPowerLearner(self._state["light_power"])
+        self._power_fetch = None
 
     # ------------------------------------------------------------ estado -
 
@@ -437,6 +443,40 @@ class ZoneRunner:
                 commanded.pop(entity_id, None)
                 overrides.pop(entity_id, None)
                 log.info("Zona lighting %s: %s vuelve a estar disponible -- se reaplica", self.zone_id, entity_id)
+
+    def _light_levels(self, states: dict[str, dict]) -> dict[str, float]:
+        """Brillo actual (0..1, 0 = apagada) de cada luz de la zona con dato."""
+        levels = {}
+        for entity_id in self.all_lights() | {e for e in (self.zone.get("plant_mode_lights") or []) if e}:
+            vals = self._current_light_values(states, entity_id)
+            if vals is None:
+                continue
+            bp = vals.get("brightness_pct")
+            levels[entity_id] = (max(1.0, float(bp)) / 100 if bp is not None else 1.0) if vals["on"] else 0.0
+        return levels
+
+    def _track_power(self, states: dict[str, dict], now: float) -> None:
+        """Aprende lo que gasta cada luz y calcula el consumo de la zona (ver
+        power_learning.py). Nunca debe tumbar el ciclo de la zona."""
+        try:
+            levels = self._light_levels(states)
+            self._power.observe(now, levels)
+            if self._power._pending:
+                if self._power_fetch is None:
+                    self._power_fetch = power_learning.history_fetcher(
+                        self.ws, power_learning.home_power_sensor(self.ws))
+                self._power.process_due(now, self._power_fetch)
+            self._power.update_power(now, levels)
+        except Exception:
+            log.debug("Zona lighting %s: fallo calculando el consumo", self.zone_id, exc_info=True)
+
+    @property
+    def power_w(self) -> float:
+        return self._power.power_w
+
+    @property
+    def energy_kwh(self) -> float:
+        return self._power.energy_kwh
 
     def _is_on(self, states: dict[str, dict], entity_id: str) -> bool:
         vals = self._current_light_values(states, entity_id)
@@ -988,6 +1028,8 @@ class ZoneRunner:
                 self.zone_id, len(states),
             )
             return
+
+        self._track_power(states, now)
 
         # `current_values` se calcula ANTES de decidir ocupacion -- el modo
         # plantas (`_plant_mode_active`, mas abajo) necesita saber la

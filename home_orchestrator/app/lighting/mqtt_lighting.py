@@ -151,11 +151,34 @@ class MqttLightingZone:
         self._mqtt.subscribe(f"{t}/color_temp_kelvin/set", self._on_color_temp)
         self._mqtt.subscribe(f"{t}/hs/set", self._on_hs)
         self._mqtt.publish(f"{t}/availability", "online", retain=True)
+        self._publish_power_discovery(payload["device"])
+
+    def _sensor_base(self, suffix: str) -> str:
+        return f"{DISCOVERY_PREFIX}/sensor/{NODE_ID}/{self.zone_id}_{suffix}"
+
+    def _publish_power_discovery(self, device: dict) -> None:
+        """Consumo de la zona aprendido (ver lighting/power_learning.py): un
+        sensor de potencia y otro de energia, en el mismo dispositivo de la
+        zona -- el de energia es el que pide el Panel de Energia de HA."""
+        for suffix, name, extra in (
+            ("power", "Iluminación potencia", {"device_class": "power", "state_class": "measurement",
+                                                "unit_of_measurement": "W"}),
+            ("energy", "Iluminación energía", {"device_class": "energy", "state_class": "total_increasing",
+                                                "unit_of_measurement": "kWh"}),
+        ):
+            b = self._sensor_base(suffix)
+            self._mqtt.publish(f"{b}/config", {
+                "name": name, "unique_id": f"{NODE_ID}_{self.zone_id}_{suffix}",
+                "state_topic": f"{b}/state", "json_attributes_topic": f"{b}/attributes",
+                "device": device, **extra,
+            }, retain=True)
 
     def remove_discovery(self) -> None:
         """Retira la entidad de HA (payload de config vacio, ver
         convencion de MQTT Discovery) -- para cuando se borra una zona."""
         self._mqtt.publish(f"{self._base}/config", "", retain=True)
+        for suffix in ("power", "energy"):
+            self._mqtt.publish(f"{self._sensor_base(suffix)}/config", "", retain=True)
 
     # ------------------------------------------------------------ estado --
 
@@ -176,6 +199,18 @@ class MqttLightingZone:
         elif group.get("color_temp_kelvin") is not None:
             self._mqtt.publish(f"{t}/color_temp_kelvin/state", round(group["color_temp_kelvin"]), retain=True)
             self._mqtt.publish(f"{t}/color_mode/state", "color_temp", retain=True)
+        power = getattr(runner, "_power", None)
+        if power is not None:
+            pb = self._sensor_base("power")
+            self._mqtt.publish(f"{pb}/state", power.power_w, retain=True)
+            self._mqtt.publish(f"{pb}/attributes", {
+                "luces_sin_aprender": power.unlearned,
+                "vatios_aprendidos_al_100": {e: w for e, w in power.learned().items() if w is not None},
+            }, retain=True)
+            if power.state.get("energy_since"):
+                eb = self._sensor_base("energy")
+                self._mqtt.publish(f"{eb}/state", power.energy_kwh, retain=True)
+                self._mqtt.publish(f"{eb}/attributes", {"since": power.state["energy_since"]}, retain=True)
 
     # ----------------------------------------------------------- comandos -
 
