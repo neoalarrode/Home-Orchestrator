@@ -142,11 +142,13 @@ HOLD_TRIM_STEP_DEG = 0.5
 # el recorte sigue bajando hasta la consigna que deja al inverter modular.
 HOLD_TRIM_MAX_DEG = 5.0   # como mucho 5 C menos de lo compensado
 HOLD_TRIM_MIN_DEG = -1.0  # como mucho 1 C mas
-HOLD_TRIM_VERSION = 2
+HOLD_TRIM_VERSION = 3
+HOLD_TRIM_STALE_CAP_DEG = 2.5   # recortes de versiones anteriores: como mucho esto
 # Control integral del recorte (ver _learn_hold_trim): °C de recorte por °C de
 # error y hora. Con la zona 0,3 °C pasada durante media hora, 0,3 °C menos.
 HOLD_TRIM_KI = 2.0
 HOLD_TRIM_MAX_GAP_SECONDS = 600
+HOLD_TRIM_ERR_CAP_DEG = 0.5    # un pico del sensor no arrastra el recorte de golpe
 # Mantener una bomba de calor aguanta hasta este margen POR ENCIMA del deadband
 # antes de aparcar: a baja velocidad la zona oscila un poco, y aparcar en cuanto
 # roza el deadband es volver a arrancar y parar.
@@ -737,15 +739,15 @@ class ZoneRunner:
                     self._running_power[entity_id] = value
         saved_trims = state.get("hold_trims")
         # Los recortes aprendidos antes de HOLD_TRIM_VERSION se inflaron con las
-        # rafagas a tope de la anticipacion (cada mantener empezaba con el calor
-        # sobrante y "se pasaba enseguida"): se conserva la mitad y se reaprende.
+        # rafagas a tope de la anticipacion y con el integral aparcado (5-nov):
+        # se acotan a HOLD_TRIM_STALE_CAP_DEG y se reaprenden.
         stale_trims = state.get("hold_trims_version") != HOLD_TRIM_VERSION
         if isinstance(saved_trims, dict):
             for entity_id, trim in saved_trims.items():
                 value = _safe_float(trim)
                 if isinstance(entity_id, str) and value is not None:
                     if stale_trims:
-                        value = round(value / 2 * 2) / 2   # mitad, en pasos de 0,5
+                        value = min(value, HOLD_TRIM_STALE_CAP_DEG)
                     self._hold_trim[entity_id] = max(HOLD_TRIM_MIN_DEG, min(HOLD_TRIM_MAX_DEG, value))
         saved_margins = state.get("activation_margins")
         if isinstance(saved_margins, dict):
@@ -1503,10 +1505,13 @@ class ZoneRunner:
         Los primeros HOLD_SHORT_SECONDS tras calentar/enfriar a tope no cuentan:
         lo que se pasa ahi es el calor que traia, no la consigna de mantener
         (asi se clavo el recorte en 5 C)."""
-        # Tambien cuenta aparcado suave (`stopped`): si se ha pasado, la consigna
-        # de mantener era alta y el recorte debe crecer -- si no, cada vuelta
-        # repetiria la misma rafaga. El tope HOLD_TRIM_MAX_DEG acota la deriva.
+        # Aparcado (`stopped`) no integra (anti-windup): 5-nov, con la zona 2,5 C
+        # pasada por una rafaga anterior el recorte subio de 2,5 a 3,8 en 15 min
+        # y al volver a la consigna habria dejado el aire sin calentar horas.
         run = self._hold_run.get(entity_id)
+        if stopped:
+            self._hold_run.pop(entity_id, None)
+            return
         if run is None:
             drove = self._drive_at.get(entity_id)
             after_drive = drove is not None and (now - drove).total_seconds() < HOLD_SHORT_SECONDS
@@ -1518,12 +1523,13 @@ class ZoneRunner:
             return
         dt_h = min(max(0.0, (now - last).total_seconds()), HOLD_TRIM_MAX_GAP_SECONDS) / 3600.0
         err = (current_temp - target) if heating else (target - current_temp)
+        err = max(-HOLD_TRIM_ERR_CAP_DEG, min(HOLD_TRIM_ERR_CAP_DEG, err))
         if dt_h > 0 and err:
             self._nudge_hold_trim(entity_id, HOLD_TRIM_KI * err * dt_h)
 
     def _nudge_hold_trim(self, entity_id: str, delta: float) -> None:
         old = self._hold_trim.get(entity_id, 0.0)
-        new = round(max(HOLD_TRIM_MIN_DEG, min(HOLD_TRIM_MAX_DEG, old + delta)), 3)
+        new = max(HOLD_TRIM_MIN_DEG, min(HOLD_TRIM_MAX_DEG, old + delta))
         if new == old:
             return
         self._hold_trim[entity_id] = new

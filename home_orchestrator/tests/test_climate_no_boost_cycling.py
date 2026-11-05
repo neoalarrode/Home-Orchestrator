@@ -62,12 +62,17 @@ class HoldTrim(unittest.TestCase):
         s = _S(); self._hold_above(s, drove_before=None)
         self.assertAlmostEqual(s._hold_trim["ac"], 1.0 + 0.5 * 15 / 60 * zr.HOLD_TRIM_KI, delta=0.01)
 
-    def test_soft_parked_overshoot_keeps_learning_but_capped(self):
+    def test_parked_does_not_wind_up(self):
         s = _S()
-        s._learn_hold_trim("ac", 21.0, 22.5, True, True, self.t0)
-        for m in range(1, 600):
-            s._learn_hold_trim("ac", 21.0, 22.5, True, True, self.t0 + timedelta(minutes=m))
-        self.assertEqual(s._hold_trim["ac"], zr.HOLD_TRIM_MAX_DEG)
+        for m in range(0, 60):
+            s._learn_hold_trim("ac", 21.0, 23.5, True, True, self.t0 + timedelta(minutes=m))
+        self.assertEqual(s._hold_trim["ac"], 1.0)
+
+    def test_error_is_capped(self):
+        s = _S()
+        for m in range(0, 61):
+            s._learn_hold_trim("ac", 21.0, 21.9, True, False, self.t0 + timedelta(minutes=m))
+        self.assertAlmostEqual(s._hold_trim["ac"], 1.0 + zr.HOLD_TRIM_ERR_CAP_DEG * zr.HOLD_TRIM_KI, delta=0.01)
 
 
 class StaleTrims(unittest.TestCase):
@@ -75,9 +80,8 @@ class StaleTrims(unittest.TestCase):
         import inspect
         src = inspect.getsource(zr.ZoneRunner)
         self.assertIn("hold_trims_version", src)
-        # mitad en pasos de 0,5 (misma expresion que el cargador)
-        for old, new in ((5.0, 2.5), (4.0, 2.0), (1.0, 0.5), (-1.0, -0.5)):
-            self.assertEqual(round(old / 2 * 2) / 2, new)
+        self.assertEqual(zr.HOLD_TRIM_VERSION, 3)
+        self.assertIn("HOLD_TRIM_STALE_CAP_DEG", src)
 
 
 if __name__ == "__main__":
