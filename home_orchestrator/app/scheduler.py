@@ -29,16 +29,6 @@ from datetime import datetime, timedelta
 # 20% de mas potencia de la estrictamente necesaria, no al filo.
 PACED_CHARGE_SAFETY_MARGIN = 1.2
 
-# Carga sostenida EFICIENTE (6-nov, decision del usuario tras revisar la
-# documentacion): un cargador AC rinde peor a baja carga (su consumo fijo pesa
-# mas) y las LFP envejecen por pasar horas con el SOC alto, no por cargar a
-# 0,3-0,4C. Asi que en vez de repartir la carga en TODO el tiempo disponible a
-# poca potencia, se espera y se carga a esta fraccion de la potencia maxima,
-# calculando el arranque para terminar PACED_FINISH_MARGIN_H antes de que la
-# bateria haga falta (ese rato al 100 % basta para que el BMS equilibre).
-PACED_EFFICIENT_FRACTION = 0.6   # ~720 W por STREAM de 1200 W (0,37C en 1,92 kWh), con margen frente a los 5 kW contratados
-PACED_FINISH_MARGIN_H = 0.75
-
 # Por debajo de esto no hay descarga que planificar: lo que queda disponible es
 # un resto de coma flotante (la bateria justo en su reserva), y el plan mostraba
 # "descarga para cubrir consumo" con 0 W.
@@ -287,8 +277,6 @@ def build_plan(
     for i in range(horizon - 1, -1, -1):
         next_need_idx[i] = i if needs_battery[i] else next_need_idx[i + 1]
 
-    paced_waiting: set[int] = set()
-
     def _paced_charge_limit(i: int, soc_now: float, target_wh: float) -> float:
         """Potencia sostenida que reparte lo que falta hasta que la bateria
         haga falta por primera vez. Si esa necesidad es AHORA MISMO (o no
@@ -325,20 +313,7 @@ def build_plan(
         if hours_remaining <= 0.05:
             return max_charge_w
         energy_needed_wh = max(0.0, target_wh - soc_now)
-        efficient_w = max_charge_w * PACED_EFFICIENT_FRACTION
-        if efficient_w <= 0 or energy_needed_wh <= 0:
-            return 0.0
-        # Sin el margen de seguridad aqui: con el, las primeras horas cargaban de
-        # mas y a mitad de valle volvia a "esperar" (carga a trozos).
-        hours_at_efficient = energy_needed_wh / efficient_w
-        this_hour = (1.0 - elapsed_h) if i == 0 else 1.0
-        # Aun da tiempo saltandose esta hora entera: se espera (sin cargar).
-        if hours_remaining - this_hour >= hours_at_efficient + PACED_FINISH_MARGIN_H:
-            paced_waiting.add(i)
-            return 0.0
-        usable_h = max(0.05, hours_remaining - PACED_FINISH_MARGIN_H)
-        needed_w = (energy_needed_wh / usable_h) * PACED_CHARGE_SAFETY_MARGIN
-        return min(max_charge_w, max(efficient_w, needed_w))
+        return min(max_charge_w, (energy_needed_wh / hours_remaining) * PACED_CHARGE_SAFETY_MARGIN)
 
     # Fraccion de la hora en curso que AUN queda: la orden de carga que se emite
     # ahora es una POTENCIA, y para llenar `headroom` Wh en lo que resta de hora
@@ -415,9 +390,6 @@ def build_plan(
                     hp.reason = f"carga sostenida en valle (objetivo reserva {target/1000:.2f} kWh)"
                 else:
                     hp.reason = f"carga en valle (objetivo reserva {target/1000:.2f} kWh)"
-            elif i in paced_waiting:
-                hp.reason = (f"esperando para cargar a potencia eficiente "
-                             f"(objetivo reserva {target/1000:.2f} kWh, termina antes de hacer falta)")
             elif charge_limit <= 0:
                 hp.reason = "sin carga: al limite de potencia contratada"
 
