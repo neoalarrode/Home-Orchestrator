@@ -3608,6 +3608,24 @@ def _semi_hold_ids(cfg: dict) -> set[str]:
     return out
 
 
+def _hours_until_valle(now: datetime | None = None) -> float:
+    """Horas hasta que empiece el proximo tramo valle segun el plan (0 si ya es
+    valle o no hay plan)."""
+    now = now or datetime.now()
+    with _state_lock:
+        plan = list(_last_status.get("plan") or [])
+    for p in plan:
+        try:
+            start = datetime.fromisoformat(p["dt"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if start + timedelta(hours=1) <= now:
+            continue                                   # hora ya pasada
+        if p.get("tier") == "valle":
+            return max(0.0, (start - now).total_seconds() / 3600)
+    return 0.0
+
+
 def _load_follow_context() -> dict:
     """Lo que necesita el seguimiento de carga (load_follower.py) en cada
     lectura del contador: modo, baterias en semiautomatico con su SOC (de la
@@ -3619,6 +3637,7 @@ def _load_follow_context() -> dict:
     # tarea de descarga y el tope (1200 W) son del grupo entero. Se manda a su
     # unidad principal; la energia disponible es la suma de sus unidades. Una
     # bateria sola en su grupo es un grupo de una.
+    hours_to_valle = _hours_until_valle()
     groups: dict[str, dict] = {}
     for b in cfg.get("batteries") or []:
         if b.get("source") != "ecoflow" or not b.get("ecoflow_ble_address") or not user_id:
@@ -3634,7 +3653,12 @@ def _load_follow_context() -> dict:
         capacity = float(b.get("capacity_wh") or 0)
         g["units"].append(b)
         g["headroom_wh"] += max(0.0, (float(b.get("max_soc_pct", 100)) - float(soc)) / 100 * capacity)
-        g["available_wh"] += max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity)
+        # Lo que van a gastar sus PROPIOS enchufes hasta el proximo valle sale de
+        # esta bateria igualmente: no esta libre para la casa. 5-nov: EF-60999
+        # (~200 W en sus enchufes) llegaba a la punta al 12 % con las demas al
+        # 33-46 %, se vaciaba y sus enchufes compraban de red 2-3 h a 0,173.
+        own_reserve = (_ecoflow_outlet_w(state, _ECOFLOW_OUTLET_FIELDS_BLE) or 0.0) * hours_to_valle
+        g["available_wh"] += max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity - own_reserve)
         g["soc_wh"] += float(soc) / 100 * capacity
         g["cap_wh"] += capacity
         if b.get("ecoflow_sn") and b.get("ecoflow_sn") == key:
