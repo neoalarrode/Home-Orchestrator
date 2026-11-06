@@ -90,10 +90,10 @@
       "description": "Iluminacion adaptativa por zona -- color y brillo segun la posicion real del sol, encendido/apagado por presencia y reglas condicionales",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.7.39",
+      "version": "0.7.40",
       "downloadable": true,
-      "tag": "v0.77.187",
-      "sha256": "c775dea223c976efd4e7eaaa3f98985dbde8a237da7c5715c1ed704f43e228c1",
+      "tag": "v0.77.188",
+      "sha256": "0fccae5cea77863376989ae7bf5ccbb252e41cc1e55a551814a91203dc58389a",
       "files": [
         "lighting_plugin.py",
         "lighting",
