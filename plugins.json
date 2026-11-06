@@ -93,7 +93,7 @@
       "version": "0.7.41",
       "downloadable": true,
       "tag": "v0.77.189",
-      "sha256": "d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed",
+      "sha256": "131fd862955a4dbe1b75897a9ce56c1b12a6d59c9d27b877aa062d82ecc27900",
       "files": [
         "lighting_plugin.py",
         "lighting",
