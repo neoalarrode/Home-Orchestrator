@@ -205,6 +205,26 @@ class LightingPlugin(Plugin):
                 return flask.jsonify({"error": "fallo forzando la decision de la zona"}), 500
             return flask.jsonify({"ok": True, "reason": runner.reason})
 
+        # ---- calibracion forzada del consumo (6-nov) -----------------------
+        @app.post("/api/zones/<zone_id>/calibrate_power")
+        def _calibrate_zone(zone_id):
+            runner = self._runners.get(zone_id)
+            if not runner:
+                return flask.jsonify({"error": "zona no encontrada o no arrancada"}), 404
+            self._start_calibration([runner])
+            return flask.jsonify({"ok": True, "started": [zone_id]})
+
+        @app.post("/api/calibrate_power")
+        def _calibrate_all():
+            runners = list(self._runners.values())
+            self._start_calibration(runners)
+            return flask.jsonify({"ok": True, "started": [r.zone_id for r in runners]})
+
+        @app.get("/api/calibrate_power")
+        def _calibration_status():
+            return flask.jsonify({r.zone_id: {"name": r.zone.get("name"), "calibrando": r._calibrating,
+                                              "resultado": r.calibration} for r in self._runners.values()})
+
         # ---- comando manual desde la tarjeta interactiva del Dashboard -
         #
         # `ZoneRunner.manual_command` ya existia -- hasta ahora solo se
@@ -254,6 +274,18 @@ class LightingPlugin(Plugin):
             self._start_zone(zone)
 
         log.info("Plugin Lighting arrancado con %d zona(s)", len(zones))
+
+    def _start_calibration(self, runners) -> None:
+        """Calibra las zonas UNA DETRAS DE OTRA en un hilo aparte (dos a la vez
+        se mezclarian en el consumo de la casa)."""
+        def run():
+            for r in runners:
+                try:
+                    r.calibrate_power()
+                    self._persist_and_publish(r)
+                except Exception:
+                    log.exception("Fallo calibrando el consumo de la zona %s", r.zone_id)
+        threading.Thread(target=run, name="lighting-calibrate", daemon=True).start()
 
     def _persist_and_publish(self, runner) -> None:
         """Guarda el estado de la zona y lo publica por MQTT. Punto UNICO para

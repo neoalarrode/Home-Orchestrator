@@ -47,6 +47,8 @@ OUTLIER_MAD = 3.5
 MAX_LIGHT_W = 300.0
 MIN_DELTA_W = 1.0
 ENERGY_MAX_GAP_S = 900
+# Calibracion forzada (ZoneRunner.calibrate_power): ciclos encendido/apagado.
+CALIBRATION_CYCLES, CALIBRATION_HALF_S, CALIBRATION_SKIP_S = 9, 40, 12
 HOME_SENSOR_FALLBACK = "sensor.battery_orchestrator_load"
 GRID_SIGNAL_ENTITY_ID = "sensor.battery_orchestrator_grid_signal"
 

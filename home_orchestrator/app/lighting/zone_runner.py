@@ -46,6 +46,7 @@ import concurrent.futures
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from collections import deque
 
 from lighting import power_learning, rules, schedule
@@ -231,6 +232,9 @@ class ZoneRunner:
             self._state["light_power"] = {}
         self._power = power_learning.LightPowerLearner(self._state["light_power"])
         self._power_fetch = None
+        # Calibracion de consumo en curso (ver calibrate_power): la zona no decide.
+        self._calibrating = False
+        self.calibration: dict | None = None
 
     # ------------------------------------------------------------ estado -
 
@@ -469,6 +473,89 @@ class ZoneRunner:
             self._power.update_power(now, levels)
         except Exception:
             log.debug("Zona lighting %s: fallo calculando el consumo", self.zone_id, exc_info=True)
+
+    def calibrate_power(self, cycles: int = power_learning.CALIBRATION_CYCLES,
+                        half_s: float = power_learning.CALIBRATION_HALF_S,
+                        skip_s: float = power_learning.CALIBRATION_SKIP_S,
+                        sleep=time.sleep, clock=time.time) -> dict:
+        """Calibracion FORZADA del consumo de la zona (6-nov, peticion del
+        usuario): enciende y apaga sus luces `cycles` veces y mide el consumo de
+        la casa cada segundo; cada ciclo es encendido menos la media de los
+        apagados de antes y despues (asi se cancela el ruido lento del aire y de
+        las baterias). Cada ciclo valido se guarda como muestra del aprendizaje
+        normal (power_learning). Al terminar cada luz vuelve a como estaba y la
+        zona sigue decidiendo como siempre."""
+        sensor = power_learning.home_power_sensor(self.ws)
+
+        def house_w():
+            try:
+                return float((self.ws.get_state(sensor) or {}).get("state"))
+            except (TypeError, ValueError):
+                return None
+
+        def hold(seconds):
+            vals, t_end, t0 = [], clock() + seconds, clock()
+            while clock() < t_end:
+                v = house_w()
+                if v is not None and clock() - t0 >= skip_s:
+                    vals.append(v)
+                sleep(1.0)
+            return sum(vals) / len(vals) if vals else None
+
+        states = self._snapshot_states()
+        lights = sorted(e for e in self.all_lights() | {x for x in (self.zone.get("plant_mode_lights") or []) if x}
+                        if self._reachable(states, e))
+        if not lights:
+            self.calibration = {"error": "sin luces alcanzables"}
+            return self.calibration
+        before = {e: self._current_light_values(states, e) or {} for e in lights}
+        curve = self.current_values or {}
+        level = {}
+        for e in lights:
+            bp = before[e].get("brightness_pct") if before[e].get("on") else None
+            level[e] = float(bp or curve.get("brightness_pct") or 100)
+        ct = curve.get("color_temp_kelvin")
+        self._calibrating = True
+        deltas: list[float] = []
+        try:
+            for e in lights:
+                self._turn_off(e)
+            offs = [hold(half_s)]
+            ons = []
+            for _ in range(cycles):
+                for e in lights:
+                    self._send_to_light(e, level[e], ct, None)
+                ons.append(hold(half_s))
+                for e in lights:
+                    self._turn_off(e)
+                offs.append(hold(half_s))
+            coef = {e: round(level[e] / 100, 3) for e in lights}
+            now = clock()
+            for k, on in enumerate(ons):
+                if on is None or offs[k] is None or offs[k + 1] is None:
+                    continue
+                delta = on - (offs[k] + offs[k + 1]) / 2
+                deltas.append(round(delta, 1))
+                if power_learning.MIN_DELTA_W <= delta <= power_learning.MAX_LIGHT_W * len(lights):
+                    self._power.state["groups"].append([round(now, 1), dict(coef), round(delta, 1)])
+            del self._power.state["groups"][:-power_learning.MAX_SAMPLES]
+            self._power._solved = power_learning.solve_lights(self._power.state["groups"])
+        finally:
+            for e in lights:
+                prev = before[e]
+                if prev.get("on"):
+                    self._send_to_light(e, prev.get("brightness_pct") or level[e],
+                                        prev.get("color_temp_kelvin") or ct, None)
+                else:
+                    self._turn_off(e)
+            self._calibrating = False
+        ok = sorted(d for d in deltas if d > 0)
+        self.calibration = {"ciclos_w": deltas, "vatios": ok[len(ok) // 2] if ok else None,
+                            "aprendidas": {e: w for e, w in self._power.learned().items() if e in lights},
+                            "cuando": datetime.now(timezone.utc).isoformat()}
+        log.info("Zona lighting %s: calibracion de consumo %s", self.zone_id, self.calibration)
+        self.decide_and_act()
+        return self.calibration
 
     @property
     def power_w(self) -> float:
@@ -990,6 +1077,9 @@ class ZoneRunner:
             self._decide_and_act_locked(states)
 
     def _decide_and_act_locked(self, states: dict[str, dict] | None) -> None:
+        if getattr(self, "_calibrating", False):
+            self.reason = "calibrando el consumo de las luces"
+            return
         cfg = self.zone
         now = time.time()
         states = states if states is not None else self._snapshot_states()
