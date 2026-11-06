@@ -40,8 +40,8 @@ PROCESS_AFTER_S = AFTER_S + 10      # cuando ya hay historico de la ventana "des
 GUARD_S = 60
 CLUSTER_S = 5
 STABLE_SPREAD_W = 25.0   # la casa tiene que estar quieta antes y despues (p10-p90)
-MIN_SAMPLES = 5
-MAX_SAMPLES = 120     # muestras de grupo de la zona (varias luces cada una)
+MIN_SAMPLES = 15      # con el ruido de la casa hacen falta muchas muestras: se aprende con el tiempo
+MAX_SAMPLES = 400     # muestras de grupo de la zona (varias luces cada una)
 MAX_AGE_DAYS = 30
 OUTLIER_MAD = 3.5
 MAX_LIGHT_W = 300.0
@@ -231,19 +231,17 @@ class LightPowerLearner:
         except Exception:
             log.debug("Sin historico de consumo para %s", list(coef), exc_info=True)
             return False
-        win_before = (ts - BEFORE_S, ts - GAP_S)
-        win_after = (ts + CLUSTER_S + SETTLE_S, ts + CLUSTER_S + AFTER_S)
-        before, after = _median_between(points, *win_before), _median_between(points, *win_after)
+        # Salto en el momento (6-nov): pocos segundos antes contra pocos segundos
+        # despues del cambio -- en ese rato el aire y las baterias casi no se
+        # mueven. Ninguna muestra se descarta por ruido ni por su signo (eso
+        # sesgaba): el ruido se compensa con MUCHAS muestras y la mediana/ajuste
+        # de solve_lights, que ademas quita las que se alejan del resto.
+        before = _median_between(points, ts - STEP_BEFORE_S, ts)
+        after = _median_between(points, ts + CLUSTER_S + STEP_AFTER_FROM_S, ts + CLUSTER_S + STEP_AFTER_TO_S)
         if before is None or after is None:
             return False
-        # Con otro aparato moviendo el consumo (lavavajillas, horno...) el salto
-        # de unas luces de pocos vatios se pierde en el ruido: fuera.
-        if max(_spread_between(points, *win_before) or 0.0, _spread_between(points, *win_after) or 0.0) > STABLE_SPREAD_W:
-            return False
         delta = after - before
-        # Mismo signo que el grupo (todas encendiendo -> sube) y en rango.
-        expected_sign = 1 if sum(coef.values()) > 0 else -1
-        if delta * expected_sign < MIN_DELTA_W or abs(delta) > MAX_LIGHT_W * len(coef):
+        if abs(delta) > MAX_LIGHT_W * len(coef):
             return False
         groups = self.state["groups"]
         groups.append([round(ts, 1), {e: round(c, 3) for e, c in coef.items()}, round(delta, 1)])

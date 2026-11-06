@@ -34,7 +34,7 @@ class Learn(unittest.TestCase):
     def test_lights_switched_together_still_learn(self):
         lr = pl.LightPowerLearner({})
         combos = [{"light.a", "light.b", "light.c"}, {"light.a", "light.b"}, {"light.b", "light.c"},
-                  {"light.a", "light.c"}, {"light.a"}, {"light.b"}, {"light.c"}] * 2
+                  {"light.a", "light.c"}, {"light.a"}, {"light.b"}, {"light.c"}] * 4
         self._run(lr, combos, time.time() - 86400)
         for e, w in W.items():
             self.assertAlmostEqual(lr.learned()[e], w, delta=0.2)
@@ -42,7 +42,7 @@ class Learn(unittest.TestCase):
 
     def test_always_together_gives_right_zone_total(self):
         lr = pl.LightPowerLearner({})
-        self._run(lr, [{"light.a", "light.b", "light.c"}] * 6, time.time() - 86400)
+        self._run(lr, [{"light.a", "light.b", "light.c"}] * 8, time.time() - 86400)
         self.assertAlmostEqual(lr.update_power(time.time(), {e: 1.0 for e in W}), sum(W.values()), delta=0.3)
 
     def test_other_zone_light_nearby_is_discarded(self):
@@ -56,9 +56,9 @@ class Learn(unittest.TestCase):
 
     def test_outlier_and_aging(self):
         now = time.time()
-        groups = [[now - 100 * k, {"light.a": 1.0}, 10.0] for k in range(8)] + [[now - 50, {"light.a": 1.0}, 250.0]]
+        groups = [[now - 100 * k, {"light.a": 1.0}, 10.0] for k in range(20)] + [[now - 50, {"light.a": 1.0}, 250.0]]
         self.assertAlmostEqual(pl.solve_lights(groups)["light.a"], 10.0, delta=0.1)
-        old = [[now - 40 * 86400, {"light.a": 1.0}, 10.0] for _ in range(8)]
+        old = [[now - 40 * 86400, {"light.a": 1.0}, 10.0] for _ in range(20)]
         self.assertEqual(pl.solve_lights(old), {})
 
     def test_unlearned_is_not_invented(self):
@@ -68,7 +68,7 @@ class Learn(unittest.TestCase):
 
     def test_energy_integrates(self):
         now = time.time()
-        s = {"groups": [[now, {"light.a": 1.0}, 10.0]] * 6}
+        s = {"groups": [[now, {"light.a": 1.0}, 10.0]] * 20}
         lr = pl.LightPowerLearner(s)
         lr.update_power(now, {"light.a": 1.0})
         lr.update_power(now + 360, {"light.a": 0.0})
@@ -80,14 +80,29 @@ class Learn(unittest.TestCase):
         pl.LightPowerLearner(s)
         self.assertNotIn("samples", s); self.assertEqual(s["groups"], [])
 
-    def test_unstable_house_is_discarded(self):
+    def test_noisy_house_still_learns_over_time(self):
+        # Casa con +-40 W de ruido segundo a segundo y un aire que va y viene:
+        # con muchos encendidos/apagados la luz de 9 W sale bien.
+        import random
+        rng = random.Random(2)
         lr = pl.LightPowerLearner({})
-        t = time.time() - 3600
-        lr.observe(t - 10, {"light.a": 0.0})
-        lr.observe(t, {"light.a": 1.0})
-        ev = [(t + 2, 9.0)] + [(t - 30 + 4 * k, (200.0 if k % 2 else -200.0)) for k in range(6)]
-        lr.process_due(time.time(), _house(ev))
-        self.assertEqual(lr.state["groups"], [])
+        t0 = time.time() - 5 * 86400
+        lr.observe(t0 - 10, {"light.a": 0.0})
+        pts, t = [], t0 - 120
+        state = 0.0
+        events = []
+        for k in range(60):
+            events.append((t0 + k * 400, 9.0)); events.append((t0 + k * 400 + 200, -9.0))
+        ev = sorted(events)
+        while t < t0 + 60 * 400 + 100:
+            while ev and ev[0][0] + 2 <= t:
+                state += ev.pop(0)[1]
+            pts.append((t, 700 + 200 * (((t // 900) % 2)) + rng.gauss(0, 40) + state))
+            t += 1.0
+        for k in range(60):
+            lr.observe(t0 + k * 400, {"light.a": 1.0}); lr.observe(t0 + k * 400 + 200, {"light.a": 0.0})
+        lr.process_due(time.time(), lambda a, b: [p for p in pts if a - 5 <= p[0] <= b])
+        self.assertAlmostEqual(lr.learned()["light.a"], 9.0, delta=3.0)
 
     def test_median_between(self):
         self.assertEqual(pl._median_between([(0.0, 100.0), (10.0, 200.0), (12.0, 100.0)], 0.0, 20.0), 100.0)
