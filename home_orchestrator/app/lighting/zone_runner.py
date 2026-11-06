@@ -476,32 +476,17 @@ class ZoneRunner:
 
     def calibrate_power(self, cycles: int = power_learning.CALIBRATION_CYCLES,
                         half_s: float = power_learning.CALIBRATION_HALF_S,
-                        skip_s: float = power_learning.CALIBRATION_SKIP_S,
-                        sleep=time.sleep, clock=time.time) -> dict:
+                        sleep=time.sleep, clock=time.time, read_meter=None) -> dict:
         """Calibracion FORZADA del consumo de la zona (6-nov, peticion del
-        usuario): enciende y apaga sus luces `cycles` veces y mide el consumo de
-        la casa cada segundo; cada ciclo es encendido menos la media de los
-        apagados de antes y despues (asi se cancela el ruido lento del aire y de
-        las baterias). Cada ciclo valido se guarda como muestra del aprendizaje
-        normal (power_learning). Al terminar cada luz vuelve a como estaba y la
-        zona sigue decidiendo como siempre."""
-        sensor = power_learning.home_power_sensor(self.ws)
-
-        def house_w():
-            try:
-                return float((self.ws.get_state(sensor) or {}).get("state"))
-            except (TypeError, ValueError):
-                return None
-
-        def hold(seconds):
-            vals, t_end, t0 = [], clock() + seconds, clock()
-            while clock() < t_end:
-                v = house_w()
-                if v is not None and clock() - t0 >= skip_s:
-                    vals.append(v)
-                sleep(1.0)
-            return sum(vals) / len(vals) if vals else None
-
+        usuario): enciende y apaga sus luces `cycles` veces leyendo el contador de
+        la casa cada medio segundo, y mide el SALTO en cada cambio (ver
+        power_learning.step_deltas) -- no hace falta que el resto de la casa este
+        quieto. Los saltos se guardan como muestras del aprendizaje normal. Al
+        terminar cada luz vuelve a como estaba y la zona sigue como siempre."""
+        if read_meter is None:
+            read_meter, source = power_learning.meter_reader(self.ws)
+        else:
+            source = "prueba"
         states = self._snapshot_states()
         lights = sorted(e for e in self.all_lights() | {x for x in (self.zone.get("plant_mode_lights") or []) if x}
                         if self._reachable(states, e))
@@ -515,29 +500,37 @@ class ZoneRunner:
             bp = before[e].get("brightness_pct") if before[e].get("on") else None
             level[e] = float(bp or curve.get("brightness_pct") or 100)
         ct = curve.get("color_temp_kelvin")
+        samples: list[tuple[float, float]] = []
+        steps: list[tuple[float, int]] = []
+
+        def collect(seconds):
+            t_end = clock() + seconds
+            while clock() < t_end:
+                w = read_meter()
+                if w is not None:
+                    samples.append((clock(), w))
+                sleep(power_learning.METER_POLL_S)
+
         self._calibrating = True
-        deltas: list[float] = []
         try:
             for e in lights:
                 self._turn_off(e)
-            offs = [hold(half_s)]
-            ons = []
+            collect(half_s)
             for _ in range(cycles):
+                steps.append((clock(), +1))
                 for e in lights:
                     self._send_to_light(e, level[e], ct, None)
-                ons.append(hold(half_s))
+                collect(half_s)
+                steps.append((clock(), -1))
                 for e in lights:
                     self._turn_off(e)
-                offs.append(hold(half_s))
+                collect(half_s)
+            deltas = power_learning.step_deltas(samples, steps, set(lights))
             coef = {e: round(level[e] / 100, 3) for e in lights}
             now = clock()
-            for k, on in enumerate(ons):
-                if on is None or offs[k] is None or offs[k + 1] is None:
-                    continue
-                delta = on - (offs[k] + offs[k + 1]) / 2
-                deltas.append(round(delta, 1))
-                if power_learning.MIN_DELTA_W <= delta <= power_learning.MAX_LIGHT_W * len(lights):
-                    self._power.state["groups"].append([round(now, 1), dict(coef), round(delta, 1)])
+            for d in deltas:
+                if power_learning.MIN_DELTA_W <= d <= power_learning.MAX_LIGHT_W * len(lights):
+                    self._power.state["groups"].append([round(now, 1), dict(coef), d])
             del self._power.state["groups"][:-power_learning.MAX_SAMPLES]
             self._power._solved = power_learning.solve_lights(self._power.state["groups"])
         finally:
@@ -549,10 +542,13 @@ class ZoneRunner:
                 else:
                     self._turn_off(e)
             self._calibrating = False
-        ok = sorted(d for d in deltas if d > 0)
-        self.calibration = {"ciclos_w": deltas, "vatios": ok[len(ok) // 2] if ok else None,
-                            "aprendidas": {e: w for e, w in self._power.learned().items() if e in lights},
-                            "cuando": datetime.now(timezone.utc).isoformat()}
+        good = sorted(d for d in deltas if d > 0)
+        self.calibration = {
+            "vatios": good[len(good) // 2] if good else None, "saltos_validos": len(deltas),
+            "saltos": len(steps), "saltos_w": deltas, "fuente": source,
+            "aprendidas": {e: w for e, w in self._power.learned().items() if e in lights},
+            "cuando": datetime.now(timezone.utc).isoformat(),
+        }
         log.info("Zona lighting %s: calibracion de consumo %s", self.zone_id, self.calibration)
         self.decide_and_act()
         return self.calibration

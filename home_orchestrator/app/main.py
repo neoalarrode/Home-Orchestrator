@@ -1241,6 +1241,10 @@ def run_cycle():
                 # En modo "combined" no hay sensor de consumo de HA: el consumo
                 # real es el que reconstruye y publica el propio Energy.
                 "home_power_sensor": ("sensor.battery_orchestrator_load" if combined_mode else load_sensor) or None,
+                # Contador de la casa con lectura directa a 1 s (Shelly RPC) -- para
+                # quien necesite ver saltos de pocos vatios en el momento (6-nov:
+                # calibracion del consumo de las luces en Lighting).
+                "meter_host": (cfg.get("general") or {}).get("load_follow_meter_host") or None,
                 "friendly_name": "Battery Orchestrator Grid Signal",
             },
         )

@@ -47,8 +47,17 @@ OUTLIER_MAD = 3.5
 MAX_LIGHT_W = 300.0
 MIN_DELTA_W = 1.0
 ENERGY_MAX_GAP_S = 900
-# Calibracion forzada (ZoneRunner.calibrate_power): ciclos encendido/apagado.
-CALIBRATION_CYCLES, CALIBRATION_HALF_S, CALIBRATION_SKIP_S = 9, 40, 12
+# Calibracion forzada (ZoneRunner.calibrate_power), por SALTOS (6-nov): la casa
+# no esta quieta (aire, baterias, otros aparatos), pero en unos segundos casi no
+# se mueve. Cada encendido/apagado compara la mediana del contador STEP_BEFORE_S
+# antes con la de [STEP_AFTER_FROM_S, STEP_AFTER_TO_S] despues (las bombillas
+# Matter/Govee tardan algun segundo en responder); muchos saltos y mediana.
+CALIBRATION_CYCLES = 15            # 30 saltos (encender + apagar)
+CALIBRATION_HALF_S = 12.0
+STEP_BEFORE_S = 3.0
+STEP_AFTER_FROM_S, STEP_AFTER_TO_S = 4.0, 11.0
+STEP_OTHER_GUARD_S = (5.0, 12.0)   # luz de otra zona en [-5, +12] s: salto descartado
+METER_POLL_S = 0.5
 HOME_SENSOR_FALLBACK = "sensor.battery_orchestrator_load"
 GRID_SIGNAL_ENTITY_ID = "sensor.battery_orchestrator_grid_signal"
 
@@ -283,6 +292,53 @@ def home_power_sensor(ws) -> str:
     except Exception:
         pass
     return HOME_SENSOR_FALLBACK
+
+
+def meter_reader(ws):
+    """Lectura del consumo de la casa AHORA: el contador (Shelly RPC) que
+    publica Energy en su señal de red (`meter_host`, lectura directa a 1 s,
+    sin el desfase de restar la carga de baterias por Bluetooth); si no hay,
+    el sensor de consumo de HA."""
+    host = None
+    try:
+        host = ((ws.get_state(GRID_SIGNAL_ENTITY_ID) or {}).get("attributes") or {}).get("meter_host")
+    except Exception:
+        host = None
+    if host:
+        import requests
+        session = requests.Session()
+
+        def read() -> float | None:
+            try:
+                return float(session.get(f"http://{host}/rpc/EM.GetStatus?id=0", timeout=2).json()["total_act_power"])
+            except Exception:
+                return None
+        return read, f"contador {host}"
+    sensor = home_power_sensor(ws)
+
+    def read_ha() -> float | None:
+        try:
+            return float((ws.get_state(sensor) or {}).get("state"))
+        except (TypeError, ValueError):
+            return None
+    return read_ha, sensor
+
+
+def step_deltas(samples: list[tuple[float, float]], steps: list[tuple[float, int]], own: set[str]) -> list[float]:
+    """Salto (W, ya con su signo: positivo = lo que gastan las luces) de cada
+    encendido/apagado `steps` [(instante, +1/-1)] en la serie del contador."""
+    out = []
+    for t, sign in steps:
+        lo, hi = STEP_OTHER_GUARD_S
+        with _events_lock:
+            if any(e not in own and t - lo <= te <= t + hi for te, e in _events):
+                continue
+        before = sorted(w for ts, w in samples if t - STEP_BEFORE_S <= ts < t)
+        after = sorted(w for ts, w in samples if t + STEP_AFTER_FROM_S <= ts <= t + STEP_AFTER_TO_S)
+        if len(before) < 2 or len(after) < 3:
+            continue
+        out.append(round((after[len(after) // 2] - before[len(before) // 2]) * sign, 1))
+    return out
 
 
 def history_fetcher(ws, sensor: str):
