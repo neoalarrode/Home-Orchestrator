@@ -45,10 +45,13 @@ SHADOW_LOG_SECONDS = 15.0      # en sombra, un resumen cada tanto (no cada segun
 # equipo, `max_w`), no un numero fijo: con 1200 W salen los 900/600 de antes.
 ADD_FRACTION_OF_MAX = 0.75
 REMOVE_FRACTION_OF_MAX = 0.5
-# Rotacion para no desgastar siempre las mismas: entra la de mas SOC, y una
-# inactiva que supere a una activa en SWAP_SOC_POINTS se intercambia (como mucho
-# una vez cada SWAP_MIN_SECONDS).
-SWAP_SOC_POINTS = 10
+# Rotacion (como mucho una vez cada SWAP_MIN_SECONDS): ver SWAP_SCORE_WH.
+# Orden de entrada a descargar (6-nov, decision del usuario): primero las que
+# mas energia tienen y menos gastan sus propios enchufes -- la energia que les
+# quedaria para la casa tras alimentar lo enchufado hasta el proximo valle
+# (`available_wh - outlet_drain_wh`). Es solo un ORDEN: no se reserva nada.
+# Se cambia una activa por una parada si esta tiene al menos SWAP_SCORE_WH mas.
+SWAP_SCORE_WH = 200.0
 SWAP_MIN_SECONDS = 600
 # Respuesta de una STREAM a un cambio de carga base (traza del 1-nov): se nota
 # a los ~2 s y sube a unos 300 W/s por unidad. La demanda se calcula con lo que
@@ -327,9 +330,19 @@ def solar_charge_targets(net_w: float, followers: list[dict], charging_now: bool
     return {k: float(v) for k, v in shares.items()}
 
 
+def _score_wh(f: dict) -> float:
+    """Energia que le quedaria a la unidad para la casa tras sus enchufes."""
+    return float(f.get("available_wh") or 0.0) - float(f.get("outlet_drain_wh") or 0.0)
+
+
+def _priority(f: dict) -> float:
+    return -_score_wh(f)
+
+
 def choose_active(wanted_w: float, followers: list[dict], active: list[str]) -> list[str]:
     """Que unidades descargan, por eficiencia: las minimas necesarias, con
-    histeresis, entrando las de mas SOC. `active` es la eleccion anterior."""
+    histeresis, entrando antes las de mas energia y menos consumo enchufado
+    (ver _score_wh). `active` es la eleccion anterior."""
     usable = [f for f in followers if f["available_wh"] > 0 and f["max_w"] > 0]
     by_id = {f["id"]: f for f in usable}
     active = [a for a in active if a in by_id]          # las que se vaciaron o salieron, fuera
@@ -343,10 +356,10 @@ def choose_active(wanted_w: float, followers: list[dict], active: list[str]) -> 
     while k > 1 and wanted_w < (k - 1) * remove_w:
         k -= 1
     # Ademas, nunca menos de las que hacen falta por su limite fisico.
-    ranked = sorted(usable, key=lambda f: f.get("soc") or 0, reverse=True)
+    ranked = sorted(usable, key=_priority)
     while k < len(usable) and wanted_w > sum(f["max_w"] for f in ranked[:k]):
         k += 1
-    keep = sorted(active, key=lambda a: by_id[a].get("soc") or 0, reverse=True)[:k]
+    keep = sorted(active, key=lambda a: _priority(by_id[a]))[:k]
     for f in ranked:
         if len(keep) >= k:
             break
@@ -356,16 +369,17 @@ def choose_active(wanted_w: float, followers: list[dict], active: list[str]) -> 
 
 
 def maybe_swap(active: list[str], followers: list[dict]) -> list[str]:
-    """Una inactiva con bastante mas SOC sustituye a la activa de menos SOC."""
+    """Una parada a la que le quedaria bastante mas energia para la casa
+    (SWAP_SCORE_WH) sustituye a la activa a la que menos le quedaria."""
     by_id = {f["id"]: f for f in followers if f["available_wh"] > 0}
     act = [a for a in active if a in by_id]
     idle = [f for f in by_id.values() if f["id"] not in act]
     if not act or not idle:
         return act
-    low = min(act, key=lambda a: by_id[a].get("soc") or 0)
-    best = max(idle, key=lambda f: f.get("soc") or 0)
-    if (best.get("soc") or 0) - (by_id[low].get("soc") or 0) >= SWAP_SOC_POINTS:
-        return [a for a in act if a != low] + [best["id"]]
+    worst = min(act, key=lambda a: _score_wh(by_id[a]))
+    best = max(idle, key=_score_wh)
+    if _score_wh(best) - _score_wh(by_id[worst]) >= SWAP_SCORE_WH:
+        return [a for a in act if a != worst] + [best["id"]]
     return act
 
 

@@ -19,7 +19,7 @@ class OutletSensors(unittest.TestCase):
                 e["since"] = e["since"] or "2026-11-05T22:30:00"
                 e["wh"] += wh
             return dict(e)
-        self.p = [mock.patch.object(main, "_publish_sensor_throttled", lambda e, s, a: self.sent.__setitem__(e, (s, a))),
+        self.p = [mock.patch.object(main, "_publish_sensor_throttled", lambda e, s, a, **k: self.sent.__setitem__(e, (s, a))),
                   mock.patch.object(main.outlet_energy_store, "accumulate", acc),
                   mock.patch.object(main.monotonic_sensor, "publishable", lambda e, t, **k: t)]
         for x in self.p: x.start()

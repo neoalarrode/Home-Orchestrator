@@ -77,11 +77,13 @@ class Efficiency(unittest.TestCase):
         t = lf.compute_targets(600, {}, U4, True, 5000, 50, active=["ultra"])
         self.assertEqual(t, {"ultra": 550, "ef": 0.0, "desp": 0.0, "patio": 0.0})
 
-    def test_swap_when_another_has_much_more_soc(self):
-        f = [dict(U4[0], soc=45), U4[1], U4[2], U4[3]]      # ultra ya mas baja
+    def test_swap_when_another_has_much_more_energy(self):
+        # 6-nov: por energia disponible (Wh), no por % de SOC -- la Ultra X tiene el
+        # doble de capacidad y al mismo % tiene el doble de energia.
+        f = [dict(U4[0], available_wh=300), U4[1], U4[2], U4[3]]      # ultra ya mas baja
         self.assertEqual(lf.maybe_swap(["ultra"], f), ["desp"])
-        self.assertEqual(lf.maybe_swap(["desp"], U4), ["ultra"])     # 80 vs 58
-        self.assertEqual(lf.maybe_swap(["patio"], [dict(x, soc=60) for x in U4]), ["patio"])
+        self.assertEqual(lf.maybe_swap(["desp"], U4), ["ultra"])     # 2600 vs 900 Wh
+        self.assertEqual(lf.maybe_swap(["patio"], [dict(x, available_wh=800) for x in U4]), ["patio"])
 
 
 GRP = {"id": "grupo:D", "max_w": 1200, "available_wh": 1500, "soc": 55, "output_w": 0.0}
@@ -305,3 +307,25 @@ class SwapWithoutOverlap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OutletPriority(unittest.TestCase):
+    """6-nov (decision del usuario): entran antes las que mas energia tienen y
+    menos gastan sus enchufes (energia que les quedaria para la casa); sin reserva."""
+    U = [dict(id="patio", soc=60, max_w=1200, available_wh=900, outlet_drain_wh=0.0),
+         dict(id="ef", soc=80, max_w=1200, available_wh=1300, outlet_drain_wh=2600.0),   # servidor 174 W x 15 h
+         dict(id="desp", soc=55, max_w=1200, available_wh=800, outlet_drain_wh=30.0),
+         dict(id="ultra", soc=70, max_w=1200, available_wh=2400, outlet_drain_wh=580.0)]  # Starlink 39 W x 15 h
+
+    def test_order_by_energy_left_for_the_house(self):
+        self.assertEqual(lf.choose_active(500, self.U, []), ["ultra"])               # 1820 Wh
+        self.assertEqual(lf.choose_active(1000, self.U, []), ["ultra", "patio"])     # 900
+        self.assertEqual(lf.choose_active(1900, self.U, []), ["ultra", "patio", "desp"])
+        self.assertEqual(len(lf.choose_active(3000, self.U, [])), 4)                 # el servidor la ultima
+
+    def test_server_unit_swapped_out(self):
+        self.assertEqual(lf.maybe_swap(["ef"], self.U), ["ultra"])
+
+    def test_no_swap_for_small_differences(self):
+        u = [dict(x, available_wh=w, outlet_drain_wh=0.0) for x, w in zip(self.U, (900, 950, 800, 1000))]
+        self.assertEqual(lf.maybe_swap(["patio"], u), ["patio"])                    # 100 Wh < SWAP_SCORE_WH

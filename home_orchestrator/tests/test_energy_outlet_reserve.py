@@ -1,6 +1,6 @@
-"""La energia que gastaran los enchufes de una bateria hasta el valle no esta
-libre para la casa (5-nov: EF-60999 llegaba a la punta al 12 % y sus enchufes
-acababan comprando de red 2-3 h a 0,173)."""
+"""6-nov (decision del usuario): no se reserva nada para los enchufes de una
+bateria -- toda su energia esta disponible; lo que gastaran hasta el valle
+(`outlet_drain_wh`) solo sirve para el orden de entrada a descargar."""
 import os, sys, unittest
 from datetime import datetime
 from unittest import mock
@@ -24,8 +24,8 @@ class HoursUntilValle(unittest.TestCase):
             self.assertEqual(main._hours_until_valle(datetime(2026, 11, 5, 18, 0)), 0.0)
 
 
-class OutletReserve(unittest.TestCase):
-    def test_battery_with_busy_outlets_offers_less_to_the_house(self):
+class OutletDrain(unittest.TestCase):
+    def test_no_reserve_but_drain_reported(self):
         cfg = {"ecoflow_user_id": "u", "general": {"load_follow_mode": "on"}, "batteries": [
             {"id": "ef", "name": "EF", "source": "ecoflow", "ecoflow_ble_address": "A1", "ecoflow_sn": "S1",
              "ecoflow_main_sn": "S1", "capacity_wh": 1920, "min_soc_pct": 3},
@@ -39,8 +39,11 @@ class OutletReserve(unittest.TestCase):
              mock.patch.object(main, "_load_follow_test_ids", lambda c: set()):
             ctx = main._load_follow_context()
         av = {f["id"]: f["available_wh"] for f in ctx["followers"]}
+        drain = {f["id"]: f["outlet_drain_wh"] for f in ctx["followers"]}
         self.assertAlmostEqual(av["mp"], 0.30 * 1920, delta=1)
-        self.assertAlmostEqual(av["ef"], 0.30 * 1920 - 300, delta=1)   # 100 W x 3 h para sus enchufes
+        self.assertAlmostEqual(av["ef"], 0.30 * 1920, delta=1)          # sin reserva
+        self.assertAlmostEqual(drain["ef"], 300, delta=1)               # 100 W x 3 h, solo para el orden
+        self.assertEqual(drain["mp"], 0.0)
 
 
 if __name__ == "__main__":

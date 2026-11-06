@@ -182,6 +182,13 @@ def publish_sensor(entity_id: str, state, attributes: dict | None = None):
     return r.json()
 
 
+def delete_state(entity_id: str) -> None:
+    """Borra un estado creado por la API REST (ver energy_mqtt.py)."""
+    r = _http().delete(f"{BASE_URL}/states/{entity_id}", headers=HEADERS, timeout=TIMEOUT)
+    if r.status_code not in (200, 404):
+        r.raise_for_status()
+
+
 def _history_window(entity_id: str, start: datetime, end: datetime, minimal: bool) -> list[dict]:
     """Historico de UNA entidad entre `start` y `end` (UTC).
 

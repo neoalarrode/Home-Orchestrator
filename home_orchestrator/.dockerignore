@@ -35,6 +35,7 @@ app/savings_store.py
 app/scheduler.py
 app/solar_energy_store.py
 app/outlet_energy_store.py
+app/energy_mqtt.py
 app/tariff_source.py
 app/templates/
 

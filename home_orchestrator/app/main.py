@@ -38,6 +38,7 @@ import lifetime_store
 import monotonic_sensor
 import pv_source
 import savings_store
+import energy_mqtt
 import outlet_energy_store
 import solar_energy_store
 import tariff_source
@@ -161,7 +162,7 @@ _publish_lock = threading.Lock()
 
 
 def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
-                               min_interval: float = PUBLISH_MIN_INTERVAL_SECONDS) -> None:
+                               min_interval: float = PUBLISH_MIN_INTERVAL_SECONDS, mqtt: bool = False) -> None:
     """Publica un sensor a HA, como mucho una vez cada `min_interval`.
 
     CADA sensor es independiente. Antes esta funcion dejaba escapar la
@@ -190,7 +191,10 @@ def _publish_sensor_throttled(entity_id: str, state, attributes: dict,
                 and (now_ts - last) < PUBLISH_HEARTBEAT_SECONDS):
             return
         try:
-            ha_client.publish_sensor(entity_id, state, attributes)
+            # `mqtt`: por MQTT Discovery (entidad con unique_id, se le puede
+            # asignar zona en HA); sin broker, por REST como siempre.
+            if not (mqtt and energy_mqtt.publish(entity_id, state, attributes)):
+                ha_client.publish_sensor(entity_id, state, attributes)
         except Exception:
             log.warning(
                 "No se ha podido publicar %s en HA (se reintenta en el proximo ciclo)",
@@ -2027,6 +2031,7 @@ def _publish_heat_pump_sensors(watts: float, now_ts: float | None = None) -> Non
         "sensor.battery_orchestrator_heat_pump_power", round(watts),
         {"device_class": "power", "state_class": "measurement", "unit_of_measurement": "W",
          "friendly_name": "Battery Orchestrator Aires (estimado)"},
+        mqtt=True,
     )
     wh = 0.0
     if _heat_pump_last is not None and now_ts > _heat_pump_last[0]:
@@ -2044,6 +2049,7 @@ def _publish_heat_pump_sensors(watts: float, now_ts: float | None = None) -> Non
         ), 3),
         {"device_class": "energy", "state_class": "total_increasing", "unit_of_measurement": "kWh",
          "since": total["since"], "friendly_name": "Battery Orchestrator Aires (estimado, energía)"},
+        mqtt=True,
     )
 
 
@@ -2066,6 +2072,7 @@ def _publish_outlet_sensors(battery_live: list[dict], now_ts: float | None = Non
                 f"sensor.battery_orchestrator_outlet_{slug}", round(watts),
                 {"device_class": "power", "state_class": "measurement",
                  "unit_of_measurement": "W", "friendly_name": name},
+                mqtt=True,
             )
             last = _outlet_last_ts.get(slug)
             _outlet_last_ts[slug] = now_ts
@@ -2083,6 +2090,7 @@ def _publish_outlet_sensors(battery_live: list[dict], now_ts: float | None = Non
                 {"device_class": "energy", "state_class": "total_increasing",
                  "unit_of_measurement": "kWh", "since": total["since"],
                  "friendly_name": f"{name} (energía)"},
+                mqtt=True,
             )
 
 
@@ -3754,12 +3762,12 @@ def _load_follow_context() -> dict:
         capacity = float(b.get("capacity_wh") or 0)
         g["units"].append(b)
         g["headroom_wh"] += max(0.0, (float(b.get("max_soc_pct", 100)) - float(soc)) / 100 * capacity)
-        # Lo que van a gastar sus PROPIOS enchufes hasta el proximo valle sale de
-        # esta bateria igualmente: no esta libre para la casa. 5-nov: EF-60999
-        # (~200 W en sus enchufes) llegaba a la punta al 12 % con las demas al
-        # 33-46 %, se vaciaba y sus enchufes compraban de red 2-3 h a 0,173.
-        own_reserve = (_ecoflow_outlet_w(state, _ECOFLOW_OUTLET_FIELDS_BLE) or 0.0) * hours_to_valle
-        g["available_wh"] += max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity - own_reserve)
+        # Sin reserva para sus propios enchufes (6-nov, decision del usuario): toda
+        # su energia esta disponible; lo que gastan sus enchufes solo cuenta para
+        # el ORDEN de entrada (ver load_follower._priority, `outlet_drain_wh`).
+        g["available_wh"] += max(0.0, (float(soc) - float(b.get("min_soc_pct", 10))) / 100 * capacity)
+        g["outlet_drain_wh"] = g.get("outlet_drain_wh", 0.0) + \
+            (_ecoflow_outlet_w(state, _ECOFLOW_OUTLET_FIELDS_BLE) or 0.0) * hours_to_valle
         g["soc_wh"] += float(soc) / 100 * capacity
         g["cap_wh"] += capacity
         if b.get("ecoflow_sn") and b.get("ecoflow_sn") == key:
@@ -3778,6 +3786,7 @@ def _load_follow_context() -> dict:
         max_charge = min(float(g["in_max"]), charge_declared) if g["in_max"] else charge_declared
         grid_w = own_state.get("grid_power")
         followers.append({"id": main["id"], "max_w": min(cap, sum(declared)), "available_wh": g["available_wh"],
+                          "outlet_drain_wh": g.get("outlet_drain_wh", 0.0),
                           "headroom_wh": g["headroom_wh"], "max_charge_w": max_charge,
                           "grid_w": float(grid_w) if grid_w is not None else None,
                           "outlets_w": _ecoflow_outlet_w(own_state, _ECOFLOW_OUTLET_FIELDS_BLE) or 0.0,

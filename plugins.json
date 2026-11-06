@@ -45,7 +45,8 @@
         "tariff_source.py",
         "templates",
         "load_follower.py",
-        "outlet_energy_store.py"
+        "outlet_energy_store.py",
+        "energy_mqtt.py"
       ]
     },
     {

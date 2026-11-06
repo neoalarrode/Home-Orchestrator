@@ -94,7 +94,7 @@ class EnergySensor(unittest.TestCase):
             if wh > 0:
                 e["since"] = e["since"] or "x"; e["wh"] += wh
             return dict(e)
-        with mock.patch.object(main, "_publish_sensor_throttled", lambda e, s, a: sent.__setitem__(e, s)), \
+        with mock.patch.object(main, "_publish_sensor_throttled", lambda e, s, a, **k: sent.__setitem__(e, s)), \
                 mock.patch.object(main.outlet_energy_store, "accumulate", acc), \
                 mock.patch.object(main.monotonic_sensor, "publishable", lambda e, t, **k: t), \
                 mock.patch.object(main, "_heat_pump_last", None):
