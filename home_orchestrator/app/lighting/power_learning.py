@@ -295,25 +295,18 @@ def home_power_sensor(ws) -> str:
 
 
 def meter_reader(ws):
-    """Lectura del consumo de la casa AHORA: el contador (Shelly RPC) que
-    publica Energy en su señal de red (`meter_host`, lectura directa a 1 s,
-    sin el desfase de restar la carga de baterias por Bluetooth); si no hay,
-    el sensor de consumo de HA."""
-    host = None
+    """Lectura del consumo de la casa AHORA a traves del plugin de Shelly
+    (6-nov, decision del usuario: todo lo de Shelly lo hace ese plugin; lectura
+    directa al segundo, sin el desfase de los sensores de HA). Sin contador en
+    el plugin de Shelly, el sensor de consumo de HA."""
     try:
-        host = ((ws.get_state(GRID_SIGNAL_ENTITY_ID) or {}).get("attributes") or {}).get("meter_host")
+        import device_registry
+        meters = device_registry.list_actuators("meter")
+        handle = device_registry.resolve(meters[0]["ref"], "meter") if meters else None
     except Exception:
-        host = None
-    if host:
-        import requests
-        session = requests.Session()
-
-        def read() -> float | None:
-            try:
-                return float(session.get(f"http://{host}/rpc/EM.GetStatus?id=0", timeout=2).json()["total_act_power"])
-            except Exception:
-                return None
-        return read, f"contador {host}"
+        handle = None
+    if handle is not None:
+        return handle.read_now, f"contador Shelly {meters[0].get('name')}"
     sensor = home_power_sensor(ws)
 
     def read_ha() -> float | None:

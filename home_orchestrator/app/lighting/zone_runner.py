@@ -528,8 +528,12 @@ class ZoneRunner:
             deltas = power_learning.step_deltas(samples, steps, set(lights))
             coef = {e: round(level[e] / 100, 3) for e in lights}
             now = clock()
+            # TODOS los saltos, tambien los negativos que deja el ruido: quedarse
+            # solo con los positivos sesgaba el resultado hacia arriba (Cocina,
+            # 6-nov: 22 W con una mediana real de ~9). Los imposibles fuera; los
+            # que se alejan del resto los quita solve_lights.
             for d in deltas:
-                if power_learning.MIN_DELTA_W <= d <= power_learning.MAX_LIGHT_W * len(lights):
+                if abs(d) <= power_learning.MAX_LIGHT_W * len(lights):
                     self._power.state["groups"].append([round(now, 1), dict(coef), d])
             del self._power.state["groups"][:-power_learning.MAX_SAMPLES]
             self._power._solved = power_learning.solve_lights(self._power.state["groups"])

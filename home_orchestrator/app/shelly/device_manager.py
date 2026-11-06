@@ -42,6 +42,10 @@ log = logging.getLogger("shelly.device_manager")
 REQUEST_TIMEOUT_SECONDS = 4
 POLL_INTERVAL_SECONDS = 5
 RECONNECT_INTERVAL_SECONDS = 30  # ver _reconnect_loop
+# Contador de energia (Pro 3EM, "meter"): lectura directa por RPC bajo demanda
+# (la conexion es de este plugin; los demas la piden por get_handle("meter")).
+METER_TIMEOUT_SECONDS = 2.0
+METER_FRESH_SECONDS = 3.0
 MIN_KELVIN, MAX_KELVIN = 2700, 6500  # rango tipico de los Shelly Duo/Bulb (blancos regulables)
 
 
@@ -114,7 +118,9 @@ class ShellyDeviceManager:
         gen = int(info.get("gen") or 1)
         if gen >= 2:
             status = self._rpc(host, "Shelly.GetStatus")
-            if any(k.startswith("rgbw:") or k.startswith("rgb:") for k in status):
+            if "em:0" in status:
+                capability = "meter"
+            elif any(k.startswith("rgbw:") or k.startswith("rgb:") for k in status):
                 capability = "rgbw"
             elif any(k.startswith("light:") for k in status):
                 capability = "light"
@@ -326,6 +332,9 @@ class ShellyDeviceManager:
         return out
 
     def _read_gen2_state(self, info: dict) -> dict:
+        if info["capability"] == "meter":
+            em = self._rpc(info["host"], "EM.GetStatus", {"id": 0})
+            return _meter_status(em)
         raw = self._rpc(info["host"], "Shelly.GetStatus")
         if info["capability"] == "switch":
             sw = raw.get("switch:0") or {}
@@ -402,6 +411,39 @@ class ShellyDeviceManager:
             params["brightness"] = round(_clamp(brightness_pct, 1, 100))
         self._rpc(host, "Light.Set", params)
 
+    # ------------------------------------------------------- contador ----
+
+    def read_meter(self, device_id: str) -> dict | None:
+        """Lectura AHORA del contador (una peticion RPC con la sesion propia de
+        ese dispositivo). Actualiza el estado en memoria. None si no responde."""
+        with self._lock:
+            info = self._devices.get(device_id)
+            if info is None or info.get("capability") != "meter":
+                return None
+            host = info["host"]
+            session = info.setdefault("session", requests.Session())
+        try:
+            r = session.get(f"http://{host}/rpc/EM.GetStatus", params={"id": 0}, timeout=METER_TIMEOUT_SECONDS)
+            r.raise_for_status()
+            status = _meter_status(r.json())
+        except Exception:
+            with self._lock:
+                dev = self._devices.get(device_id)
+                if dev is not None:
+                    dev["connected"] = False
+            return None
+        with self._lock:
+            dev = self._devices.get(device_id)
+            if dev is not None:
+                dev["status"], dev["connected"] = status, True
+        return status
+
+    def meter_handle(self, device_id: str) -> "ShellyMeterHandle | None":
+        with self._lock:
+            info = self._devices.get(device_id)
+            ok = info is not None and info.get("capability") == "meter"
+        return ShellyMeterHandle(self, device_id) if ok else None
+
     # ------------------------------------------------------- fachada light
 
     def light_handle(self, device_id: str) -> "ShellyLightHandle | None":
@@ -413,6 +455,47 @@ class ShellyDeviceManager:
         # brightness_pct/color_temp_kelvin en None con normalidad (mismo
         # criterio que una bombilla TP-Link no atenuable).
         return ShellyLightHandle(self, device_id) if exists else None
+
+
+def _meter_status(em: dict) -> dict:
+    out = {"power_w": float(em.get("total_act_power") or 0.0), "ts": time.time()}
+    for phase in ("a", "b", "c"):
+        if em.get(f"{phase}_act_power") is not None:
+            out[f"{phase}_w"] = float(em[f"{phase}_act_power"])
+    return out
+
+
+class ShellyMeterHandle:
+    """Contador de la casa para consumo INTERNO de otros plugins (Energy,
+    Lighting, Climate) -- 6-nov, decision del usuario: todo lo de Shelly lo
+    hace este plugin. `read_now()` hace la lectura en el momento (lo que pide
+    el seguidor de carga cada segundo); `power_w` da la ultima si es reciente
+    y si no, lee."""
+
+    def __init__(self, manager: ShellyDeviceManager, device_id: str) -> None:
+        self._manager = manager
+        self._device_id = device_id
+
+    @property
+    def available(self) -> bool:
+        return self._manager.connected(self._device_id)
+
+    @property
+    def host(self) -> str | None:
+        info = self._manager.get_device(self._device_id)
+        return info["host"] if info else None
+
+    def read_now(self) -> float | None:
+        st = self._manager.read_meter(self._device_id)
+        return st["power_w"] if st else None
+
+    @property
+    def power_w(self) -> float | None:
+        info = self._manager.get_device(self._device_id) or {}
+        st = info.get("status") or {}
+        if st.get("ts") and time.time() - st["ts"] <= METER_FRESH_SECONDS:
+            return st.get("power_w")
+        return self.read_now()
 
 
 class ShellyLightHandle:

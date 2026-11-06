@@ -507,6 +507,7 @@ class LoadFollower:
         self._workers: dict[str, _Worker] = {}
         self._failed: set[str] = set()      # ordenes que el equipo no confirmo
         self._lock = threading.Lock()
+        self._warned_direct_meter = False
 
     def stop(self) -> None:
         self._stop.set()
@@ -535,7 +536,15 @@ class LoadFollower:
             self.status = {"mode": mode}
             return
         now = time.monotonic()
-        meter = read_shelly_w(host, session)
+        reader = ctx.get("meter_read")
+        if reader is not None:
+            meter = reader()          # a traves del plugin de Shelly
+        else:
+            if not self._warned_direct_meter:
+                log.warning("Seguimiento de carga: el plugin de Shelly no tiene el contador %s dado de alta "
+                            "-- se lee directamente", host)
+                self._warned_direct_meter = True
+            meter = read_shelly_w(host, session)
         if meter is None:
             if now - self._last_meter_ts > METER_LOST_SECONDS and any(self._current.values()):
                 log.warning("Seguimiento de carga: sin lectura del contador %s -- carga base a 0", host)

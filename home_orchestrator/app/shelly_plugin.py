@@ -68,6 +68,12 @@ class ShellyPlugin(Plugin):
             for d in devices:
                 item = {"id": d["id"], "config": d["config"]}
                 info = self._manager.get_device(d["id"])
+                if info is not None and info.get("capability") == "meter":
+                    st = info.get("status") or {}
+                    item["live"] = {"connected": bool(info.get("connected")), "capability": "meter",
+                                    "power_w": st.get("power_w"), "gen": info["gen"], "model": info.get("model")}
+                    out.append(item)
+                    continue
                 handle = self._manager.light_handle(d["id"])
                 if info is not None and handle is not None:
                     item["live"] = {
@@ -167,7 +173,8 @@ class ShellyPlugin(Plugin):
             if self._manager.get_device(device["id"]) is None:
                 return
 
-        if cfg.get("expose_mqtt"):
+        info = self._manager.get_device(device["id"]) or {}
+        if cfg.get("expose_mqtt") and info.get("capability") != "meter":
             mqtt_dev = MqttShellyDevice(self._mqtt, self._manager, device["id"], cfg.get("name") or cfg["host"])
             mqtt_dev.publish_discovery()
             # Mismo bug ya corregido en Tuya/TP-Link/Govee que se evita
@@ -202,7 +209,12 @@ class ShellyPlugin(Plugin):
         se ignora (mismo contrato que `TuyaPlugin.get_handle`). Shelly
         solo ofrece "light" hoy -- cualquier otra capacidad devuelve
         None, igual que un device_id desconocido."""
+        if capability == "meter":
+            return self._manager.meter_handle(device_id)
         if capability != "light":
+            return None
+        info = self._manager.get_device(device_id)
+        if info and info.get("capability") == "meter":
             return None
         return self._manager.light_handle(device_id)
 
@@ -211,13 +223,18 @@ class ShellyPlugin(Plugin):
         -- lo que el registro compartido agrega para que el selector de
         la interfaz de Lighting los ofrezca sin que el usuario tenga que
         escribir `shelly:<id>` a mano. Shelly solo ofrece "light" hoy."""
-        if capability != "light":
+        if capability not in ("light", "meter"):
             return []
         out = []
         for device in shelly_store.load_devices():
             device_id = device["id"]
             cfg = device["config"]
+            info = self._manager.get_device(device_id) or {}
+            is_meter = info.get("capability") == "meter"
+            if is_meter != (capability == "meter"):
+                continue
             out.append({
+                "host": cfg.get("host"),
                 "ref": f"shelly:{device_id}",
                 "name": cfg.get("name") or cfg.get("host") or device_id,
                 "brand": "Shelly",

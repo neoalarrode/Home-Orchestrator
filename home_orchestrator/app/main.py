@@ -1241,10 +1241,6 @@ def run_cycle():
                 # En modo "combined" no hay sensor de consumo de HA: el consumo
                 # real es el que reconstruye y publica el propio Energy.
                 "home_power_sensor": ("sensor.battery_orchestrator_load" if combined_mode else load_sensor) or None,
-                # Contador de la casa con lectura directa a 1 s (Shelly RPC) -- para
-                # quien necesite ver saltos de pocos vatios en el momento (6-nov:
-                # calibracion del consumo de las luces en Lighting).
-                "meter_host": (cfg.get("general") or {}).get("load_follow_meter_host") or None,
                 "friendly_name": "Battery Orchestrator Grid Signal",
             },
         )
@@ -2016,6 +2012,38 @@ _solar_energy_last_ts: float | None = None
 
 
 _outlet_last_ts: dict[str, float] = {}
+
+
+_meter_reader_cache: dict = {"at": 0.0, "host": None, "reader": None}
+METER_READER_REFRESH_SECONDS = 60
+
+
+def _shelly_meter_reader(host: str | None):
+    """Igual que _find_shelly_meter_reader, cacheado METER_READER_REFRESH_SECONDS
+    (el contexto del seguidor se rehace cada segundo)."""
+    c = _meter_reader_cache
+    if c["reader"] is not None and c["host"] == host and time.monotonic() - c["at"] < METER_READER_REFRESH_SECONDS:
+        return c["reader"]
+    c.update(at=time.monotonic(), host=host, reader=_find_shelly_meter_reader(host))
+    return c["reader"]
+
+
+def _find_shelly_meter_reader(host: str | None):
+    """Lectura del contador de la casa A TRAVES del plugin de Shelly (6-nov,
+    decision del usuario: todo lo de Shelly lo hace ese plugin). El contador
+    con el mismo host que el configurado aqui, o el unico que haya. None si el
+    plugin de Shelly no tiene ningun contador (el seguidor cae a la lectura
+    directa de siempre y lo avisa)."""
+    try:
+        import device_registry
+        meters = device_registry.list_actuators("meter")
+    except Exception:
+        return None
+    pick = next((m for m in meters if host and m.get("host") == host), None) or (meters[0] if len(meters) == 1 else None)
+    if pick is None:
+        return None
+    handle = device_registry.resolve(pick["ref"], "meter")
+    return handle.read_now if handle is not None else None
 
 HEAT_PUMP_ENERGY_KEY = "aires"
 HEAT_PUMP_MAX_GAP_SECONDS = 600   # el ciclo de planificacion puede tardar minutos
@@ -3850,6 +3878,7 @@ def _load_follow_context() -> dict:
         "own_charging_w": own_charging_w,
         "others": others_list,
         "meter_host": general.get("load_follow_meter_host"),
+        "meter_read": _shelly_meter_reader(general.get("load_follow_meter_host")),
         "margin_w": general.get("load_follow_margin_w"),
         "deadband_w": general.get("load_follow_deadband_w"),
         "contracted_w": general.get("contracted_power_w"),

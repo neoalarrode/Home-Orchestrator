@@ -194,3 +194,52 @@ class Simulation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShellyPluginMeter(Simulation):
+    """6-nov: el seguidor lee el contador a traves del plugin de Shelly
+    (`meter_read` del contexto); con la misma planta, sigue igual que leyendo
+    el Shelly directamente."""
+    def test_same_following_through_shelly_plugin(self):
+        pv = lambda s: 1400.0 if s < 60 or s >= 90 else 300.0
+        direct, _, _ = self._run(_Plant(400.0), 150, pv_profile=pv)
+        plant = _Plant(400.0)
+        tick = {"n": -1}                  # mismo paso que el bucle directo (s = 0, 1, ...)
+
+        def via_plugin():
+            tick["n"] += 1
+            return round(plant.meter()) + (0.1 if tick["n"] % 2 else 0.0)
+        orig = lf.read_shelly_w
+        lf.read_shelly_w = lambda *a, **k: (_ for _ in ()).throw(AssertionError("no debe leer directo"))
+        try:
+            plugin, _, _ = self._run_plugin(plant, 150, via_plugin, pv)
+        finally:
+            lf.read_shelly_w = orig
+        self.assertEqual([round(x) for x in direct], [round(x) for x in plugin])
+
+    def _run_plugin(self, plant, seconds, reader, pv_profile):
+
+        # mismo bucle que _run, pero sin parchear read_shelly_w: el contador llega por el contexto
+        followers = [{"id": "a", "max_w": 1200, "available_wh": 500, "soc": 50, "headroom_wh": 900, "max_charge_w": 1050},
+                     {"id": "b", "max_w": 1200, "available_wh": 500, "soc": 50, "headroom_wh": 900, "max_charge_w": 1050}]
+        ctx = {"mode": "on", "meter_host": "x", "meter_read": reader, "followers": followers, "discharge_allowed": False,
+               "contracted_w": 5000, "margin_w": 0, "deadband_w": 0, "solar_charge": True, "grid_charge_now": False,
+               "batteries_cfg": [{"id": "a", "name": "a"}, {"id": "b", "name": "b"}]}
+
+        def context():
+            for f in followers:
+                f["grid_w"] = plant.grid_w(f["id"]); f["outlets_w"] = 0.0
+            return ctx
+        f = lf.LoadFollower(context, lambda b, w: plant.cmd_log.append((plant.t, b["id"], "base", w)) or True,
+                            charge=lambda b, w: plant.cmd_log.append((plant.t, b["id"], "charge", w)) or True)
+        meters = []
+        try:
+            lf.time.monotonic = lambda: plant.t
+            for s in range(seconds):
+                plant.pv_w = pv_profile(s)
+                f._tick(None)
+                plant.step()
+                meters.append(plant.meter())
+        finally:
+            lf.time.monotonic = _REAL_MONOTONIC
+        return meters, plant, f
