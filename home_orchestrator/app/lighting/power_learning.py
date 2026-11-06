@@ -46,6 +46,12 @@ MAX_AGE_DAYS = 30
 OUTLIER_MAD = 3.5
 MAX_LIGHT_W = 300.0
 MIN_DELTA_W = 1.0
+# Regularizacion (en "muestras") del ajuste: el fijo pesa mas que la parte
+# proporcional, asi con datos solo al 100 % casi todo va a la parte
+# proporcional (LED ~ lineal) y con datos solo al 1 % el fijo se lo lleva todo.
+RIDGE_BASE, RIDGE_LEVEL = 1.0, 0.25
+BASE_SUFFIX = "#fijo"
+LEVEL_HISTORY_S = 180
 ENERGY_MAX_GAP_S = 900
 # Calibracion forzada (ZoneRunner.calibrate_power), por SALTOS (6-nov): la casa
 # no esta quieta (aire, baterias, otros aparatos), pero en unos segundos casi no
@@ -119,44 +125,97 @@ def _median_between(points: list[tuple[float, float]], t0: float, t1: float) -> 
     return segs[-1][0]
 
 
-def _nnls(rows: list[dict[str, float]], targets: list[float], iters: int = 400) -> dict[str, float]:
-    """Minimos cuadrados NO negativos por descenso de coordenadas (pocas luces
-    por zona: no hace falta nada mas). rows[k] = {luz: coeficiente}."""
-    lights = sorted({e for r in rows for e in r})
-    p = {e: 0.0 for e in lights}
-    norm = {e: sum(r.get(e, 0.0) ** 2 for r in rows) for e in lights}
-    resid = list(targets)
-    for _ in range(iters):
-        moved = 0.0
-        for e in lights:
-            if norm[e] <= 0:
-                continue
-            g = sum(r.get(e, 0.0) * resid[k] for k, r in enumerate(rows))
-            new = max(0.0, p[e] + g / norm[e])
-            d = new - p[e]
-            if d:
-                for k, r in enumerate(rows):
-                    c = r.get(e, 0.0)
-                    if c:
-                        resid[k] -= c * d
-                p[e] = new
-                moved = max(moved, abs(d))
-        if moved < 1e-3:
+def _solve_linear(a: list[list[float]], b: list[float]) -> list[float] | None:
+    """Gauss con pivote parcial (matrices pequenas: 2 parametros por luz)."""
+    n = len(b)
+    m = [row[:] + [b[i]] for i, row in enumerate(a)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[piv][col]) < 1e-12:
+            return None
+        m[col], m[piv] = m[piv], m[col]
+        for r in range(col + 1, n):
+            f = m[r][col] / m[col][col]
+            if f:
+                for k in range(col, n + 1):
+                    m[r][k] -= f * m[col][k]
+    x = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        x[r] = (m[r][n] - sum(m[r][k] * x[k] for k in range(r + 1, n))) / m[r][r]
+    return x
+
+
+def _nnls(rows: list[dict[str, float]], targets: list[float],
+          ridge: dict[str, float] | None = None) -> dict[str, float]:
+    """Minimos cuadrados NO negativos con una pequena regularizacion (`ridge`
+    por parametro, en "muestras"): con ella, luces que SIEMPRE van juntas se
+    reparten el consumo a partes iguales en vez de cargarlo todo en una (Cocina,
+    6-nov: 19,5 W en una barra y 0 en las otras cuatro). Conjunto activo
+    resolviendo las ecuaciones normales: pocas incognitas por zona."""
+    names = sorted({e for r in rows for e in r})
+    if not names:
+        return {}
+    idx = {e: i for i, e in enumerate(names)}
+    n = len(names)
+    g = [[0.0] * n for _ in range(n)]
+    h = [0.0] * n
+    for r, t in zip(rows, targets):
+        items = [(idx[e], c) for e, c in r.items() if c]
+        for i, ci in items:
+            h[i] += ci * t
+            for j, cj in items:
+                g[i][j] += ci * cj
+    for e, i in idx.items():
+        g[i][i] += (ridge or {}).get(e, RIDGE_LEVEL)
+    free = set(range(n))
+    x = [0.0] * n
+    for _ in range(4 * n + 10):
+        f = sorted(free)
+        sol = _solve_linear([[g[i][j] for j in f] for i in f], [h[i] for i in f]) if f else []
+        if sol is None:
             break
-    return p
+        x = [0.0] * n
+        for k, i in enumerate(f):
+            x[i] = sol[k]
+        neg = [i for i in f if x[i] < 0]
+        if neg:
+            free.discard(min(neg, key=lambda i: x[i]))
+            continue
+        # KKT: alguna fijada a 0 que querria subir -> se libera y se repite.
+        grad = {i: sum(g[i][j] * x[j] for j in range(n)) - h[i] for i in range(n) if i not in free}
+        up = [i for i, v in grad.items() if v < -1e-9]
+        if not up:
+            break
+        free.add(min(up, key=lambda i: grad[i]))
+    return {e: max(0.0, x[i]) for e, i in idx.items()}
 
 
-def solve_lights(samples: list) -> dict[str, float]:
-    """Vatios al 100 % de cada luz segun las muestras [(ts, {luz: coef}, vatios)].
-    Solo muestras recientes; las que mas se alejan del ajuste (un horno que
-    arranca a la vez...) se quitan y se rehace. Luces con menos de MIN_SAMPLES
-    apariciones: sin dato (no se inventa)."""
+def _features(coef: dict[str, float]) -> dict[str, float]:
+    """Cada luz gasta  fijo + variable * brillo  estando encendida: un LED al
+    1 % NO gasta el 1 % (6-nov: de noche la zona pone las luces al 1 % y con
+    el modelo proporcional esas muestras no valian para nada)."""
+    out = {}
+    for e, c in coef.items():
+        if c:
+            out[e + BASE_SUFFIX] = 1.0 if c > 0 else -1.0
+            out[e] = c
+    return out
+
+
+def solve_lights(samples: list) -> dict[str, tuple[float, float]]:
+    """(fijo, variable al 100 %) en vatios de cada luz segun las muestras
+    [(ts, {luz: brillo con signo}, vatios)]. Solo muestras recientes; las que
+    mas se alejan del ajuste (un horno que arranca a la vez...) se quitan y se
+    rehace. Luces con menos de MIN_SAMPLES apariciones: sin dato (no se
+    inventa)."""
     now = time.time()
-    data = [(c, w) for ts, c, w in samples if now - ts <= MAX_AGE_DAYS * 86400 and c]
+    data = [(_features(c), w) for ts, c, w in samples if now - ts <= MAX_AGE_DAYS * 86400 and c]
+    data = [(r, w) for r, w in data if r]
     if not data:
         return {}
-    rows, targets = [c for c, _ in data], [w for _, w in data]
-    p = _nnls(rows, targets)
+    ridge = {k: (RIDGE_BASE if k.endswith(BASE_SUFFIX) else RIDGE_LEVEL) for r, _ in data for k in r}
+    rows, targets = [r for r, _ in data], [w for _, w in data]
+    p = _nnls(rows, targets, ridge)
     resid = [t - sum(p[e] * v for e, v in r.items()) for r, t in zip(rows, targets)]
     if len(resid) >= MIN_SAMPLES:
         med = statistics.median(resid)
@@ -165,9 +224,22 @@ def solve_lights(samples: list) -> dict[str, float]:
         if sum(keep) >= MIN_SAMPLES and not all(keep):
             rows = [r for r, k in zip(rows, keep) if k]
             targets = [t for t, k in zip(targets, keep) if k]
-            p = _nnls(rows, targets)
-    seen = {e: sum(1 for r in rows if r.get(e)) for e in p}
-    return {e: round(w, 1) for e, w in p.items() if seen[e] >= MIN_SAMPLES and w <= MAX_LIGHT_W}
+            p = _nnls(rows, targets, ridge)
+    out = {}
+    for k in p:
+        if k.endswith(BASE_SUFFIX):
+            continue
+        seen = sum(1 for r in rows if r.get(k))
+        base, var = p.get(k + BASE_SUFFIX, 0.0), p[k]
+        if seen >= MIN_SAMPLES and base + var <= MAX_LIGHT_W:
+            out[k] = (round(base, 2), round(var, 2))
+    return out
+
+
+def light_watts(model: tuple[float, float], level: float) -> float:
+    """Vatios de una luz encendida al brillo `level` (0..1)."""
+    base, var = model
+    return base + var * level
 
 
 class LightPowerLearner:
@@ -183,9 +255,10 @@ class LightPowerLearner:
         self.state.pop("samples", None)
         self.state.setdefault("energy_wh", 0.0)
         self._prev: dict[str, float] = {}
+        self._levels: dict[str, deque] = {}     # luz -> (ts, brillo) recientes
         self._pending: list[dict] = []
         self._last_energy: tuple[float, float] | None = None
-        self._solved: dict[str, float] = solve_lights(self.state["groups"])
+        self._solved: dict[str, tuple[float, float]] = solve_lights(self.state["groups"])
         self.power_w: float = 0.0
         self.unlearned: list[str] = []
 
@@ -195,6 +268,11 @@ class LightPowerLearner:
         for entity_id, level in levels.items():
             prev = self._prev.get(entity_id)
             self._prev[entity_id] = level
+            hist = self._levels.setdefault(entity_id, deque())
+            if not hist or abs(hist[-1][1] - level) >= 0.01:
+                hist.append((now, level))
+            while len(hist) > 1 and now - hist[1][0] > LEVEL_HISTORY_S:
+                hist.popleft()
             if prev is None or abs(level - prev) < 0.01:
                 continue
             _note_event(now, entity_id)
@@ -243,10 +321,39 @@ class LightPowerLearner:
         delta = after - before
         if abs(delta) > MAX_LIGHT_W * len(coef):
             return False
+        # Brillo DURANTE la medida, no el del instante del cambio: la zona puede
+        # subirlas (refuerzo por presencia) o bajarlas justo despues. Si alguna
+        # cambia de brillo dentro de la ventana, el salto no es de un brillo
+        # concreto: fuera.
+        t_from, t_to = ts + CLUSTER_S, ts + CLUSTER_S + STEP_AFTER_TO_S
+        measured = {}
+        for e, c in coef.items():
+            lv = self._level_during(e, t_from, t_to)
+            if lv is False or (c > 0 and lv == 0) or (c < 0 and lv):
+                return False
+            measured[e] = (lv if lv is not None else c) if c > 0 else c
+        coef = measured
         groups = self.state["groups"]
         groups.append([round(ts, 1), {e: round(c, 3) for e, c in coef.items()}, round(delta, 1)])
         del groups[:-MAX_SAMPLES]
         return True
+
+    def _level_during(self, entity_id: str, t0: float, t1: float):
+        """Brillo de la luz entre t0 y t1; False si cambio en medio; None si no
+        hay historial."""
+        hist = self._levels.get(entity_id)
+        if not hist:
+            return None
+        vals = {lv for t, lv in hist if t0 < t <= t1}
+        at_start = None
+        for t, lv in hist:
+            if t <= t0:
+                at_start = lv
+        if at_start is not None:
+            vals.add(at_start)
+        if len(vals) > 1:
+            return False
+        return next(iter(vals), None)
 
     # -- resultado -----------------------------------------------------
     def update_power(self, now: float, levels: dict[str, float]) -> float:
@@ -262,11 +369,11 @@ class LightPowerLearner:
         for entity_id, level in levels.items():
             if level <= 0:
                 continue
-            full = self._solved.get(entity_id)
-            if full is None:
+            model = self._solved.get(entity_id)
+            if model is None:
                 unlearned.append(entity_id)
             else:
-                total += full * level
+                total += light_watts(model, level)
         self.power_w, self.unlearned = round(total, 1), unlearned
         self._last_energy = (now, self.power_w)
         return self.power_w
@@ -276,6 +383,11 @@ class LightPowerLearner:
         return round(float(self.state.get("energy_wh") or 0.0) / 1000, 4)
 
     def learned(self) -> dict[str, float]:
+        """Vatios al 100 % de cada luz aprendida."""
+        return {e: round(light_watts(m, 1.0), 1) for e, m in self._solved.items()}
+
+    def learned_models(self) -> dict[str, tuple[float, float]]:
+        """(fijo, variable al 100 %) de cada luz aprendida."""
         return dict(self._solved)
 
 
