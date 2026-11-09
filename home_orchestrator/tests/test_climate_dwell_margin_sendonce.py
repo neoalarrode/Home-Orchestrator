@@ -44,9 +44,28 @@ class ModeDwell(unittest.TestCase):
         with _Clock() as c:
             s = _DwellStub()
             self.assertEqual(s.dwell("heat", False), "heat")
+            s._last_real_action = "heat"                       # calentando de verdad
             c.advance(3)
             self.assertEqual(s.dwell("dry", False), "idle")   # aparcado en calor, sin pasar a dry
             self.assertIn("se mantiene en heat", s.reason)
+
+    def test_parked_heat_switches_to_dry_at_once(self):
+        # 9-nov: Dormitorio aparcado a 16 (sin pedir calor) esperaba 15 min para
+        # poder secar: aparcada no hay nada en marcha, cambia en el momento.
+        with _Clock() as c:
+            s = _DwellStub()
+            s.dwell("heat", False)
+            s._last_real_action = "idle"
+            c.advance(3)
+            self.assertEqual(s.dwell("dry", False), "dry")
+
+    def test_holding_at_minimum_still_waits(self):
+        with _Clock() as c:
+            s = _DwellStub()
+            s.dwell("heat", False)
+            s._last_real_action = "hold"                       # modulando al minimo
+            c.advance(3)
+            self.assertEqual(s.dwell("dry", False), "idle")
 
     def test_dry_then_heat_too_soon_keeps_drying(self):
         with _Clock() as c:
@@ -97,6 +116,7 @@ class ModeDwell(unittest.TestCase):
             for gap, want in wanted:
                 c.advance(gap)
                 act = s.dwell(want, False)
+                s._last_real_action = act        # lo que acaba haciendo el equipo
                 modes.append(act if act != "idle" else s._last_thermal_mode)
             changes = sum(1 for a, b in zip(modes, modes[1:]) if a != b)
             self.assertLessEqual(changes, 2, modes)  # antes: 5 cambios en 32 min

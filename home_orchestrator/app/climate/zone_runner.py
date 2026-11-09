@@ -1644,7 +1644,13 @@ class ZoneRunner:
         # Modo en que quedaria el equipo: idle lo deja en su ultimo modo termico.
         intended = action if action in ("heat", "cool", "dry", "fan_only") else self._last_thermal_mode
         held = self._mode_hold
-        if held and intended and intended != held[0] and not safety_emergency:
+        # Aparcada en calor/frio (consigna al minimo/maximo, sin pedir nada): no
+        # hay nada en marcha que proteger, cambiar de modo es inmediato (9-nov,
+        # Dormitorio aparcado a 16 esperando 15 min para poder secar).
+        # Con el aparcado suave el compresor puede seguir en marcha: no cuenta.
+        parked = not SOFT_PARK_ENABLED and held is not None and held[0] in ("heat", "cool") and \
+            getattr(self, "_last_real_action", None) not in ("heat", "cool", "hold")
+        if held and intended and intended != held[0] and not safety_emergency and not parked:
             remaining = MIN_MODE_DWELL_SECONDS - (now - held[1]).total_seconds()
             if remaining > 0:
                 keep = held[0]
@@ -2321,6 +2327,7 @@ class ZoneRunner:
         # dry/ventilar con nombre propio: el dry enfria y contaminaba la perdida
         # pasiva si se registraba como "off" (thermal_model solo usa "off" como reposo).
         self._holding = real_action == "hold"
+        self._last_real_action = real_action
         self._record_action(real_action if real_action in ("heat", "cool", "hold", "dry", "fan_only") else "off")
         # Ventilar es un RESPALDO, no la accion de un termostato de temperatura.
         # Estando en un modo de temperatura (calor/frio/ambos) la zona puede
