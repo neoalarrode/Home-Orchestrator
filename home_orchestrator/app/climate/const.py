@@ -168,6 +168,9 @@ DEFAULT_TPI_CYCLE_MINUTES = 15
 # codigo.
 CONF_DRY_HUMIDITY_THRESHOLD = "dry_humidity_threshold"
 DEFAULT_DRY_HUMIDITY_THRESHOLD = 65.0
+# Zona donde manda la humedad (9-nov, Dormitorio en semisotano): seca aunque
+# este cerca de pedir calor; si se enfria de mas, la zona calienta como siempre.
+CONF_DRY_PRIORITY = "dry_priority"
 
 # Sensores de PRESENCIA FISICA de la propia zona (PIR, mmWave, radar de
 # presencia...) — "¿hay alguien AHORA MISMO en esta habitacion?", no "¿esta

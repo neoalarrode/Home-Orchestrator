@@ -37,6 +37,16 @@ class SmartIdle(unittest.TestCase):
         action, _ = s._smart_idle_action(20.7, 21.0, 0.3)
         self.assertEqual(action, "dry")
 
+    def test_dry_priority_zone_dries_on_the_edge_of_heating(self):
+        # 9-nov: Dormitorio en semisotano -- manda la humedad.
+        s = _Stub({"cool", "dry", "fan_only"}, 52, 62.0)
+        s.zone["dry_priority"] = True
+        action, _ = s._smart_idle_action(19.3, 19.0, 0.3)
+        self.assertEqual(action, "dry")
+        # Por debajo de su objetivo ya no seca: colchon hasta pedir calor.
+        action, reason = s._smart_idle_action(19.1, 19.0, 0.3)
+        self.assertEqual(action, "idle"); self.assertIn("0.5°C", reason)
+
     def test_cooling_only_zone_dries_without_heat_margin(self):
         s = _Stub({"cool", "dry", "fan_only"}, 50, 60.0)
         action, _ = s._smart_idle_action(24.0, None, 0.3)

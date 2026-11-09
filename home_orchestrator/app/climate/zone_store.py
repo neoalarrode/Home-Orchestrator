@@ -65,6 +65,7 @@ DEFAULT_ZONE_CONFIG = {
     "history_days_for_inertia": 5,
     "forecast_refresh_minutes": 10,
     "dry_humidity_threshold": 65,
+    "dry_priority": False,
 }
 
 

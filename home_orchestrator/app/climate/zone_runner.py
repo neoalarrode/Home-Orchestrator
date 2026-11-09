@@ -37,6 +37,7 @@ from .const import (
     CONF_DEADBAND,
     CONF_DOOR_WINDOW_ENTITIES,
     CONF_DRY_HUMIDITY_THRESHOLD,
+    CONF_DRY_PRIORITY,
     CONF_EXTRACTOR_ABS_CEILING,
     CONF_EXTRACTOR_FANS,
     CONF_EXTRACTOR_RISE_OFF,
@@ -200,6 +201,7 @@ PRESENCE_MIN_STAY_SECONDS = 300
 # 58 cambios calor<->dry en 24 h). Solo se seca con este margen sobre la consigna
 # de calor... salvo humedad alta de verdad (riesgo de moho), que manda siempre.
 DRY_HEAT_MARGIN_DEG = 0.5
+DRY_PRIORITY_MARGIN_DEG = 0.2
 # Bomba de calor primero: en una zona con un AC (bomba de calor, ~3-4 kWh de calor
 # por kWh) y un radiador electrico (resistencia, 1 kWh por kWh), al calentar solo
 # trabaja el AC y el radiador queda en reserva. Entra de apoyo si la zona va lejos
@@ -1668,14 +1670,19 @@ class ZoneRunner:
             humidity = self._read_humidity_now()
             threshold = float(self.zone.get(CONF_DRY_HUMIDITY_THRESHOLD, DEFAULT_DRY_HUMIDITY_THRESHOLD))
             if humidity is not None and humidity >= threshold:
+                # Zona con prioridad a la humedad (9-nov, Dormitorio semisotano):
+                # margen pequeno; con la banda deja ~0.5 C de colchon hasta pedir
+                # calor, para no alternar secar/calentar con la espera de modo.
+                margin = (DRY_PRIORITY_MARGIN_DEG if self.zone.get(CONF_DRY_PRIORITY) is True
+                          else max(DRY_HEAT_MARGIN_DEG, deadband))
                 near_heat = (
                     heat_target is not None and current_temp is not None
-                    and current_temp < heat_target + max(DRY_HEAT_MARGIN_DEG, deadband)
+                    and current_temp < heat_target + margin
                 )
                 if near_heat and humidity < DRY_FORCE_HUMIDITY_PCT:
                     return "idle", (
                         f"humedad {humidity:.0f}% ≥ {threshold:.0f}%, pero a menos de "
-                        f"{max(DRY_HEAT_MARGIN_DEG, deadband):.1f}°C de pedir calor: no se deshumidifica "
+                        f"{margin + deadband:.1f}°C de pedir calor: no se deshumidifica "
                         "(secar enfriaría y obligaría a calentar)"
                     )
                 return "dry", f"humedad {humidity:.0f}% ≥ {threshold:.0f}%: deshumidificando (en reposo/ventilando)"
