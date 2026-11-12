@@ -3682,9 +3682,29 @@ def static_files(path):
     return send_from_directory("static", path)
 
 
+SERVER_START_ATTEMPTS = 20
+
+
+def _retry_name_lookup(start):
+    """Arranca un servidor web reintentando el fallo de resolucion de nombre.
+    Al abrir el puerto, `http.server` pide el nombre de la maquina
+    (`socket.getfqdn`), y en la imagen del add-on (Alpine/musl) esa consulta
+    devuelve a ratos bytes sueltos -> UnicodeDecodeError y el servidor no
+    llegaba a arrancar (12-nov: el puerto de acceso completo se quedo sin abrir
+    en dos arranques seguidos; medido dentro del add-on, falla 2 de cada 3
+    veces y a la siguiente va bien)."""
+    for attempt in range(1, SERVER_START_ATTEMPTS + 1):
+        try:
+            return start()
+        except UnicodeDecodeError:
+            if attempt == SERVER_START_ATTEMPTS:
+                raise
+            time.sleep(0.2)
+
+
 def _run_wallpanel_server():
     try:
-        server = make_server("0.0.0.0", WALLPANEL_PORT, app, threaded=True)
+        server = _retry_name_lookup(lambda: make_server("0.0.0.0", WALLPANEL_PORT, app, threaded=True))
         log.info(f"Panel de solo lectura (wallpanel) escuchando en el puerto {WALLPANEL_PORT}")
         server.serve_forever()
     except OSError as e:
@@ -3693,7 +3713,7 @@ def _run_wallpanel_server():
 
 def _run_full_access_server():
     try:
-        server = make_server("0.0.0.0", FULL_ACCESS_PORT, app, threaded=True)
+        server = _retry_name_lookup(lambda: make_server("0.0.0.0", FULL_ACCESS_PORT, app, threaded=True))
         log.info(f"Puerto de acceso completo escuchando en el puerto {FULL_ACCESS_PORT}")
         server.serve_forever()
     except OSError as e:
@@ -4088,4 +4108,4 @@ def start_background_threads() -> None:
 
 if __name__ == "__main__":
     start_background_threads()
-    app.run(host="0.0.0.0", port=8099, threaded=True)
+    _retry_name_lookup(lambda: app.run(host="0.0.0.0", port=8099, threaded=True))
