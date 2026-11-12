@@ -123,10 +123,10 @@
       "description": "Monitorizacion de tu Starlink (rendimiento, latencia, obstruccion, alineacion, consumo) -- build oficial de Dishylink, servido tal cual, con un proxy local al dish",
       "path": "home_orchestrator",
       "repo": "neoalarrode/Home-Orchestrator",
-      "version": "0.3.4",
+      "version": "0.3.5",
       "downloadable": true,
-      "tag": "v0.77.144",
-      "sha256": "43ae1c616590769dcfde14f395f62109908b3490354e50d76d2a9c6aa1816c46",
+      "tag": "v0.77.194",
+      "sha256": "358779aad5dd8a3470e1ffa63477648d8067daa3a402f549f236beb68ede7200",
       "files": [
         "starlink_plugin.py",
         "starlink_store.py",
