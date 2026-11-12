@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import socket
 import time
 
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
@@ -34,6 +35,28 @@ import plugin_loader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("core")
+
+
+_getfqdn = socket.getfqdn
+
+
+def _safe_getfqdn(name: str = "") -> str:
+    """`socket.getfqdn` sin el fallo de la imagen del add-on. Al abrir
+    cualquier puerto, `http.server` pide el nombre de la maquina; durante los
+    primeros segundos del contenedor la consulta inversa devuelve bytes
+    ilegibles (12-nov: 20 intentos seguidos en 4 s, y el add-on se cayo dos
+    veces antes de abrir el 8099). `getfqdn` ya devuelve el nombre tal cual
+    cuando la consulta falla con OSError; esto hace lo mismo con
+    UnicodeDecodeError. Ese nombre solo es informativo (`server_name`)."""
+    try:
+        return _getfqdn(name)
+    except UnicodeDecodeError:
+        return name or socket.gethostname()
+
+
+# Antes de cargar los plugins: todos los servidores del proceso (8099 y los
+# puertos 8097/8098 de Energy) pasan por aqui.
+socket.getfqdn = _safe_getfqdn
 
 
 def _register_shutdown_handler(plugins: list) -> None:

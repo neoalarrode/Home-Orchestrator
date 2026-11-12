@@ -1,5 +1,9 @@
 # Changelog
 
+## core 0.77.68
+
+- Arranque — el fallo del nombre de la máquina ya no impide abrir ningún puerto. No era a ratos sino una racha en los primeros segundos del contenedor: con 0.77.67 se agotaron los 20 reintentos (4 s) y el add-on se cayó dos veces antes de arrancar. Ahora ese fallo se trata como cualquier otro fallo de la consulta (se usa el nombre tal cual), para todos los puertos del proceso.
+
 ## core 0.77.67
 
 - Arranque — el puerto del add-on (8099) reintenta si falla la consulta del nombre de la máquina. En la imagen (Alpine) esa consulta devuelve a ratos bytes ilegibles; el 12-nov dejó sin abrir el puerto de acceso completo de Energy (8097), y en el 8099 habría tumbado el add-on.

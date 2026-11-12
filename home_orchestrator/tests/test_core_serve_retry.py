@@ -50,3 +50,27 @@ class CoreServeRetry(unittest.TestCase):
             with self.assertRaises(OSError):
                 core_app._serve("app")
         self.assertEqual(run.call_count, 1)
+
+
+class SafeGetfqdn(unittest.TestCase):
+    def test_installed_process_wide(self):
+        import socket
+        self.assertIs(socket.getfqdn, core_app._safe_getfqdn)
+
+    def test_unreadable_name_falls_back_to_the_name(self):
+        with mock.patch.object(core_app, "_getfqdn", side_effect=GARBAGE):
+            self.assertEqual(core_app._safe_getfqdn("0.0.0.0"), "0.0.0.0")
+            with mock.patch("socket.gethostname", return_value="equipo"):
+                self.assertEqual(core_app._safe_getfqdn(), "equipo")
+
+    def test_normal_lookups_are_untouched(self):
+        with mock.patch.object(core_app, "_getfqdn", return_value="host.local") as real:
+            self.assertEqual(core_app._safe_getfqdn("1.2.3.4"), "host.local")
+        real.assert_called_once_with("1.2.3.4")
+
+    def test_a_server_opens_while_every_lookup_is_unreadable(self):
+        from werkzeug.serving import make_server
+        with mock.patch.object(core_app, "_getfqdn", side_effect=GARBAGE):
+            server = make_server("127.0.0.1", 0, lambda e, s: [], threaded=True)
+        server.server_close()
+        self.assertEqual(server.server_name, "127.0.0.1")
