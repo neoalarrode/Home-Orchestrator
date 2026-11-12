@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import time
 
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.serving import run_simple
@@ -182,7 +183,26 @@ def main() -> None:
     import threading
     threading.Thread(target=_arranque_de_fondo, name="ho-arranque-de-fondo", daemon=True).start()
 
-    run_simple("0.0.0.0", 8099, root_app, threaded=True)
+    _serve(root_app)
+
+
+SERVER_START_ATTEMPTS = 20
+
+
+def _serve(root_app) -> None:
+    """Abre el puerto del add-on reintentando el fallo de resolucion de nombre.
+    Al abrir un puerto, `http.server` pide el nombre de la maquina
+    (`socket.getfqdn`), y en la imagen del add-on (Alpine/musl) esa consulta
+    devuelve a ratos bytes sueltos -> UnicodeDecodeError. El 12-nov dejo sin
+    abrir el puerto de acceso completo de Energy; aqui tumbaria el add-on."""
+    for attempt in range(1, SERVER_START_ATTEMPTS + 1):
+        try:
+            return run_simple("0.0.0.0", 8099, root_app, threaded=True)
+        except UnicodeDecodeError:
+            if attempt == SERVER_START_ATTEMPTS:
+                raise
+            log.warning("No se pudo abrir el puerto 8099 (nombre de la maquina ilegible), se reintenta")
+            time.sleep(0.2)
 
 
 if __name__ == "__main__":

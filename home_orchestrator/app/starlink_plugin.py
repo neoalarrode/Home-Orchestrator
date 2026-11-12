@@ -55,6 +55,8 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
+import shutil
 import subprocess
 import threading
 
@@ -117,10 +119,26 @@ def _router_handle_url() -> str:
     return f"{_router_base_url()}/SpaceX.API.Device.Device/Handle"
 
 
+_NODE_ARCH = {"aarch64": "arm64", "arm64": "arm64", "x86_64": "x64", "amd64": "x64"}
+
+
+def _wrong_arch(node_modules: str) -> bool:
+    """True si los binarios de esbuild instalados son de otra arquitectura
+    que la de esta maquina (`@esbuild/linux-x64` en una ARM, por ejemplo)."""
+    arch = _NODE_ARCH.get(platform.machine().lower())
+    try:
+        installed = os.listdir(os.path.join(node_modules, "@esbuild"))
+    except OSError:
+        return False
+    if not arch or not installed:
+        return False
+    return not any(name.endswith("-" + arch) for name in installed)
+
+
 class StarlinkPlugin(Plugin):
     slug = "starlink"
     name = "Starlink Orchestrator"
-    version = "0.3.2"
+    version = "0.3.5"
 
     def __init__(self) -> None:
         self._app = flask.Flask("starlink_plugin", static_folder=_DIST_DIR, static_url_path="")
@@ -147,7 +165,13 @@ class StarlinkPlugin(Plugin):
         cada arranque (se salta si `node_modules` ya existe)."""
         node_modules = os.path.join(_NODE_DIR, "node_modules")
         if os.path.isdir(node_modules):
-            return
+            if not _wrong_arch(node_modules):
+                return
+            # 12-nov: `/data` venia de una maquina x64 y esta es ARM -- esbuild
+            # trae un binario por arquitectura y los dos procesos Node morian
+            # al arrancar, en cada arranque, sin que nada lo corrigiera.
+            log.warning("Starlink: dependencias Node de otra arquitectura, se reinstalan")
+            shutil.rmtree(node_modules, ignore_errors=True)
         log.info("Starlink: instalando dependencias Node (primera vez, tsx + @bufbuild/protobuf)...")
         try:
             subprocess.run(
@@ -203,6 +227,10 @@ class StarlinkPlugin(Plugin):
             return
         for line in proc.stderr:
             log.info("[starlink:%s] %s", label, line.rstrip())
+        code = proc.wait()
+        # 0 = salida limpia; negativo = lo hemos parado nosotros (SIGTERM/SIGKILL).
+        if code > 0:
+            log.warning("Starlink: el proceso %s ha muerto (codigo %s)", label, code)
 
     def _restart_node_services(self) -> None:
         """Llamado tras guardar una IP de router nueva -- las variables

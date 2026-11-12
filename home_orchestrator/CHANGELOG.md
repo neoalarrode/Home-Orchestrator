@@ -1,5 +1,9 @@
 # Changelog
 
+## core 0.77.67
+
+- Arranque — el puerto del add-on (8099) reintenta si falla la consulta del nombre de la máquina. En la imagen (Alpine) esa consulta devuelve a ratos bytes ilegibles; el 12-nov dejó sin abrir el puerto de acceso completo de Energy (8097), y en el 8099 habría tumbado el add-on.
+
 ## core 0.77.66
 
 - WebSocket de HA — el número de cada mensaje se asigna en el mismo paso que el envío. Antes, si dos plugins mandaban a la vez, podía llegar antes el de número mayor y HA rechazaba el otro (`id_reuse`, "Identifier values have to increase"): el 3-nov se perdió así una orden de luz de Lighting.
