@@ -62,3 +62,31 @@ class NodeArch(unittest.TestCase):
         proc = mock.Mock(stderr=[]); proc.wait.return_value = -15
         with self.assertNoLogs("starlink_plugin", level="WARNING"):
             self.plugin._log_stderr(proc, "historian")
+
+
+class OrphanLock(unittest.TestCase):
+    def _start(self, with_lock):
+        tmp = tempfile.TemporaryDirectory(); self.addCleanup(tmp.cleanup)
+        os.makedirs(os.path.join(tmp.name, "node_modules"))
+        data = os.path.join(tmp.name, "historian"); os.makedirs(data)
+        lock = os.path.join(data, "historian.lock")
+        if with_lock:
+            open(lock, "w").close()
+        plugin = starlink_plugin.StarlinkPlugin()
+        seen = []
+        popen = mock.Mock(side_effect=lambda *a, **k: seen.append(os.path.exists(lock)) or mock.Mock(stderr=None))
+        with mock.patch.object(starlink_plugin, "_NODE_DIR", tmp.name), \
+                mock.patch.object(starlink_plugin, "_HISTORIAN_DIR", data), \
+                mock.patch.object(starlink_plugin, "_COOKIE_FILE", os.path.join(tmp.name, "c", "cookie")), \
+                mock.patch.object(starlink_plugin.subprocess, "Popen", popen):
+            plugin._start_node_services()
+        return seen, popen
+
+    def test_orphan_lock_is_removed_before_the_historian_starts(self):
+        seen, popen = self._start(with_lock=True)
+        self.assertEqual(seen, [False, False])
+        self.assertEqual(popen.call_args_list[0].kwargs["env"]["HISTORIAN_DATA_DIR"].split(os.sep)[-1], "historian")
+
+    def test_starts_without_a_lock(self):
+        seen, popen = self._start(with_lock=False)
+        self.assertEqual(popen.call_count, 2)

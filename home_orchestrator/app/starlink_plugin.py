@@ -73,6 +73,7 @@ _DIST_DIR = os.path.join(_APP_DIR, "starlink_dist")
 _NODE_DIR = os.path.join(_APP_DIR, "starlink_node")
 _PROTOSET_PATH = os.path.join(_DIST_DIR, "dish.protoset")
 _COOKIE_FILE = "/data/starlink/.starlink-cookie"
+_HISTORIAN_DIR = "/data/starlink/historian"
 
 # IP fija del dish -- universal, la misma para cualquier instalacion de
 # Starlink (no es una IP de ESTA red, es la que el propio dish se asigna
@@ -138,7 +139,7 @@ def _wrong_arch(node_modules: str) -> bool:
 class StarlinkPlugin(Plugin):
     slug = "starlink"
     name = "Starlink Orchestrator"
-    version = "0.3.5"
+    version = "0.3.6"
 
     def __init__(self) -> None:
         self._app = flask.Flask("starlink_plugin", static_folder=_DIST_DIR, static_url_path="")
@@ -197,7 +198,17 @@ class StarlinkPlugin(Plugin):
         os.makedirs(os.path.dirname(_COOKIE_FILE), exist_ok=True)
 
         with self._node_lock:
-            historian_env = dict(env, HISTORIAN_DATA_DIR="/data/starlink/historian", HISTORIAN_PORT=str(HISTORIAN_PORT))
+            historian_env = dict(env, HISTORIAN_DATA_DIR=_HISTORIAN_DIR, HISTORIAN_PORT=str(HISTORIAN_PORT))
+            # El historian solo lo lanza este plugin, y aqui el anterior ya esta
+            # muerto: un `historian.lock` que quede es de otro contenedor. El
+            # historian lo respeta si ese PID "existe", y en un contenedor nuevo
+            # cualquier proceso puede tener ese numero (12-nov: PID 157 del
+            # contenedor del dia 10 -> se negaba a arrancar en cada arranque).
+            try:
+                os.remove(os.path.join(_HISTORIAN_DIR, "historian.lock"))
+                log.warning("Starlink: bloqueo huerfano del historian retirado")
+            except OSError:
+                pass
             self._historian_proc = subprocess.Popen(
                 # "node --import tsx" en vez de "npx tsx": invocar tsx como
                 # CLI mete un proceso wrapper de por medio que se traga
