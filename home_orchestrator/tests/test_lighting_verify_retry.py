@@ -44,7 +44,7 @@ class _Stub:
         self.bridge = False
         for name in ("_verify_and_detect_overrides", "_apply_confirmed", "_moved_from_pre",
                      "_apply_values", "_retry_delay", "_pending_verification", "_schedule_fast_verify",
-                     "_fast_verify"):
+                     "_fast_verify", "_send_order"):
             setattr(self, name, getattr(zr.ZoneRunner, name).__get__(self))
         # `_within` es @staticmethod: se usa tal cual, sin enlazar a self
         # (enlazarlo lo convertiria en metodo y le colaria `self` como 1er arg).
@@ -104,6 +104,97 @@ class LightingVerifyRetry(unittest.TestCase):
         """Simula que la zona manda un cambio (via _apply_values real)."""
         s.device = dict(pre) if pre else {"on": True, "brightness_pct": 50, "color_temp_kelvin": 3000}
         s._apply_values("L", {"brightness_pct": brightness, "color_temp_kelvin": color}, turning_on=False)
+
+    def _turn_on_from_off(self, s, color=2400, hs=None):
+        s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
+        s._apply_values("L", {"brightness_pct": 40, "color_temp_kelvin": color}, turning_on=True, hs=hs)
+
+    def test_colour_is_sent_twice_when_turning_on_from_off(self):
+        """Plafon Govee: dice tener el color pero se enciende con el anterior;
+        lo pone de verdad si la orden le llega ya encendido."""
+        s = _Stub()
+        self._turn_on_from_off(s)
+        self.assertEqual(s.sends, [(40, 2400), (40, 2400)])
+        for _ in range(5):
+            self.clock.advance(60)
+            s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
+        self.assertEqual(len(s.sends), 2)                 # y no se repite mas
+        self.assertFalse((s._state.get("manual_override") or {}).get("L"))
+
+    def test_any_platform_gets_the_colour_twice(self):
+        s = _Stub()
+        s.bridge = True
+        self._turn_on_from_off(s)
+        self.assertEqual(len(s.sends), 2)
+        s = _Stub()
+        self._turn_on_from_off(s, hs=(30, 80))             # color manual
+        self.assertEqual(len(s.sends), 2)
+
+    def test_colour_is_sent_once_when_the_light_was_already_on(self):
+        s = _Stub()
+        self._command(s, 40, 2400)
+        self.assertEqual(s.sends, [(40, 2400)])
+
+    def test_turn_on_without_colour_is_sent_once(self):
+        s = _Stub()
+        self._turn_on_from_off(s, color=None)
+        self.assertEqual(s.sends, [(40, None)])
+        s = _Stub()
+        s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
+        s._apply_values("L", {"brightness_pct": 40, "color_temp_kelvin": 2400}, turning_on=True, brightness_only=True)
+        self.assertEqual(s.sends, [(40, None)])
+
+    def test_unknown_state_counts_as_off(self):
+        s = _Stub()
+        s._current_light_values = lambda states, e: None
+        s._apply_values("L", {"brightness_pct": 40, "color_temp_kelvin": 2400}, turning_on=True)
+        self.assertEqual(len(s.sends), 2)
+
+    def test_what_counts_is_the_real_state_not_the_turning_on_flag(self):
+        s = _Stub()
+        s.device = {"on": True, "brightness_pct": 50, "color_temp_kelvin": 3000}
+        s._apply_values("L", {"brightness_pct": 40, "color_temp_kelvin": 2400}, turning_on=True)
+        self.assertEqual(len(s.sends), 1)
+        s = _Stub()
+        s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
+        s._apply_values("L", {"brightness_pct": 40, "color_temp_kelvin": 2400}, turning_on=False)
+        self.assertEqual(len(s.sends), 2)
+
+    def test_on_off_only_light_is_sent_once(self):
+        s = _Stub()
+        s.device = {"on": False, "brightness_pct": None, "color_temp_kelvin": None}
+        s._apply_values("L", {"brightness_pct": 40, "color_temp_kelvin": 2400}, turning_on=True, on_off_only=True)
+        self.assertEqual(s.sends, [(None, None)])
+
+    def test_retry_that_turns_the_light_on_also_sends_twice(self):
+        s = _Stub()
+        s.send_fails = True
+        self._turn_on_from_off(s)
+        self.assertEqual(len(s.sends), 1)
+        s.send_fails = False
+        self.clock.advance(0.5)
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
+        self.assertEqual(s.sends, [(40, 2400)] * 3)        # fallido + reintento doble
+        self.clock.advance(1.0)
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
+        self.assertEqual(len(s.sends), 3)
+        self.assertTrue(s._state["commanded"]["L"]["confirmed"])
+
+    def test_retry_on_a_light_that_is_on_sends_once(self):
+        s = _Stub()
+        s.send_fails = True
+        self._command(s, 40, 2400)
+        s.send_fails = False
+        self.clock.advance(0.5)
+        s._verify_and_detect_overrides({}, {"L"}, retry_ids={"L"})
+        self.assertEqual(len(s.sends), 2)
+
+    def test_failed_send_is_not_doubled(self):
+        s = _Stub()
+        s.send_fails = True
+        self._turn_on_from_off(s)
+        self.assertEqual(len(s.sends), 1)
+        self.assertFalse(s._state["commanded"]["L"]["sent_ok"])
 
     def test_failed_send_is_retried_until_applied(self):
         s = _Stub()

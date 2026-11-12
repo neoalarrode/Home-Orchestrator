@@ -95,6 +95,28 @@ class UnreachableAndBack(unittest.TestCase):
         self.cycle()
         self.assertEqual((self.light()["attributes"]["brightness"], self.light()["attributes"]["color_temp_kelvin"]), wanted)
 
+    def _colour_orders(self):
+        return [d for svc, d in self.ha.calls if svc == "turn_on" and "color_temp_kelvin" in d]
+
+    def test_turn_on_by_presence_sends_the_colour_twice_and_then_once(self):
+        self.cycle()
+        self.assertEqual(len(self._colour_orders()), 2)           # desde apagado: dos veces
+        self.ha.calls.clear()
+        for _ in range(5):
+            self.cycle()
+        self.assertEqual(self._colour_orders(), [])               # ya encendida: nada de mas
+
+    def test_manual_command_looks_at_the_light_as_it_is_now(self):
+        self.cycle()                                              # la foto del ciclo: apagada
+        self.ha.calls.clear()
+        self.z.manual_command(on=True, color_temp_kelvin=3000)    # ya encendida: una sola orden
+        self.assertEqual(len(self._colour_orders()), 1)
+        self.cycle()                                              # la foto del ciclo: encendida
+        self.light()["state"] = "off"                             # la apagan sin que la zona se entere
+        self.ha.calls.clear()
+        self.z.manual_command(on=True, color_temp_kelvin=3000)
+        self.assertEqual(len(self._colour_orders()), 2)           # desde apagado: dos veces
+
     def test_nothing_sent_while_unreachable(self):
         self.cycle(); self.cycle()
         self.ha.states[L] = {"entity_id": L, "state": "unavailable", "attributes": {}}

@@ -617,7 +617,7 @@ class ZoneRunner:
         # "no se aplico" (sigue en este valor) de "lo han tocado a mano" (se
         # movio a otro). Ver `_verify_and_detect_overrides`.
         pre = self._current_light_values(self._last_states or {}, entity_id)
-        sent_ok = self._send_to_light(entity_id, brightness_pct, color_temp_kelvin, hs)
+        sent_ok = self._send_order(entity_id, brightness_pct, color_temp_kelvin, hs, bool((pre or {}).get("on")))
         commanded = self._state.setdefault("commanded", {})
         # OJO: se guarda lo que de VERDAD se mando (brightness_pct/
         # color_temp_kelvin ya filtrados arriba por `brightness_only`),
@@ -653,6 +653,19 @@ class ZoneRunner:
         # `off_delay_seconds=0`, en cada parpadeo del sensor -> un brillo puesto
         # a mano se re-adaptaba al rato. Ahora se olvida SOLO al quedarse la
         # zona vacia de verdad ("salir y volver"), en `_decide_and_act_locked`.
+
+    def _send_order(self, entity_id: str, brightness_pct, color_temp_kelvin, hs, was_on: bool) -> bool:
+        """Manda la orden; si la luz estaba apagada y lleva color, DOS veces.
+        Hay luces que dicen haber puesto el color pero se encienden con el que
+        tenian al apagarse, y solo lo ponen de verdad si la orden les llega ya
+        encendidas (plafones Govee H60A4 por Matter, medido con el sensor de
+        luz de la Entrada el 12-nov: repetirla nada mas volver el primer envio
+        basta). El estado no lo delata, asi que no se puede aprender luz a luz:
+        se repite siempre, sea cual sea la bombilla."""
+        sent_ok = self._send_to_light(entity_id, brightness_pct, color_temp_kelvin, hs)
+        if sent_ok and not was_on and (color_temp_kelvin is not None or hs is not None):
+            sent_ok = self._send_to_light(entity_id, brightness_pct, color_temp_kelvin, hs)
+        return bool(sent_ok)
 
     def _send_to_light(self, entity_id: str, brightness_pct, color_temp_kelvin, hs) -> bool:
         """Manda el encendido/ajuste al dispositivo real. Devuelve True si la
@@ -871,8 +884,8 @@ class ZoneRunner:
                     "no acepto el envio" if cmd.get("sent_ok") is False else "no reflejo el cambio mandado",
                     cmd["attempts"], APPLY_MAX_RETRIES,
                 )
-                cmd["sent_ok"] = bool(
-                    self._send_to_light(entity_id, cmd.get("brightness_pct"), cmd.get("color_temp_kelvin"), None))
+                cmd["sent_ok"] = self._send_order(
+                    entity_id, cmd.get("brightness_pct"), cmd.get("color_temp_kelvin"), None, bool(vals.get("on")))
             elif not cmd.get("gave_up"):
                 cmd["gave_up"] = True
                 log.warning(
@@ -1485,6 +1498,9 @@ class ZoneRunner:
         (o `on=False`) vuelve a dejar la zona en manos de la curva
         automatica de blancos."""
         target, brightness_only, on_off_only = self._target_lights()
+        # Las luces no despiertan a la zona: la foto del ultimo ciclo puede ser de
+        # hace minutos y `_apply_values` necesita saber si AHORA estan encendidas.
+        self._last_states = self._snapshot_states() or self._last_states
         for entity_id in target:
             if on:
                 only_brightness = entity_id in brightness_only
